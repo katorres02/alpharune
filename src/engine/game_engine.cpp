@@ -2177,6 +2177,20 @@ void GameEngine::resolvePermanent(const ChainItem& item) {
                 if (cdef->entersReadyOnPlay(state_, card.controller, card)) enters_ready = true;
             }
         }
+        // Riven, The Exile (RAD-149, legend id 956): "Units you play to
+        // battlefields you control enter ready."
+        if (!enters_ready && std::holds_alternative<BattlefieldLocation>(loc)) {
+            auto lid = state_.player(item.controller).legend_zone;
+            if (lid != kInvalidId && state_.objectExists(lid) &&
+                state_.getObject(lid).card_def_id == 956) {
+                auto bfid = std::get<BattlefieldLocation>(loc).id;
+                auto& bf = getBattlefield(bfid);
+                if (bf.controller.has_value() && *bf.controller == item.controller) {
+                    enters_ready = true;
+                    events_.logTrace("THE EXILE: " + card.name + " enters ready");
+                }
+            }
+        }
         card.is_exhausted = !enters_ready;
     }
     // Gear enters ready (CR 149.1) unless it says "This enters exhausted."

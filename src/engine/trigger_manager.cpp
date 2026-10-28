@@ -1123,6 +1123,14 @@ void TriggerManager::onObjectStateChanged(const ObjectStateChangedEvent& e) {
         return;
     }
 
+    if (e.what_changed == "exhausted") {
+        const auto& xo = state_.getObject(e.object);
+        if (xo.isUnit() && xo.location.has_value() && xo.card_def_id != kInvalidId &&
+            cardFiresOn(card_registry_, xo.card_def_id, TriggerType::WhenIBecomeExhausted))
+            fireTrigger(e.object, controller, 0, TriggerType::WhenIBecomeExhausted);
+        return;
+    }
+
     if (e.what_changed == "became_ready") {
         if (state_.getObject(e.object).card_def_id != kInvalidId &&
             cardFiresOn(card_registry_, state_.getObject(e.object).card_def_id,

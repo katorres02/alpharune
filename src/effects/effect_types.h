@@ -194,6 +194,8 @@ enum class TriggerType : uint8_t {
     WhenYouActivateAnAbility,    // "When you play ... an activated ability" (Curator of the
                                  // Sands); triggering_subject = the ability's source, and the
                                  // ability's Energy cost rides in triggering_spell_energy_spent
+    WhenIBecomeExhausted,        // "When I become exhausted," (Radiance: Riven, Broken Blade;
+                                 // Reckless Innovator) — ObjectStateChangedEvent "exhausted"
 };
 
 // ─── Conditions ─────────────────────────────────────────────────────────────

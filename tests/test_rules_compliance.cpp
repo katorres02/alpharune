@@ -1635,5 +1635,30 @@ TEST_F(VendettaLastCardsTest, ChooseObjectNowAsksTheAgent) {
     EXPECT_EQ(engine_->testHook_executor().chooseObjectNow(P1, {}), kInvalidId);
 }
 
+// Darius, Trifarian: "When you play your second card in a turn" must also
+// fire when that second card is a SPELL (integration through TriggerManager).
+TEST_F(RulesComplianceTest, DariusTrifarian_SecondCardSpellTriggers) {
+    constexpr CardDefId kDarius = 27;
+    constexpr CardDefId kHextechRay = 9;
+    makeEngine();
+    setLegend(P1); setLegend(P2);
+    auto darius = engineUnit(P1, 5, 0, kDarius);
+    s().player(P1).cards_played_this_turn = 2;
+    auto spell = s().createObject();
+    {
+        auto& sp = s().getObject(spell);
+        sp.owner = sp.controller = P1;
+        sp.card_type = CardType::Spell;
+        sp.card_def_id = kHextechRay;
+        sp.name = "Hextech Ray";
+        sp.zone = ZoneType::Chain;
+    }
+    events.emit(CardPlayedEvent{spell, P1, CardType::Spell, 2, 1});
+    events.emit(SpellResolvedEvent{spell, P1});
+    int n = 0;
+    for (const auto& it : s().chain.items) if (it.source == darius && it.is_ability) ++n;
+    EXPECT_EQ(n, 1) << "Darius should trigger when the 2nd card is a spell";
+}
+
 }  // namespace
 }  // namespace riftbound::test
