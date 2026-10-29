@@ -16,25 +16,23 @@ namespace {
 class KiBurst : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
-    // Additional cost "exhaust a friendly unit": required to be payable to play;
-    // paid at resolution (approximation of play-time payment).
-    bool canBePlayed(const GameState& state, PlayerId player) const override {
-        for (auto& [id, o] : state.objects)
-            if (o.isUnit() && o.controller == player && !o.is_exhausted && o.location.has_value()) return true;
-        return false;
+    // "As an additional cost to play this, exhaust a friendly unit." A
+    // mandatory object cost (CR 356.2.a): the player picks the ready friendly
+    // unit as the spell is played, before it reaches the chain; with none the
+    // spell can't be played (GameEngine::canAfford / payObjectAdditionalCost).
+    OptionalAdditionalCost optionalAdditionalCost() const override {
+        OptionalAdditionalCost c;
+        c.valid = true;
+        c.object_cost = OptionalAdditionalCost::ObjectCost::ExhaustFriendlyUnit;
+        c.mandatory = true;
+        c.min_objects = 1;
+        c.max_objects = 1;
+        return c;
     }
     TargetRequirements getTargetRequirements() const override {
         return TargetRequirements{.count = 1, .must_be_unit = true};   // "a unit": friendly or enemy
     }
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        GameObjectId pay = kInvalidId;
-        for (auto& [id, o] : ctx.state.objects) {
-            if (!o.isUnit() || o.controller != ctx.controller || o.is_exhausted || !o.location.has_value()) continue;
-            if (o.card_def_id == 957 || o.card_def_id == 961) { pay = id; break; }
-            if (pay == kInvalidId) pay = id;
-        }
-        if (pay == kInvalidId) return;
-        ctx.executor.exhaustObject(pay);
         if (!targets.empty() && ctx.state.objectExists(targets[0])) ctx.executor.stunUnit(targets[0]);
     }
 private:

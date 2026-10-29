@@ -32,7 +32,7 @@ public:
         // Heal, exhaust, and recall the saved unit to its base.
         ctx.executor.healObject(dying_unit);
         ctx.executor.exhaustObject(dying_unit);
-        ctx.executor.moveToBase(dying_unit);
+        ctx.executor.recallToBase(dying_unit);
         return true;  // replacement consumed — the unit does not die
     }
 private:

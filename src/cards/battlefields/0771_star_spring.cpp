@@ -14,7 +14,19 @@ namespace {
 class StarSpring : public BattlefieldCard {
 public:
     const CardDef& def() const override { return def_; }
+    // "The first time a player plays a non-token unit here each turn, they may
+    // move another unit they control here to its base." The battlefield's
+    // WhenYouPlayAUnit trigger carries the played unit as its subject.
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayAUnit; }
+    bool triggerCondition(const GameState& state, GameObjectId source, PlayerId controller,
+                          TriggerType, GameObjectId subject) const override {
+        if (subject == kInvalidId || !state.objectExists(subject)) return false;
+        if (state.getObject(subject).isToken()) return false;
+        if (!state.objectExists(source)) return false;
+        const auto& c = state.getObject(source).card_counters;
+        auto it = c.find(firstKey(controller));
+        return it == c.end() || it->second != state.turn.turn_number;
+    }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>&) override {
         if (!ctx.state.objectExists(ctx.source)) return;
         BattlefieldId here = kInvalidId;
@@ -22,29 +34,14 @@ public:
             if (bf.card_object_id == ctx.source) { here = bf.id; break; }
         }
         if (here == kInvalidId) return;
-
-        // Find the just-played unit: the newest unit controlled by ctx.controller
-        // that sits at this battlefield and is non-token. (Trigger carries no
-        // played-object id, so we self-select.)
-        GameObjectId played = kInvalidId;
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (!obj.isUnit() || obj.controller != ctx.controller) continue;
-            if (obj.isToken()) continue;
-            auto bf = obj.battlefieldId();
-            if (!bf || *bf != here) continue;
-            if (id > played || played == kInvalidId) played = id;  // newest id heuristic
-        }
+        const GameObjectId played = ctx.state.chain.resuming
+            ? ctx.state.chain.resuming->triggering_subject : kInvalidId;
         if (played == kInvalidId) return;
+        // This is that player's first non-token play here this turn.
+        ctx.state.getObject(ctx.source).card_counters[firstKey(ctx.controller)] =
+            ctx.state.turn.turn_number;
 
-        // First-time-this-turn gate, per player.
-        auto& self = ctx.state.getObject(ctx.source);
-        std::string key = "__starspring_p" + std::to_string(playerIndex(ctx.controller));
-        if (self.card_counters[key] == ctx.state.turn.turn_number &&
-            ctx.state.turn.turn_number != 0) {
-            return;  // already triggered this turn for this player
-        }
-
-        // Build "another unit they control here" set (exclude the played one).
+        // "Another unit they control here" (not the played one).
         std::vector<GameObjectId> movable;
         for (auto& [id, obj] : ctx.state.objects) {
             if (id == played) continue;
@@ -52,22 +49,22 @@ public:
             auto bf = obj.battlefieldId();
             if (bf && *bf == here) movable.push_back(id);
         }
+        std::sort(movable.begin(), movable.end());
 
         int decision = confirmOptional(ctx, "Star Spring: move another unit here to base",
             [&]() { return !movable.empty(); });
-        if (decision == -1) return;  // waiting on agent
-        // Mark first-play handled regardless of yes/no (the "first time" is
-        // consumed by reaching the decision).
-        self.card_counters[key] = ctx.state.turn.turn_number;
-        if (decision == 0) return;
-
-        // Re-pick a still-legal movable unit and move it to its base.
-        for (auto id : movable) {
-            if (!ctx.state.objectExists(id)) continue;
-            ctx.executor.moveToBase(id);
-            ctx.events.logTrace("STAR SPRING: moved a unit here to its base");
-            break;
-        }
+        if (decision < 1) return;  // waiting on the agent, declined or nothing to move
+        GameObjectId pick = pickTarget(ctx, "Star Spring: unit to move to its base", movable);
+        if (pick == kInvalidId && ctx.state.chain.resuming.has_value() &&
+            ctx.state.chain.resuming->resume_point == 7)
+            return;  // waiting on the agent
+        if (pick == kInvalidId || !ctx.state.objectExists(pick)) return;
+        ctx.executor.moveToBase(pick);
+        ctx.events.logTrace("STAR SPRING: moved " + ctx.state.getObject(pick).name + " to its base");
+    }
+private:
+    static std::string firstKey(PlayerId p) {
+        return "__starspring_p" + std::to_string(playerIndex(p));
     }
 private:
     const CardDef def_ = [] {

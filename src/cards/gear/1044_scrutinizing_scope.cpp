@@ -42,6 +42,7 @@ public:
             ri.resume_point = 21;
             guess = takenValue(ctx, 0);
         }
+        ctx.executor.lookBeforeReveal(ctx.controller, ctx.controller);   // Void Hatchling
         auto& deck = ctx.state.player(ctx.controller).main_deck;
         if (deck.empty()) return;
         const GameObjectId top = deck.back();

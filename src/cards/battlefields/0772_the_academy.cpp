@@ -18,7 +18,7 @@ public:
     // "When you hold here, give your next spell this turn [Repeat] equal to its
     //  base cost." Wired via PlayerState::grant_repeat_base_to_next_spell: the
     //  spell-play path builds a RepeatCost whose tranche cost = the spell's base
-    //  energy when this is set, then consumes it.
+    //  Energy and Power cost when this is set, then consumes it.
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>&) override {
         ctx.state.player(ctx.controller).grant_repeat_base_to_next_spell = true;
         ctx.events.logTrace("THE ACADEMY: next spell gains [Repeat] = its base cost");

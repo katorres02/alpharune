@@ -65,14 +65,21 @@ public:
         ctx.executor.requestChoice(ctx.controller, std::move(options),
                                     "Tricksy Tentacles: choose an enemy unit to move, or stop");
     }
+    // One move of all of them "to a single location" (CR 144.3-style group:
+    // applied move costs are charged once for the group).
     void moveAll(CardContext& ctx, int dest_mode, const std::vector<GameObjectId>& chosen) const {
+        std::vector<GameObjectId> movers;
         for (auto id : chosen) {
             if (!ctx.state.objectExists(id)) continue;
             const auto& o = ctx.state.getObject(id);
             if (!o.location.has_value() || atDestination(o, dest_mode)) continue;
-            if (dest_mode == 0) ctx.executor.moveToBase(id);
-            else ctx.executor.moveToBattlefield(id, static_cast<BattlefieldId>(dest_mode - 1));
+            movers.push_back(id);
         }
+        if (movers.empty()) return;
+        const LocationId dest = dest_mode == 0
+            ? LocationId{BaseLocation{opponent(ctx.controller)}}
+            : LocationId{BattlefieldLocation{static_cast<BattlefieldId>(dest_mode - 1)}};
+        ctx.executor.moveUnitsTogether(movers, dest);
         ctx.events.logTrace("TRICKSY TENTACLES: moved " + std::to_string(chosen.size()) +
                             " enemy unit(s) to one location");
     }

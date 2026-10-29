@@ -13,8 +13,8 @@ namespace {
 // "You may have me enter ready. If you do, I can't move this turn."
 // The choice is made as the unit is played (onPlay runs during the play,
 // before it lands): a synchronous yes/no, recorded for entersReadyOnPlay.
-// GAP: "can't move" blocks the unit's own moves (standard moves); effects that
-// move it this turn are not blocked.
+// "I can't move this turn" (GameObject::forbidMovesThisTurn) blocks every move
+// this turn — standard moves and effect moves (core/move_rules.h).
 class EntrenchedBoar : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
@@ -25,7 +25,7 @@ public:
         auto& me = ctx.state.getObject(ctx.source);
         if (!ready) { me.card_counters.erase("__boar_ready_turn"); return; }
         me.card_counters["__boar_ready_turn"] = ctx.state.turn.turn_number + 1;
-        me.cant_move_turn = ctx.state.turn.turn_number;
+        me.forbidMovesThisTurn(ctx.state.turn.turn_number);
         ctx.events.logTrace("ENTRENCHED BOAR: enters ready, can't move this turn");
     }
     bool entersReadyOnPlay(const GameState& state, PlayerId /*controller*/,

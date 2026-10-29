@@ -38,6 +38,7 @@ public:
         ctx.executor.predict(ctx.controller, 1);
 
         // Reveal the (possibly new) top card of the main deck.
+        ctx.executor.lookBeforeReveal(ctx.controller, ctx.controller);   // Void Hatchling
         if (ps.main_deck.empty()) return;
         GameObjectId top = ps.main_deck.back();
         if (!ctx.state.objectExists(top)) return;

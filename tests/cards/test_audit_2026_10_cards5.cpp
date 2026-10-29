@@ -286,7 +286,8 @@ TEST_F(Cards5Test, VexApathetic_StunnedUnitCantMoveThisTurn) {
     CardContext ctx{s(), events, exec, P1, vex};
     card_registry.get(kVexApathetic)->onTrigger(ctx, {});
     EXPECT_TRUE(s().getObject(played).is_stunned);
-    EXPECT_TRUE(s().getObject(played).cant_move_this_turn);
+    EXPECT_EQ(s().getObject(played).cant_move_turn, s().turn.turn_number);
+    EXPECT_EQ(s().getObject(played).cant_move_only_by, P2) << "they can't move it";
 
     s().turn.turn_player = P2;
     auto actions = engine_->generateLegalActions();
@@ -335,8 +336,8 @@ TEST_F(Cards5Test, MageseekerInvestigator_MarksItsBattlefield) {
     makeEngine();
     unit(P1, kMageseekerInvestigator, 0, 1);
     engine_->testHook_cleanup();
-    EXPECT_FALSE(s().battlefields[0].surcharge_enemy_multi_move);
-    EXPECT_TRUE(s().battlefields[1].surcharge_enemy_multi_move);
+    EXPECT_EQ(s().battlefields[0].multi_move_surcharge_power[playerIndex(P2)], 0);
+    EXPECT_EQ(s().battlefields[1].multi_move_surcharge_power[playerIndex(P2)], 1);
 }
 
 // ═══ [726] Safety Inspector — each player picks their own unit ═════════════
@@ -1149,7 +1150,8 @@ TEST_F(Cards5Test, HunkerDown_ReadiesButCantMove) {
     for (const auto& a : engine_->generateLegalActions())
         if (a.type == IntentType::StandardMove)
             for (auto m : a.units_to_move) EXPECT_NE(m, u) << "it can't move this turn";
-    EXPECT_TRUE(s().getObject(u).cant_move_this_turn);
+    EXPECT_EQ(s().getObject(u).cant_move_turn, s().turn.turn_number);
+    EXPECT_EQ(s().getObject(u).cant_move_only_by, PlayerId::None);
 }
 
 // ═══ [963] Hush — counters only Power cost [A][A] or more ════════════════

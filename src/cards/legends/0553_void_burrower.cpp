@@ -58,6 +58,7 @@ public:
 
         if (phase < 0) {
             // First pass after confirmation (cost paid above): reveal top 2.
+            ctx.executor.lookBeforeReveal(ctx.controller, ctx.controller);   // Void Hatchling
             auto& ps = ctx.state.player(ctx.controller);
             GameObjectId a = kInvalidId, b = kInvalidId;
             int n = static_cast<int>(ps.main_deck.size());

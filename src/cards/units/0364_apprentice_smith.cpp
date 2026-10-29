@@ -20,6 +20,7 @@ public:
     // draw it. Otherwise, recycle it."
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>&) override {
         auto& ps = ctx.state.player(ctx.controller);
+        ctx.executor.lookBeforeReveal(ctx.controller, ctx.controller);   // Void Hatchling
         if (ps.main_deck.empty()) return;
         GameObjectId top = ps.main_deck.back();
         ps.main_deck.pop_back();

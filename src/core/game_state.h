@@ -306,6 +306,15 @@ struct PlayerState {
         // dropped at the start of GameEngine::recalculateAuras, so it lasts
         // exactly as long as its source keeps re-asserting it.
         bool from_aura = false;
+        // "You may pay ... less" (Orianna, Mechanical Marvel): the payer chooses
+        // to take it or not as the card is played (GameEngine::
+        // decideOptionalCostModifiers); declined, it stays for a later card.
+        // Taken, the turn number is written to the source's
+        // card_counters[used_marker] (when set) so the source can stop
+        // offering it ("once each turn").
+        bool optional = false;
+        std::string used_marker;
+        bool declined = false;   // transient: declined for the play being paid
     };
     std::vector<CostModifier> cost_modifiers;
 
@@ -325,8 +334,26 @@ struct PlayerState {
         // [Flow] and a card's own Card::trashPlayCost ("You may play me from
         // your trash for <cost>" — units and gear too, Undying Legion).
         bool standing = false;
+        // Played at once as the spell lands in the trash instead of offered
+        // as a later play (Dancing Grenade: "Its controller may play this
+        // spell again for [A]" — the choice is made as it resolves).
+        // GameEngine::replayFromTrashNow; never offered by the generators.
+        bool immediate = false;
     };
     std::vector<TrashReplayGrant> trash_replay_grants;
+
+    // "You may play a gear with Energy cost no more than [7] from hand this
+    // turn, ignoring its Energy cost. (You must still pay its Power cost.)"
+    // (Jayce, Man of Progress): a one-use permission that lasts the turn. A
+    // matching card played from hand may use it (the player decides as they
+    // play it; forced when only the permission makes it payable); the Power
+    // cost is still paid. Cleared each turn.
+    struct IgnoreEnergyPlayGrant {
+        GameObjectId source = kInvalidId;
+        CardType card_type = CardType::Gear;
+        int max_energy_cost = 0;          // printed Energy cost no more than this
+    };
+    std::vector<IgnoreEnergyPlayGrant> ignore_energy_play_grants;
 
     // "Banish the top card of your Main Deck. Until your next Ending Phase, you
     // may play that card. (You still pay its costs.)" (Runeblade Anvil, Akali,
@@ -466,6 +493,7 @@ struct PlayerState {
             cost_modifiers.end());
         // Trash-replay permissions do not persist across turns.
         trash_replay_grants.clear();
+        ignore_energy_play_grants.clear();
     }
 };
 
@@ -496,7 +524,8 @@ struct BattlefieldState {
     std::string paid_play_tag;
     int empower_cost_reduction[2] = {0, 0}; // Risen Altar: per-player [Empower] discount for units here
     // Gravity Field: "Opponents must pay [1][A] to move one or more units to
-    // this battlefield." Per moving player; paid once per standard move here.
+    // this battlefield." Per moving player; paid once per move here (a
+    // standard move of a group, or an effect's move) — see moveAppliedCost.
     int move_tax_energy[2] = {0, 0};
     int move_tax_power[2] = {0, 0};
     bool is_contested = false;
@@ -557,7 +586,10 @@ struct BattlefieldState {
 
     // Aura-derived per-BF flags (reset + recomputed each recalculateAuras by the
     // BF/unit cards' applyPassiveAura):
-    bool surcharge_enemy_multi_move = false; // Mageseeker Investigator (725): enemy multi-unit moves here cost [A]/extra unit
+    // Mageseeker Investigator (725): "Opponents must pay [A] for each unit
+    // beyond the first to move multiple units to my battlefield at the same
+    // time." Per moving player (index), [A] per extra unit of one move.
+    int multi_move_surcharge_power[2] = {0, 0};
     bool opp_hidden_unrevealable = false;    // Noxus Saboteur (018): opponent [Hidden] cards can't be revealed here
     bool hidden_unrevealable_for[2] = {false, false};  // ... indexed by the RESTRICTED player (aura-derived)
     bool death_recall_for_pay = false;       // Altar of Blood (762): a unit dying here in combat may pay [A][A][A] to heal+exhaust+recall instead
@@ -731,6 +763,10 @@ struct ChainItem {
     // Encoding: 0 = the chooser's base, i+1 = state.battlefields[i].
     std::vector<std::pair<GameObjectId, int32_t>> play_location_picks;
     GameObjectId play_location_pending = kInvalidId;   // waiting for the agent
+    // Card::pickTokenLocations — how many of the tokens this item plays go to
+    // each legal location (in tokenPlayLocations order), answered so far.
+    std::vector<int32_t> token_location_counts;
+    bool token_location_pending = false;
 
     // ── Repeat (CR 820) — optional additional cost ──
     // `repeats_paid` is the number of times the Repeat cost was paid as
@@ -742,6 +778,12 @@ struct ChainItem {
     // (CR-text "if you spent [4] or more") and Virtuoso for cost-gating.
     int repeats_paid = 0;
     int total_energy_spent = 0;
+    // Cost reductions from the spell's chosen targets (Irelia, Graceful;
+    // Sandswept Tomb) already applied when its printed cost was paid; -1 when
+    // the printed cost wasn't paid. Targets chosen at finalization settle the
+    // rest (GameEngine::settleChosenTargetDiscount).
+    int target_disc_energy = -1;
+    int target_disc_power = -1;
 
     // Phase 6q+ — snapshot of the TRIGGERING spell's total_energy_spent
     // when this trigger was added to the chain. Used by WhenYouPlaySpell

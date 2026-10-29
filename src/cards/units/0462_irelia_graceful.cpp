@@ -18,8 +18,9 @@ public:
     // GameObject::spells_targeting_me_cost_reduction (set here): executePlaySpell
     // stages the largest such value among a spell's chosen targets into
     // PlayerState::transient_play_discount, which canAfford / beginCostPayment
-    // subtract. APPROX: only play-time-targeted spells benefit (deferred-target
-    // spells choose at chain time, after cost is paid).
+    // subtract. A spell that chooses me as it is finalized (after its cost was
+    // paid) gets the reduction back then (GameEngine::settleChosenTargetDiscount):
+    // [1] while its Energy cost has room, else [A].
     void applyPassiveAura(GameState& state, PlayerId controller) const override {
         for (auto& [id, obj] : state.objects) {
             if (obj.card_def_id == cardDefId() && obj.controller == controller &&

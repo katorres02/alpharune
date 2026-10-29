@@ -160,6 +160,10 @@ struct GameObject {
     struct GrantedAbilityRef {
         CardDefId source_def_id = 0;  // 0 = none; else the granting card
         int ability_index = 0;
+        // ability_index value meaning "every [E] ability of the granting card"
+        // ("I have all [E] abilities of ...", Heimerdinger, Inventor); the
+        // action generator expands it to one ref per such ability.
+        static constexpr int kAllExhaustAbilities = -1;
     };
     std::vector<GrantedAbilityRef> granted_abilities;
     // Abilities granted "this turn" by a resolved effect (Dominus: `give it
@@ -235,15 +239,24 @@ struct GameObject {
     // main-phase move generator (parallel to BattlefieldState::blocks_move_to_base,
     // which is the per-battlefield variant).
     bool cant_move_to_base = false;
-    // "I can't move this turn" (Entrenched Boar): the turn number on which this
-    // unit can't make moves; -1 = no restriction.
+    // "I / it can't move this turn" (Entrenched Boar, Hunker Down, Vex,
+    // Apathetic): the turn number on which this unit can't move — by its
+    // standard move or by any effect (CR 458.3: recalls are not moves and are
+    // unaffected); -1 = no restriction. `cant_move_only_by` narrows it to the
+    // moves one player makes ("They can't move it this turn"); None = anyone.
+    // Set through forbidMovesThisTurn; checked by moveForbidden (move_rules.h).
     int cant_move_turn = -1;
+    PlayerId cant_move_only_by = PlayerId::None;
+    void forbidMovesThisTurn(int turn, PlayerId only_by = PlayerId::None) {
+        if (cant_move_turn == turn && cant_move_only_by != only_by)
+            cant_move_only_by = PlayerId::None;   // two restrictions: union
+        else
+            cant_move_only_by = only_by;
+        cant_move_turn = turn;
+    }
     // Continuous "can't move to base" (Minotaur Reckoner: "Units can't move to
     // base."). Reset each recalculateAuras, re-set by the card's aura.
     bool aura_cant_move_to_base = false;
-    // "It can't move this turn" (Vex, Apathetic; Hunker Down). Blocks the
-    // standard move; cleared by the expiration step.
-    bool cant_move_this_turn = false;
     // "I can't be readied" (Maduli the Gatekeeper). Recomputed each
     // recalculateAuras; the Awaken phase and EffectExecutor::readyObject skip it.
     bool cant_be_readied = false;

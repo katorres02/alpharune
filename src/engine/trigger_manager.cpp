@@ -235,12 +235,13 @@ static bool cardFiresOn(const CardRegistry& reg, CardDefId def_id, TriggerType t
 }
 
 void TriggerManager::fireBattlefieldTriggers(TriggerType t, PlayerId player,
-                                              BattlefieldId at_battlefield) {
+                                              BattlefieldId at_battlefield,
+                                              GameObjectId subject) {
     for (auto& bf : state_.battlefields) {
         if (at_battlefield != kInvalidId && bf.id != at_battlefield) continue;
         if (!state_.objectExists(bf.card_object_id)) continue;
         if (cardFiresOn(card_registry_, state_.getObject(bf.card_object_id).card_def_id, t)) {
-            fireTrigger(bf.card_object_id, player, 0, t);
+            fireTrigger(bf.card_object_id, player, 0, t, subject);
         }
     }
 }
@@ -338,6 +339,11 @@ void TriggerManager::onCardPlayed(const CardPlayedEvent& e) {
         if (e.card_type == CardType::Unit && !obj.isToken()) pps.played_nontoken_unit_this_turn = true;
         if (e.card_type == CardType::Gear && !obj.isToken()) pps.played_nontoken_gear_this_turn = true;
     }
+    // Which card of the turn this play was, fixed as it is played: a spell's
+    // play triggers only fire as it resolves (below), possibly after a later
+    // card, so "your first card each turn" reads this (Astral Heron).
+    obj.card_counters["__play_ordinal"] = e.cards_played_this_turn;
+    obj.card_counters["__play_turn"] = state_.turn.turn_number;
     // CR 420.4.a: abilities that trigger on a card being played trigger when
     // playing it is COMPLETED by its resolution. A permanent resolves as it is
     // finalized, so its play triggers fire here; a spell's fire from
@@ -431,7 +437,8 @@ void TriggerManager::onCardPlayed(const CardPlayedEvent& e) {
     if (e.card_type == CardType::Unit && state_.objectExists(e.object)) {
         auto played_bf = state_.getObject(e.object).battlefieldId();
         if (played_bf) {
-            fireBattlefieldTriggers(TriggerType::WhenYouPlayAUnit, e.player, *played_bf);
+            fireBattlefieldTriggers(TriggerType::WhenYouPlayAUnit, e.player, *played_bf,
+                                    /*subject=*/e.object);
         }
     }
 

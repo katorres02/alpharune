@@ -258,6 +258,45 @@ bool ChainManager::stepFinalize(
     return finalized_any;
 }
 
+LocationId ChainManager::hiddenUnitPlayDestination(GameObjectId card_id, PlayerId player,
+                                                   const AgentQuery& query_agent) {
+    const auto& card = state_.getObject(card_id);
+    const BattlefieldId hidden_bf = card.hidden_at;
+    LocationId dest = BattlefieldLocation{hidden_bf};
+    if (!card.isUnit() || !state_.player(player).next_unit_any_battlefield || !query_agent)
+        return dest;
+    // "The next unit you play this turn, even from face down, can be played
+    // to any battlefield" (Last Caress): the player picks among every
+    // battlefield (not a "can't be played here" one), the hidden-at one
+    // first. MakeChoice chosen_value = 1 + battlefield index.
+    std::vector<Intent> opts;
+    auto option = [&](size_t i) {
+        Intent o;
+        o.type = IntentType::MakeChoice;
+        o.player = player;
+        o.chosen_value = static_cast<int>(i) + 1;
+        o.choice_label = "play " + card.name + " to BF#" +
+                         std::to_string(state_.battlefields[i].id);
+        return o;
+    };
+    for (size_t i = 0; i < state_.battlefields.size(); ++i)
+        if (state_.battlefields[i].id == hidden_bf) opts.push_back(option(i));
+    for (size_t i = 0; i < state_.battlefields.size(); ++i) {
+        const auto& b = state_.battlefields[i];
+        if (b.id == hidden_bf || b.blocks_unit_play) continue;   // Rockfall Path
+        opts.push_back(option(i));
+    }
+    if (opts.size() <= 1) return dest;
+    events_.logTrace("CHOICE-REQUEST: play " + card.name + " from face down to which "
+                     "battlefield? [" + std::to_string(opts.size()) + " options] (" +
+                     toString(player) + ")");
+    const Intent chosen = query_agent(player, opts);
+    const int v = chosen.chosen_value.value_or(0);
+    for (const auto& o : opts)
+        if (o.chosen_value == v) dest = BattlefieldLocation{state_.battlefields[v - 1].id};
+    return dest;
+}
+
 bool ChainManager::stepExecuteAndPass(AgentQuery query_agent,
                                       ClosedActionsGen gen_closed_actions) {
     // Controller of newest finalized item gets Priority first (CR 337.1.b.3)
@@ -311,8 +350,8 @@ bool ChainManager::stepExecuteAndPass(AgentQuery query_agent,
             // battlefield, or the location the intent names ([Ambush]).
             LocationId permanent_dest = chosen.play_location.value_or(
                 LocationId{BaseLocation{current}});
-            if (card.is_hidden && card.hidden_at != kInvalidId)
-                permanent_dest = BattlefieldLocation{card.hidden_at};
+            if (card.is_hidden && card.hidden_at != kInvalidId && card.isPermanent())
+                permanent_dest = hiddenUnitPlayDestination(chosen.card, current, query_agent);
 
             if (card.is_hidden) {
                 // Playing from facedown — remove from BF facedown zone, no cost
@@ -451,6 +490,8 @@ void ChainManager::stepResolve(
             state_.chain.resuming->choices_finalized = false;
             state_.chain.resuming->finalize_costs_paid = false;
             state_.chain.resuming->finalize_checked = 0;
+            state_.chain.resuming->token_location_counts.clear();
+            state_.chain.resuming->token_location_pending = false;
             if (state_.chain.resuming->is_spell || state_.chain.resuming->is_ability) {
                 resolve_spell(state_.chain.resuming.value());
                 // A repeat that asks for a choice resumes like the first run.
@@ -499,7 +540,9 @@ void ChainManager::stepResolve(
                 state_.player(spell_obj.owner).banishment.push_back(resolved.source);
                 state_.player(spell_obj.owner).cards_banished_this_turn++;
             } else {
-                state_.player(resolved.controller).trash.push_back(resolved.source);
+                // A card goes to its OWNER's trash (a spell an opponent played
+                // or controls still lands in its owner's).
+                state_.player(spell_obj.owner).trash.push_back(resolved.source);
             }
 
             events_.emit(SpellResolvedEvent{resolved.source, resolved.controller});
@@ -508,6 +551,7 @@ void ChainManager::stepResolve(
                 dest, false});
             if (to_banish)
                 events_.emit(ObjectStateChangedEvent{resolved.source, "banished_owned"});
+            if (!to_banish && replay_from_trash_) replay_from_trash_(resolved.source);
             }
         }
     }

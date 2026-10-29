@@ -22,10 +22,10 @@ public:
     int disarmValue() const override { return 2; }
     // "Once each turn, when you exhaust three or more friendly units at the
     // same time, you may draw 1." Units exhausted together = the units of one
-    // standard move (GameEngine::executeStandardMove emits "exhausted_together"
-    // with the group size in PlayerState::last_exhaust_group_size).
-    // GAP: other simultaneous exhausts (an effect exhausting several units at
-    // once) don't report a group yet; only standard moves do.
+    // standard move, or a group an effect/cost exhausts at once
+    // (EffectExecutor::exhaustTogether: Unchecked Power, Starry-Eyed
+    // Songstress). Both report through EffectExecutor::reportExhaustedTogether
+    // ("exhausted_together", group size in PlayerState::last_exhaust_group_size).
     TriggerType triggerType() const override { return TriggerType::WhenYouExhaustUnitsTogether; }
     unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     bool triggerCondition(const GameState& state, GameObjectId source, PlayerId controller,

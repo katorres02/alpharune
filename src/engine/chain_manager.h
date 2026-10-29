@@ -88,6 +88,12 @@ public:
     /// [Show Off] (CR 832.1.c.2): decided while a played card (spell or
     /// permanent) is finalized, before a permanent enters the board.
     void setShowOffChoice(FinalizeChoices fn) { show_off_choice_ = std::move(fn); }
+    /// A spell that leaves the chain into its owner's trash while a player
+    /// holds an immediate TrashReplayGrant for it ("Its controller may play
+    /// this spell again for [A]" — Dancing Grenade): the engine pays the
+    /// grant and plays it again from the trash, right away.
+    using ReplayFromTrash = std::function<void(GameObjectId)>;
+    void setReplayFromTrash(ReplayFromTrash fn) { replay_from_trash_ = std::move(fn); }
     using ActivateAbility = std::function<bool(const Intent&)>;
     void setActivateAbility(ActivateAbility fn) { activate_ability_ = std::move(fn); }
 
@@ -99,6 +105,13 @@ public:
     /// Generate legal actions for a player with priority in Closed State.
     std::vector<Intent> generateClosedStateActions(PlayerId player) const;
 
+    /// Where a face-down permanent `card_id` played by `player` lands: the
+    /// battlefield it was hidden at, unless a permission opens others to the
+    /// unit (Last Caress: PlayerState::next_unit_any_battlefield), in which
+    /// case `query_agent` picks one (hidden-at battlefield offered first).
+    LocationId hiddenUnitPlayDestination(GameObjectId card_id, PlayerId player,
+                                         const AgentQuery& query_agent);
+
 private:
     GameState& state_;
     EventBus& events_;
@@ -108,6 +121,7 @@ private:
     ActivateAbility activate_ability_;
     FinalizeChoices finalize_choices_;
     FinalizeChoices show_off_choice_;
+    ReplayFromTrash replay_from_trash_;
     EffectExecutor* executor_ = nullptr;
 
     /// Step 1: Finalize all pending items in order.

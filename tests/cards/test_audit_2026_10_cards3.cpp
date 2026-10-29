@@ -650,9 +650,13 @@ TEST_F(Cards3Test, DancingGrenade_EscalationResetsNextTurn) {
     auto u = addUnit(P2, kInvalidId, 20, 0);
     state.turn.turn_number = 1;
     invokeOnResolve(spell, kDancingGrenade, P1, {u}, exec);
+    // Played again through its own replay ("If they do"): +1 per prior hit.
+    state.getObject(spell).card_counters["__dancing_grenade_replay_turn"] = 1;
+    state.getObject(spell).card_counters["__played_not_from_hand"] = 1;
     invokeOnResolve(spell, kDancingGrenade, P1, {u}, exec);
     EXPECT_EQ(state.getObject(u).damage_marked, 5);   // 2 + 3
     state.turn.turn_number = 2;
+    state.getObject(spell).card_counters["__dancing_grenade_replay_turn"] = 2;
     invokeOnResolve(spell, kDancingGrenade, P1, {u}, exec);
     EXPECT_EQ(state.getObject(u).damage_marked, 7);   // + 2 again
 }

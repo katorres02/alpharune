@@ -47,7 +47,7 @@ public:
         ctx.events.logTrace("SORAKA, WANDERER: heal/exhaust/recall a dying ally here");
         ctx.executor.healObject(dying_unit);
         ctx.executor.exhaustObject(dying_unit);
-        ctx.executor.moveToBase(dying_unit);
+        ctx.executor.recallToBase(dying_unit);
         return true;
     }
 private:

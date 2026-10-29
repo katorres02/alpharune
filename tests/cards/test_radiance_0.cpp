@@ -471,23 +471,7 @@ TEST_F(Radiance0Test, NtofoStrikesDealsDamageEqualToShield) {
     EXPECT_EQ(state.getObject(enemy).damage_marked, 3);
 }
 
-// ── 979 Starry-Eyed Songstress ──────────────────────────────────────────────
-
-TEST_F(Radiance0Test, SongstressExhaustsThreeUnitsForASpellDiscount) {
-    auto legend = addLegend(P1, kSongstress);
-    auto a = addUnit(P1, kInvalidId, 1, 0);
-    auto b = addUnit(P1, kInvalidId, 1, 0);
-    Card* c = card_registry.get(kSongstress);
-    EXPECT_FALSE(c->canActivateAbility(state, P1));
-    auto d = addUnit(P1, kInvalidId, 1);
-    EXPECT_TRUE(c->canActivateAbility(state, P1));
-    driveActivate(kSongstress, P1, legend, Script{}.O(a).O(b).O(d).fn());
-    for (auto id : {a, b, d}) EXPECT_TRUE(state.getObject(id).is_exhausted);
-    const auto& mods = state.player(P1).cost_modifiers;
-    ASSERT_EQ(mods.size(), 1u);
-    EXPECT_TRUE(mods[0].next_spell_only);
-    EXPECT_EQ(mods[0].energy_reduction, 2);
-}
+// 979 Starry-Eyed Songstress: tests/cards/test_gap_costs.cpp.
 
 // ── 980 Encore ──────────────────────────────────────────────────────────────
 

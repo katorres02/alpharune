@@ -16,13 +16,15 @@ class UncheckedPower : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>&) override {
-        // 1. Exhaust all friendly units.
+        // 1. Exhaust all friendly units (at the same time).
+        std::vector<GameObjectId> mine;
         for (auto& [id, obj] : ctx.state.objects) {
             if (obj.isUnit() && obj.controller == ctx.controller &&
                 obj.location.has_value()) {
-                obj.is_exhausted = true;
+                mine.push_back(id);
             }
         }
+        ctx.executor.exhaustTogether(ctx.controller, mine);
         // 2. Deal 12 to every unit currently at any battlefield. Snapshot
         //    first so dealDamage / kill chain doesn't invalidate iterator.
         std::vector<GameObjectId> victims;

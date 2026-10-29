@@ -80,6 +80,7 @@ public:
 private:
     // Reveal the top rune of the rune deck, recycle it, and return its branch.
     int revealAndRecycle(CardContext& ctx) const {
+        ctx.executor.lookBeforeReveal(ctx.controller, ctx.controller, /*rune_deck=*/true);   // Void Hatchling
         auto& ps = ctx.state.player(ctx.controller);
         if (ps.rune_deck.empty()) return kNone;
         GameObjectId rune = ps.rune_deck.back();

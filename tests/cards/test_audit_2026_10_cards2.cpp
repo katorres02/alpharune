@@ -446,22 +446,21 @@ TEST_F(Audit2610Cards2, JayceKillsOnlyTheChosenGear) {
     EXPECT_TRUE(inHand(P1, hand_gear));
 }
 
-TEST_F(Audit2610Cards2, JaycePlaysGearIgnoringEnergy) {
+TEST_F(Audit2610Cards2, JayceGrantsAGearPlayForTheTurn) {
     auto jayce = addUnit(P1, kJayce, 0, 0);
     auto g1 = addGear(P1, kPoroSnax);
     auto hand_gear = addToHand(P1, kTemporalPortal);   // [3], no Power
     EffectExecutor exec(state, events, card_db, &card_registry);
     int call = 0;
     driveResumableTrigger(kJayce, P1, jayce, [&](const std::vector<Intent>& legal) {
-        switch (call++) {
-        case 0: return pickValue(legal, 1);
-        case 1: return pickObj(legal, g1);
-        default: return pickObj(legal, hand_gear);
-        }
+        return call++ == 0 ? pickValue(legal, 1) : pickObj(legal, g1);
     }, exec, TriggerType::WhenYouPlayMe);
     EXPECT_TRUE(inTrash(P1, g1));
-    EXPECT_FALSE(inHand(P1, hand_gear));
-    EXPECT_TRUE(state.getObject(hand_gear).location.has_value());
+    EXPECT_TRUE(inHand(P1, hand_gear)) << "a permission for the turn, not an immediate play";
+    const auto& grants = state.player(P1).ignore_energy_play_grants;
+    ASSERT_EQ(grants.size(), 1u);
+    EXPECT_EQ(grants[0].card_type, CardType::Gear);
+    EXPECT_EQ(grants[0].max_energy_cost, 7);
 }
 
 // ── The Zero Drive: [3][B] replay cost ──

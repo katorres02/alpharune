@@ -17,6 +17,9 @@ std::vector<GameObjectId> Card::objectCostCandidates(
         if (id == self || !obj.isUnit() || obj.controller != player) continue;
         if (!obj.location.has_value()) continue;
         if (kind == OptionalAdditionalCost::ObjectCost::SpendBuff && obj.buff_count <= 0) continue;
+        // An exhausted unit can't be exhausted again to pay (CR 1849 example).
+        if (kind == OptionalAdditionalCost::ObjectCost::ExhaustFriendlyUnit && obj.is_exhausted)
+            continue;
         out.push_back(id);
     }
     std::sort(out.begin(), out.end());
@@ -679,6 +682,67 @@ int Card::pickPlayLocation(CardContext& ctx, GameObjectId card, LocationId& out,
         return encodePlayLocation(ctx.state, a) < encodePlayLocation(ctx.state, b);
     });
     return pickLocationAmong(ctx, card, legal, out, chooser, label);
+}
+
+int Card::pickTokenLocations(CardContext& ctx, int count, std::vector<LocationId>& out,
+                             const std::string& label) {
+    out.clear();
+    if (count <= 0) return 1;
+    const auto legal = ctx.executor.tokenPlayLocations(ctx.controller);
+    auto& ri_opt = ctx.state.chain.resuming;
+    auto fill = [&](const std::vector<int32_t>& counts) {
+        int placed = 0;
+        for (size_t i = 0; i < legal.size() && i < counts.size(); ++i)
+            for (int k = 0; k < counts[i] && placed < count; ++k, ++placed) out.push_back(legal[i]);
+        while (placed++ < count) out.push_back(legal.back());   // the rest: last location
+    };
+    if (legal.size() <= 1 || !ri_opt.has_value()) {
+        out.assign(static_cast<size_t>(count), legal.front());
+        return 1;
+    }
+    auto& ri = *ri_opt;
+    auto remaining = [&]() {
+        int used = 0;
+        for (auto c : ri.token_location_counts) used += c;
+        return count - used;
+    };
+    if (ri.token_location_pending) {
+        ri.token_location_pending = false;
+        auto picked = ctx.executor.takeChoice();
+        int v = picked.has_value() ? picked->chosen_value.value_or(0) : 0;
+        v = std::clamp(v, 0, remaining());
+        ri.token_location_counts.push_back(v);
+        ctx.events.logTrace("LOC_PICKED: " + label + " " + std::to_string(v) + " at " +
+                            playLocationName(ctx.state, legal[ri.token_location_counts.size() - 1]));
+    }
+    // Ask for the next location while tokens remain (the last one takes the rest).
+    while (ri.token_location_counts.size() + 1 < legal.size()) {
+        const int rest = remaining();
+        if (rest <= 0) { ri.token_location_counts.push_back(0); continue; }
+        const auto& loc = legal[ri.token_location_counts.size()];
+        std::vector<Intent> options;
+        for (int v = 0; v <= rest; ++v) {
+            Intent i;
+            i.type = IntentType::MakeChoice;
+            i.player = ctx.controller;
+            i.chosen_value = v;
+            i.choice_label = label + ": " + std::to_string(v) + " at " +
+                             playLocationName(ctx.state, loc);
+            options.push_back(std::move(i));
+        }
+        ctx.events.logTrace("LOC_PROMPT: " + label + " how many of " + std::to_string(rest) +
+                            " at " + playLocationName(ctx.state, loc) + " (agent decides)");
+        ctx.executor.requestChoice(ctx.controller, std::move(options),
+                                   label + ": how many at " + playLocationName(ctx.state, loc));
+        ri.token_location_pending = true;
+        if (choicesAtFinalization() != 0 && !ri.finalizing && !ri.choices_finalized) {
+            ri.choices_finalized = true;
+            ri.finalize_costs_paid = true;
+        }
+        return -1;
+    }
+    fill(ri.token_location_counts);
+    return 1;
 }
 
 int Card::pickLocationAmong(CardContext& ctx, GameObjectId card,

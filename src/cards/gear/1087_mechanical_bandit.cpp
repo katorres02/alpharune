@@ -23,6 +23,7 @@ public:
         struct Rev { PlayerId p; GameObjectId card; int cost; };
         std::vector<Rev> revealed;
         for (auto p : {ctx.controller, opponent(ctx.controller)}) {
+            ctx.executor.lookBeforeReveal(p, p);   // Void Hatchling (each player reveals)
             auto& deck = ctx.state.player(p).main_deck;
             if (deck.empty()) continue;
             GameObjectId top = deck.back();

@@ -35,19 +35,19 @@ public:
         if (picked != kInvalidId) {
             ctx.executor.stunUnit(picked);
         }
-        // "If you played this from your hand, draw 1." A [Hidden] play from
-        // face down (GameEngine::executePlayFromHidden stamps
-        // __played_from_facedown) is not from hand. The marker is consumed so
-        // a later play of this card from hand draws again.
-        // GAP: a play from the trash (a trash-replay grant) is not recorded on
-        // the object and still reads as "from hand".
+        // "If you played this from your hand, draw 1." Every play records
+        // where it came from (card_counters["__played_not_from_hand"]: the
+        // engine's play paths, a [Hidden] play from face down, and an effect's
+        // play from the trash / banishment). Absent = a direct invocation.
         bool from_hand = true;
         if (ctx.state.objectExists(ctx.source)) {
             auto& self = ctx.state.getObject(ctx.source);
-            auto it = self.card_counters.find("__played_from_facedown");
-            if (it != self.card_counters.end() && it->second == 1) {
+            auto it = self.card_counters.find("__played_not_from_hand");
+            if (it != self.card_counters.end() && it->second == 1) from_hand = false;
+            auto fd = self.card_counters.find("__played_from_facedown");
+            if (fd != self.card_counters.end() && fd->second == 1) {
                 from_hand = false;
-                it->second = 0;
+                fd->second = 0;   // consumed: a later play from hand draws again
             }
         }
         if (from_hand) ctx.executor.drawCards(ctx.controller, 1);

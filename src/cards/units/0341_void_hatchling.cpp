@@ -13,10 +13,10 @@ namespace {
 
 // "If you would reveal cards from a deck, look at the top card first. You may
 //  recycle it. Then reveal those cards." Wired via PlayerState::has_reveal_peek
-//  (set in applyPassiveAura): EffectExecutor::revealUntil / revealAndChoose peek
-//  the top card and offer to recycle it (agent yes/no) before revealing.
-//  APPROX: applies to the reveal helpers (revealUntil/revealAndChoose), the
-//  engine's reveal-from-deck paths.
+//  (set in applyPassiveAura). Every reveal from a deck (Main or Rune; the reveal
+//  helpers revealUntil / revealAndChoose and each card that reveals the top of
+//  a deck) first calls EffectExecutor::lookBeforeReveal: the revealing player
+//  privately looks at the top card and chooses (yes/no) whether to recycle it.
 class VoidHatchling : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }

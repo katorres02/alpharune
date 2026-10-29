@@ -18,8 +18,11 @@ public:
     const CardDef& def() const override { return def_; }
 
     // "[Deploy]" (DeployGear). "Opponents must pay [1][A] to move one or more
-    // units to this battlefield." -> BattlefieldState::move_tax_* (paid once
-    // per standard move by the engine). "[Deathknell][>] Draw 1."
+    // units to this battlefield." -> BattlefieldState::move_tax_*, an applied
+    // cost (CR 204.4) on every move an opponent makes here: once per standard
+    // move (a group counts once) and once per effect move — a spell's or
+    // ability's move is a move too (CR 451). See moveAppliedCost; unpaid, the
+    // move doesn't happen (204.4.c). "[Deathknell][>] Draw 1."
     void applyPassiveAura(GameState& state, PlayerId controller) const override {
         forEachSelfOnce(*this, state, controller, [&](GameObjectId, GameObject& self) {
             auto bf = self.battlefieldId();

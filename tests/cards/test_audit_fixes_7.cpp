@@ -532,21 +532,32 @@ TEST_F(AuditFix7Test, HextechGauntlets_ConquerRiderDraws) {
 // "First time a player plays a non-token unit here each turn, they may move
 //  another unit they control here to its base."
 
+// The trigger's subject is the played unit (TriggerManager passes it), and the
+// unit to move is the player's choice: answer "yes", then pick `pick`.
+static Intent pickYesThen(const std::vector<Intent>& legal, GameObjectId pick) {
+    for (const auto& i : legal)
+        if (!i.chosen_objects.empty() && i.chosen_objects.front() == pick) return i;
+    for (const auto& i : legal)
+        if (i.chosen_value.value_or(-1) == 1) return i;
+    return legal.front();
+}
+
 TEST_F(AuditFix7Test, StarSpring_MovesAnotherUnitToBase) {
     EffectExecutor exec(state, events, card_db);
     exec.setCardRegistry(&card_registry);
     auto src = installBattlefieldCard(0, 771);
     state.turn.turn_number = 1;
-    // Create `other` FIRST so `played` gets the higher id — the impl treats the
-    // newest unit at the BF as the just-played one (no played-unit id is plumbed
-    // through the trigger) and moves a DIFFERENT unit to base.
-    auto other = addUnit(P1, kInvalidId, /*might=*/2, /*at_bf=*/0);
+    // `played` is created FIRST (lower id): the played unit comes from the
+    // trigger subject, not from "the newest unit here".
     auto played = addUnit(P1, kInvalidId, /*might=*/3, /*at_bf=*/0);
-    ASSERT_GT(played, other);
+    auto other = addUnit(P1, kInvalidId, /*might=*/2, /*at_bf=*/0);
+    ASSERT_TRUE(card_registry.get(771)->triggerCondition(state, src, P1,
+                TriggerType::WhenYouPlayAUnit, played));
 
-    fireTriggerAs(771, P1, src, TriggerType::WhenYouPlayAUnit, exec);
+    driveResumableTrigger(771, P1, src,
+        [&](const std::vector<Intent>& l) { return pickYesThen(l, other); },
+        exec, TriggerType::WhenYouPlayAUnit, /*subject=*/played);
 
-    // `other` moved to its base; `played` stays at the battlefield.
     EXPECT_TRUE(state.getObject(other).isAtBase());
     EXPECT_TRUE(state.getObject(played).isAtBattlefield());
 }
@@ -558,17 +569,19 @@ TEST_F(AuditFix7Test, StarSpring_OnlyFiresOncePerTurnPerPlayer) {
     state.turn.turn_number = 1;
     auto other = addUnit(P1, kInvalidId, 2, /*at_bf=*/0);
     auto played = addUnit(P1, kInvalidId, 3, /*at_bf=*/0);
-    ASSERT_GT(played, other);
+    Card* c = card_registry.get(771);
 
-    fireTriggerAs(771, P1, src, TriggerType::WhenYouPlayAUnit, exec);
-    // First fire moved `other` to base. Bring it back to BF 0 and re-fire.
-    state.getObject(other).zone = ZoneType::BattlefieldZone;
-    state.getObject(other).location = BattlefieldLocation{0};
+    driveResumableTrigger(771, P1, src,
+        [&](const std::vector<Intent>& l) { return pickYesThen(l, other); },
+        exec, TriggerType::WhenYouPlayAUnit, played);
+    EXPECT_TRUE(state.getObject(other).isAtBase());
 
-    fireTriggerAs(771, P1, src, TriggerType::WhenYouPlayAUnit, exec);
-
-    // Already consumed this turn for this player -> no second move.
-    EXPECT_TRUE(state.getObject(other).isAtBattlefield());
+    // Already consumed this turn for this player: a second play doesn't trigger.
+    EXPECT_FALSE(c->triggerCondition(state, src, P1, TriggerType::WhenYouPlayAUnit, played));
+    // The other player's first play still does; and a new turn resets it.
+    EXPECT_TRUE(c->triggerCondition(state, src, P2, TriggerType::WhenYouPlayAUnit, played));
+    state.turn.turn_number = 2;
+    EXPECT_TRUE(c->triggerCondition(state, src, P1, TriggerType::WhenYouPlayAUnit, played));
 }
 
 TEST_F(AuditFix7Test, StarSpring_NoOpWhenNoOtherUnitHere) {
@@ -578,39 +591,28 @@ TEST_F(AuditFix7Test, StarSpring_NoOpWhenNoOtherUnitHere) {
     state.turn.turn_number = 1;
     auto played = addUnit(P1, kInvalidId, 3, /*at_bf=*/0);  // only one unit here
 
-    fireTriggerAs(771, P1, src, TriggerType::WhenYouPlayAUnit, exec);
+    driveResumableTrigger(771, P1, src,
+        [&](const std::vector<Intent>& l) { return pickYesThen(l, played); },
+        exec, TriggerType::WhenYouPlayAUnit, played);
 
     EXPECT_TRUE(state.getObject(played).isAtBattlefield());  // nothing else to move
 }
 
-TEST_F(AuditFix7Test, StarSpring_IgnoresTokenOnlyPlay) {
-    EffectExecutor exec(state, events, card_db);
-    exec.setCardRegistry(&card_registry);
+TEST_F(AuditFix7Test, StarSpring_IgnoresTokenPlay) {
     auto src = installBattlefieldCard(0, 771);
     state.turn.turn_number = 1;
-    // ONLY token units at this BF -> the impl finds no non-token unit to treat
-    // as the "played" unit, so the trigger body returns without moving anyone.
-    auto mkToken = [&]() {
-        auto tok = state.createObject();
-        auto& t = state.getObject(tok);
-        t.owner = P1; t.controller = P1;
-        t.card_type = CardType::Unit;
-        t.super_type = SuperType::Token;
-        t.base_might = 2; t.current_might = 2;
-        t.zone = ZoneType::BattlefieldZone;
-        t.location = BattlefieldLocation{0};
-        return tok;
-    };
-    auto tok1 = mkToken();
-    auto tok2 = mkToken();
-
-    fireTriggerAs(771, P1, src, TriggerType::WhenYouPlayAUnit, exec);
-
-    // No non-token unit identified as "played" -> nothing moves.
-    EXPECT_TRUE(state.getObject(tok1).isAtBattlefield());
-    EXPECT_TRUE(state.getObject(tok2).isAtBattlefield());
-    // Gate not consumed (returned before the decision).
-    EXPECT_EQ(state.getObject(src).card_counters["__starspring_p0"], 0);
+    auto tok = state.createObject();
+    auto& t = state.getObject(tok);
+    t.owner = P1; t.controller = P1;
+    t.card_type = CardType::Unit;
+    t.super_type = SuperType::Token;
+    t.is_token = true;
+    t.base_might = 2; t.current_might = 2;
+    t.zone = ZoneType::BattlefieldZone;
+    t.location = BattlefieldLocation{0};
+    // "The first time a player plays a NON-TOKEN unit here": a token doesn't trigger.
+    EXPECT_FALSE(card_registry.get(771)->triggerCondition(state, src, P1,
+                 TriggerType::WhenYouPlayAUnit, tok));
 }
 
 } // namespace

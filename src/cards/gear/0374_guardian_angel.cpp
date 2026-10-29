@@ -29,7 +29,7 @@ public:
         ctx.executor.killObject(ctx.source);       // kill Guardian Angel instead
         ctx.executor.healObject(dying_unit);        // heal me
         ctx.executor.exhaustObject(dying_unit);     // exhaust me
-        ctx.executor.moveToBase(dying_unit);        // recall me
+        ctx.executor.recallToBase(dying_unit);        // recall me
         return true;
     }
 private:

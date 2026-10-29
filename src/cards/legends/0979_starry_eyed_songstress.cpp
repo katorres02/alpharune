@@ -20,48 +20,19 @@ public:
     const CardDef& def() const override { return def_; }
     // "As an additional cost to play a spell, you may exhaust me and three
     // friendly units to reduce the cost of that spell by [2]."
-    // GAP: the engine has no hook for an additional cost granted to spells by
-    // another card. Modelled as a [Reaction] ability ("[E], exhaust three
-    // friendly units: the next spell you play this turn costs [2] less") that
-    // the player uses just before playing the spell; it goes on the chain and
-    // its discount can go unused.
-    unsigned choicesAtFinalization() const override { return kFinalizeActivate; }
-    bool hasActivatedAbility() const override { return true; }
-    bool isReactionAbility() const override { return true; }
-    ActivationCost getActivationCost() const override {
-        ActivationCost c;
-        c.exhaust = true;
-        return c;
-    }
-    bool canActivateAbility(const GameState& state, PlayerId controller) const override {
-        return readyUnits(state, controller).size() >= 3;
-    }
-    void onActivate(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
-        if (!costAlreadyPaid(ctx)) {
-            auto picked = pickSeveral(ctx, ctx.controller, "Starry-Eyed Songstress: exhaust a friendly unit",
-                                      readyUnits(ctx.state, ctx.controller), false, {}, 3, 3, 8);
-            if (!picked) return;                   // waiting for the agent
-            if (picked->size() < 3) return;        // the cost can't be paid
-            if (costDueNow(ctx))
-                for (int v : *picked) ctx.executor.exhaustObject(static_cast<GameObjectId>(v));
-        }
-        if (finalizingChoices(ctx)) return;
-        PlayerState::CostModifier m;
-        m.source = ctx.source;
-        m.energy_reduction = 2;
-        m.next_spell_only = true;
-        m.this_turn_only = true;
-        ctx.state.player(ctx.controller).cost_modifiers.push_back(m);
-        ctx.events.logTrace("STARRY-EYED SONGSTRESS: next spell costs [2] less");
-    }
-private:
-    static std::vector<int> readyUnits(const GameState& state, PlayerId player) {
-        std::vector<int> out;
-        for (const auto& [id, o] : state.objects)
-            if (o.isUnit() && o.controller == player && o.location.has_value() && !o.is_exhausted)
-                out.push_back(static_cast<int>(id));
-        std::sort(out.begin(), out.end());
-        return out;
+    // An optional additional cost she grants every spell her controller plays
+    // (Card::grantedSpellAdditionalCost): offered as the spell is played,
+    // before its rune cost (GameEngine::payGrantedSpellCosts); the player
+    // picks the three ready units, and the discount applies to that spell.
+    GrantedSpellCost grantedSpellAdditionalCost(const GameState& /*state*/,
+                                                PlayerId /*controller*/,
+                                                GameObjectId /*self*/) const override {
+        GrantedSpellCost g;
+        g.valid = true;
+        g.exhaust_self = true;
+        g.exhaust_friendly_units = 3;
+        g.reduce_energy = 2;
+        return g;
     }
 private:
     const CardDef def_ = [] {

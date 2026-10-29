@@ -19,9 +19,9 @@ public:
     // "For each player, the first unit or gear they play here on their turn
     // costs [1] less." BattlefieldState::first_play_here_discount; the engine
     // takes it off the first such play per player per turn (stamped in
-    // first_play_here_turn) as it is paid.
-    // GAP: the action generator's affordability check doesn't know where the
-    // card goes, so a card payable only with this discount isn't offered.
+    // first_play_here_turn) as it is paid. The play generators price each
+    // location with it (GameEngine::firstPlayHereDiscount), so a card payable
+    // only with the discount is offered to this battlefield.
     void applyPassiveAura(GameState& state, PlayerId /*controller*/) const override {
         for (auto& bf : state.battlefields) {
             if (!state.objectExists(bf.card_object_id)) continue;

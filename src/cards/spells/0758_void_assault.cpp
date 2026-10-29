@@ -17,13 +17,12 @@ public:
     const CardDef& def() const override { return def_; }
     // "Move a friendly unit, then move an enemy unit. (If they both move to a
     //  battlefield you don't control, you're the attacker.)"
-    // The agent now picks a destination (the controller's base, or any
-    // battlefield) that both moved units go to, instead of always forcing base.
-    // ENGINE GAP: the parenthetical "you're the attacker" designation when both
-    // units land on an enemy battlefield is NOT applied — there is no per-card
-    // hook to designate the controller as the attacker / open a showdown
-    // mid-resolution. Movement itself is faithful; only the attacker-status
-    // rider is unimplemented.
+    // The agent picks a destination (base — each unit's own — or a
+    // battlefield) that both moved units go to.
+    // "If they both move to a battlefield you don't control, you're the
+    // attacker": EffectExecutor::contestAsAttacker makes the controller the
+    // contesting player there, and the combat staged at the next cleanup takes
+    // its attacker from the contester (GameEngine::runCombat).
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
         if (targets.size() < 2) return;
         // Build destination menu: base + each battlefield.
@@ -40,14 +39,22 @@ public:
         if (chosen == -1) return;  // waiting on agent
         if (chosen < 0 || static_cast<size_t>(chosen) >= dests.size()) chosen = 0;
         auto move = [&](GameObjectId u) {
-            if (!ctx.state.objectExists(u)) return;
-            if (dests[chosen].has_value()) ctx.executor.moveToBattlefield(u, *dests[chosen]);
-            else ctx.executor.moveToBase(u);
+            if (!ctx.state.objectExists(u)) return false;
+            if (dests[chosen].has_value()) return ctx.executor.moveToBattlefield(u, *dests[chosen]);
+            return ctx.executor.moveToBase(u);
         };
-        move(targets[0]);   // friendly
-        move(targets[1]);   // enemy
-        ctx.events.logTrace("VOID ASSAULT: moved both units (attacker designation "
-                            "not engine-applied)");
+        const bool friendly_moved = move(targets[0]);   // friendly
+        const bool enemy_moved = move(targets[1]);      // enemy
+        ctx.events.logTrace("VOID ASSAULT: moved both units");
+        if (friendly_moved && enemy_moved && dests[chosen].has_value()) {
+            const BattlefieldId bf = *dests[chosen];
+            for (const auto& b : ctx.state.battlefields) {
+                if (b.id != bf) continue;
+                if (b.controller.has_value() && *b.controller == ctx.controller) break;
+                ctx.executor.contestAsAttacker(bf, ctx.controller);
+                break;
+            }
+        }
     }
     TargetRequirements getTargetRequirements() const override {
         return TargetRequirements{.count = 2, .must_be_unit = true};

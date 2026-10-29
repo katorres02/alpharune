@@ -24,12 +24,10 @@ public:
     // ranges the Card::pick* / confirmOptional helpers use) and
     // resume_data = [readied so far, token, token, ...].
     //
-    // ENGINE-GAP: the tokens always go to the controller's base. CR 185.2.a /
-    // 355.2.a let the controller choose, for each token played, their base or
-    // a battlefield they control. One location prompt per token (one token per
-    // Equipment) plus the ready picks can exceed the 16 re-entries
-    // ChainManager::stepResolve allows per resolution. Needed: a batched
-    // "choose locations" decision, or a higher re-entry cap.
+    // The tokens are played (CR 185.2.a), so each goes to the controller's
+    // base or a battlefield they control (355.2.a): Card::pickTokenLocations
+    // asks "how many at <location>" per location but the last — the tokens
+    // are identical — so the prompts stay few however many Equipment.
     static constexpr int kAwaitReady = 20;
     static constexpr int kDone = 21;
 
@@ -100,9 +98,10 @@ public:
             if (is_equip) ++equip_count;
         }
         if (equip_count <= 0) return;
-        LocationId loc{BaseLocation{ctx.controller}};
+        std::vector<LocationId> where;
+        if (pickTokenLocations(ctx, equip_count, where, "Arise!: Sand Soldiers") < 0) return;
         std::vector<GameObjectId> made;
-        for (int i = 0; i < equip_count; ++i) {
+        for (const auto& loc : where) {
             // CR 187.3: a Sand Soldier token has 2 Might and the Shurima tag.
             auto tok = ctx.executor.createToken(ctx.controller, CardType::Unit,
                                                 "Sand Soldier", 2, {"Shurima"},

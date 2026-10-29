@@ -489,6 +489,19 @@ public:
                          PlayerId chooser = PlayerId::None,
                          const std::string& label = "play location",
                          const std::vector<LocationId>& extra = {});
+    /// Where `count` unit tokens this effect plays go (CR 185.2.a: a token
+    /// is played, so 355.2.a applies — each goes to the controller's base or a
+    /// battlefield they control; EffectExecutor::tokenPlayLocations). The
+    /// tokens are identical, so the controller answers "how many at <loc>"
+    /// for each legal location but the last (MakeChoice chosen_value = that
+    /// number), which takes the rest — at most (#locations - 1) prompts
+    /// however many tokens. Returns -1 waiting for the agent (return at
+    /// once; call before mutating state), else 1 with `out` = one location
+    /// per token. Answers live on ChainItem::token_location_counts, apart
+    /// from the resume_point ranges; one call per resolving item. Outside a
+    /// chain, or with one legal location, all go to the first (base).
+    int pickTokenLocations(CardContext& ctx, int count, std::vector<LocationId>& out,
+                           const std::string& label = "token location");
     /// Same, among an explicit list ("plays it to any battlefield").
     int pickLocationAmong(CardContext& ctx, GameObjectId card,
                           const std::vector<LocationId>& legal, LocationId& out,
@@ -718,7 +731,9 @@ public:
         //   Wallop / Call to Glory: SpendBuff, optional, ignore_base_cost.
         //   Kraken Hunter: SpendBuff, any number, [O] less each.
         //   Ekko, Ingenious: ReturnFriendlyUnit, mandatory.
-        enum class ObjectCost : uint8_t { None, KillFriendlyUnit, ReturnFriendlyUnit, SpendBuff };
+        //   Ki Burst: ExhaustFriendlyUnit (a ready one), mandatory.
+        enum class ObjectCost : uint8_t { None, KillFriendlyUnit, ReturnFriendlyUnit, SpendBuff,
+                                          ExhaustFriendlyUnit };
         ObjectCost object_cost = ObjectCost::None;
         // "As an additional cost" without "may" (CR 356.2.a): the card can't
         // be played unless min_objects can be paid; declining isn't offered.
@@ -757,6 +772,26 @@ public:
     virtual std::vector<GameObjectId> objectCostCandidates(
         const GameState& state, PlayerId player, GameObjectId self,
         const std::optional<LocationId>& play_location) const;
+
+    // ── Additional cost this card grants its controller's spells ──
+    /// "As an additional cost to play a spell, you may exhaust me and three
+    /// friendly units to reduce the cost of that spell by [2]" (Starry-Eyed
+    /// Songstress). Consulted on the cards its controller has on the board or
+    /// in the legend zone whenever they play a spell (GameEngine::
+    /// payGrantedSpellCosts): the player decides as the spell is played,
+    /// before its rune cost (CR 356.2.b), picks the units, and the discount
+    /// applies to that spell. canAfford counts it when it could be paid.
+    struct GrantedSpellCost {
+        bool valid = false;
+        bool exhaust_self = false;       // "exhaust me"
+        int exhaust_friendly_units = 0;  // "and N friendly units" (ready ones)
+        int reduce_energy = 0;           // "reduce the cost of that spell by [N]"
+    };
+    virtual GrantedSpellCost grantedSpellAdditionalCost(const GameState& /*state*/,
+                                                        PlayerId /*controller*/,
+                                                        GameObjectId /*self*/) const {
+        return {};
+    }
 
     // ── Alternative play cost ──
     /// "You may play me for <alt cost> [instead of my printed cost]" when a

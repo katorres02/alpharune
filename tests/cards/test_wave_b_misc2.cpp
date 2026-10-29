@@ -1,5 +1,5 @@
 /// @file test_wave_b_misc2.cpp
-///   Mageseeker Investigator (725) — sets BattlefieldState::surcharge_enemy_multi_move
+///   Mageseeker Investigator (725) — sets BattlefieldState::multi_move_surcharge_power
 ///   The Dreaming Tree (287)       — first friendly-unit choice here each turn -> draw 1
 
 #include "tests/cards/card_test_fixture.h"
@@ -14,10 +14,12 @@ constexpr CardDefId kDreamingTree = 287;
 
 TEST_F(Misc2Test, MageseekerInvestigator_FlagsItsBattlefield) {
     addUnit(P1, kInvestigator, 4, /*at_bf=*/0);
-    EXPECT_FALSE(state.battlefields[0].surcharge_enemy_multi_move);
+    EXPECT_EQ(state.battlefields[0].multi_move_surcharge_power[playerIndex(P2)], 0);
     card_registry.get(kInvestigator)->applyPassiveAura(state, P1);
-    EXPECT_TRUE(state.battlefields[0].surcharge_enemy_multi_move);
-    EXPECT_FALSE(state.battlefields[1].surcharge_enemy_multi_move);
+    EXPECT_EQ(state.battlefields[0].multi_move_surcharge_power[playerIndex(P2)], 1);
+    EXPECT_EQ(state.battlefields[0].multi_move_surcharge_power[playerIndex(P1)], 0)
+        << "only opponents pay";
+    EXPECT_EQ(state.battlefields[1].multi_move_surcharge_power[playerIndex(P2)], 0);
 }
 
 TEST_F(Misc2Test, DreamingTree_DrawsOncePerTurn) {

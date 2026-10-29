@@ -93,6 +93,16 @@ public:
     // ── Atomic game operations ──
     void dealDamage(GameObjectId target, int amount, GameObjectId source);
     void killObject(GameObjectId target);
+    /// Exhaust several objects at the same time (an effect or cost that
+    /// exhausts a group): each ready one becomes exhausted ("exhausted" state
+    /// event), then the friendly units among them are reported as exhausted
+    /// together by `by` (reportExhaustedTogether).
+    void exhaustTogether(PlayerId by, const std::vector<GameObjectId>& objects);
+    /// "When you exhaust N or more friendly units at the same time"
+    /// (Seraphine, Inspiring): `units` were just exhausted together by `by`;
+    /// the ones that are `by`'s units set PlayerState::last_exhaust_group_size
+    /// and emit "exhausted_together". Used by standard moves and exhaustTogether.
+    void reportExhaustedTogether(PlayerId by, const std::vector<GameObjectId>& units);
     /// Fill GameObject::last_known from the object's current state (called by
     /// the kill paths just before it dies).
     void snapshotLastKnown(GameObjectId id);
@@ -110,7 +120,26 @@ public:
     /// nothing, if the unit has no buff. Every "spend a buff" goes through here.
     bool spendBuff(GameObjectId unit);
     void readyObject(GameObjectId target);
-    void moveToBase(GameObjectId target);
+    // ── Moves and recalls (CR 447-460; rules in core/move_rules.h) ──
+    // An effect move is a Move: the unit's and battlefield's movement
+    // restrictions apply ("can't move this turn", "can't move to base",
+    // "can't be moved by enemy spells and abilities", "can't move from here to
+    // base"), and so do applied costs on moving (Gravity Field, Mageseeker
+    // Investigator), paid by `mover` — the resolving item's controller when
+    // left None. A move that is forbidden, or whose applied cost is not paid,
+    // doesn't happen; these return whether the unit moved.
+    bool moveToBase(GameObjectId target, PlayerId mover = PlayerId::None);
+    /// Recall (CR 457-460): send `target` to its controller's base. Not a
+    /// Move: no movement restriction applies, no move triggers fire, and its
+    /// damage and statuses are unaffected. Attached gear goes with it.
+    void recallToBase(GameObjectId target);
+    /// Move several units to one destination at the same time (one move,
+    /// CR 144.3 / 204.4): the applied cost is charged once for the group
+    /// (Mageseeker's [A] per unit beyond the first). Units that can't move
+    /// are left out. Returns the units that moved.
+    std::vector<GameObjectId> moveUnitsTogether(const std::vector<GameObjectId>& units,
+                                                const LocationId& dest,
+                                                PlayerId mover = PlayerId::None);
     /// Unattach a single gear from the unit it's equipped to. Removes it from
     /// the unit's attachment list, refunds the unit's might bonus, and clears
     /// the gear's attachment state. Per CR 719.5 the detached gear stays at
@@ -120,7 +149,13 @@ public:
     /// emits UnitMovedEvent. Caller is responsible for any contested-status
     /// re-evaluation downstream (cleanup recomputes BF contested flags).
     /// `from_play` is false: this is a card-effect-driven move, not a play.
-    void moveToBattlefield(GameObjectId target, BattlefieldId bf);
+    bool moveToBattlefield(GameObjectId target, BattlefieldId bf, PlayerId mover = PlayerId::None);
+    /// "If they both move to a battlefield you don't control, you're the
+    /// attacker" (Void Assault): `player` applies Contested at `bf` (CR 190.3),
+    /// so the combat staged there has them as the attacker (runCombat takes the
+    /// attacker from the contesting player). No-op if `player` controls `bf` or
+    /// a showdown / combat is already under way there.
+    void contestAsAttacker(BattlefieldId bf, PlayerId player);
     void stunUnit(GameObjectId target);
     /// Stun + attribute to the controller of `stunner_source`. Use this from
     /// card effects so the resulting UnitStunnedEvent identifies the stunner
@@ -238,6 +273,21 @@ public:
                                       PlayerId new_controller,
                                       GameObjectId source);
 
+    // ── Entering the board ready ──
+    /// How a unit is entering the board (asked of unitEntersReady).
+    enum class UnitEntry { PlayedFromChain, PlayedByEffect, Token };
+    /// The one decision point for "enters ready" effects, asked by every way
+    /// a unit enters the board (a play resolving from the chain, an effect
+    /// playing it, a token being played): the unit's own "I enter ready"
+    /// (Card::entersReadyOnPlay, not for tokens), "units you play this turn
+    /// enter ready" (PlayerState::units_enter_ready_this_turn), "other units
+    /// enter ready" (TurnState::all_units_enter_ready), the controller's other
+    /// cards' continuous effects (Card::grantsEnterReadyTo), "your units enter
+    /// ready" (PlayerState::units_enter_ready) and "your tokens enter ready"
+    /// (PlayerState::tokens_enter_ready). `unit` is already at its destination.
+    bool unitEntersReady(PlayerId controller, const GameObject& unit,
+                         UnitEntry how) const;
+
     // ── Token creation ──
     /// Create a token game object and place it on the board.
     GameObjectId createToken(PlayerId controller, CardType type,
@@ -273,6 +323,12 @@ public:
     void copyUnit(GameObjectId token, GameObjectId source);
 
     // ── Composite operations ──
+    /// "If you would reveal cards from a deck, look at the top card first. You
+    /// may recycle it. Then reveal those cards." (Void Hatchling; the
+    /// revealer's PlayerState::has_reveal_peek). Every reveal from a deck calls
+    /// this first: `revealer` looks at the top card of `deck_owner`'s Main Deck
+    /// (or Rune Deck) and chooses whether to recycle it.
+    void lookBeforeReveal(PlayerId revealer, PlayerId deck_owner, bool rune_deck = false);
     std::pair<GameObjectId, std::vector<GameObjectId>>
         revealUntil(PlayerId player, CardType condition);
     /// Play `card` from its current zone onto the board without paying
@@ -329,6 +385,15 @@ public:
         can_afford_ = std::move(can);
         pay_cost_ = std::move(pay);
     }
+    /// The engine's applied / additional cost path (energy + any-domain
+    /// power), injected so effect moves can charge applied move costs.
+    /// `pay` = false only checks. Without it, applied costs are not charged.
+    using AppliedCostFn = std::function<bool(PlayerId, int energy, int power, bool pay)>;
+    void setAppliedCostFn(AppliedCostFn fn) { applied_cost_ = std::move(fn); }
+    /// Token play locations for `player` (CR 185.2.a + 355.2.a): their base
+    /// and the battlefields they control (not a "can't be played here" one);
+    /// base only under "units can only be played to your base".
+    std::vector<LocationId> tokenPlayLocations(PlayerId player) const;
 
     /// Predict N: look at top N cards, agent chooses which to recycle (put back on bottom).
     void predict(PlayerId player, int count);
@@ -400,6 +465,12 @@ private:
     QueueTriggerFn queue_trigger_;
     RechooseFn rechoose_;
     PayCostFn pay_cost_;
+    AppliedCostFn applied_cost_;
+    /// Shared body of the effect moves; `charge` = pay the applied cost here
+    /// (false when moveUnitsTogether charged it for the group).
+    bool effectMove(GameObjectId target, const LocationId& dest, PlayerId mover, bool charge);
+    /// Ask `mover` to pay an applied move cost; false if unpaid.
+    bool payMoveCost(PlayerId mover, const LocationId& dest, int unit_count);
     const CardRegistry* card_registry_ = nullptr;  // optional; needed for playIgnoringCost onPlay dispatch
     std::mt19937_64* rng_ = nullptr;
     AgentChoiceQuery agent_query_;

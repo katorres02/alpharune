@@ -32,7 +32,9 @@ public:
 
     bool grantsEnterReadyTo(const GameState& state, GameObjectId self,
                             const GameObject& played) const override {
-        return played.isUnit() && armed(state, self);
+        // A token entering the board doesn't fire WhenYouPlayAUnit (which
+        // disarms me), so the one-shot is kept for a played card.
+        return played.isUnit() && !played.is_token && armed(state, self);
     }
 
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayAUnit; }

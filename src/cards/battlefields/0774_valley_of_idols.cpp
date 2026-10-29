@@ -29,16 +29,9 @@ public:
         }
         if (here == kInvalidId) return;
 
-        // Find the just-played unit: newest non-token unit of ctx.controller
-        // sitting here. (Trigger carries no played-object id.)
-        GameObjectId played = kInvalidId;
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (!obj.isUnit() || obj.controller != ctx.controller) continue;
-            if (obj.isToken()) continue;
-            auto bf = obj.battlefieldId();
-            if (!bf || *bf != here) continue;
-            if (played == kInvalidId || id > played) played = id;  // newest id heuristic
-        }
+        // The unit that was played here: the trigger's subject.
+        const GameObjectId played = ctx.state.chain.resuming
+            ? ctx.state.chain.resuming->triggering_subject : kInvalidId;
         if (played == kInvalidId) return;
 
         // Find a ready rune to pay [1].

@@ -21,11 +21,11 @@ public:
     // "The next unit you play this turn, even from face down, can be played to
     // any battlefield. When you play it, [Buff] it."
     // PlayerState::next_unit_any_battlefield opens every battlefield to the
-    // next unit played from hand (cleared when a unit is played); the buff is a
-    // delayed "when you play a unit" ability whose subject is that unit.
-    // GAP: a face-down card is still played at the battlefield it was hidden
-    // at — the engine's face-down play has no location choice — though it does
-    // count as the next unit and gets the buff.
+    // next unit played (cleared when a unit is played): from hand through
+    // legalPlayLocations, from face down through executePlayFromHidden, which
+    // then lets the player pick any battlefield instead of the one it was
+    // hidden at. The buff is a delayed "when you play a unit" ability whose
+    // subject is that unit.
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         ctx.state.player(ctx.controller).next_unit_any_battlefield = true;
         DelayedAbility da;

@@ -23,6 +23,7 @@ public:
     //  unit with 5+ printed Might.
     TriggerType triggerType() const override { return TriggerType::WhenIMove; }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>&) override {
+        ctx.executor.lookBeforeReveal(ctx.controller, ctx.controller);   // Void Hatchling
         auto& deck = ctx.state.player(ctx.controller).main_deck;
         if (deck.empty()) return;
         const GameObjectId top = deck.back();

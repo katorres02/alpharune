@@ -19,26 +19,15 @@ public:
     const CardDef& def() const override { return def_; }
 
     // "Once each turn, while I'm at a battlefield, you may pay [1][A] less to
-    // play a gear." A from_aura cost modifier offered while I'm at a battlefield
-    // and unused this turn; it counts as used once a gear is played while it is
-    // offered (gears_played_this_turn rises past the value seen when offered).
-    // APPROX: the discount is always taken on the first such gear (paying less
-    // is never worse); the player can't save it for a later gear this turn.
+    // play a gear." An optional from_aura cost modifier offered while I'm at a
+    // battlefield and unused this turn: the player chooses whether to take it
+    // as each gear is paid for (GameEngine::decideOptionalCostModifiers);
+    // taking it stamps the turn into my "__ori_used_turn" counter.
     void applyPassiveAura(GameState& state, PlayerId controller) const override {
         forEachSelfOnce(*this, state, controller, [&](GameObjectId sid, GameObject& self) {
-            auto& c = self.card_counters;
-            const int turn = state.turn.turn_number;
-            const int gears = state.player(controller).gears_played_this_turn;
-            auto t = c.find("__ori_turn");
-            if (t == c.end() || t->second != turn) {
-                c["__ori_turn"] = turn;
-                c["__ori_used"] = 0;
-                c["__ori_base"] = -1;
-            }
-            if (c["__ori_used"] != 0) return;
-            if (c["__ori_base"] >= 0 && gears > c["__ori_base"]) { c["__ori_used"] = 1; return; }
-            if (!self.isAtBattlefield()) { c["__ori_base"] = -1; return; }
-            c["__ori_base"] = gears;
+            if (!self.isAtBattlefield()) return;
+            auto used = self.card_counters.find(kUsed);
+            if (used != self.card_counters.end() && used->second == state.turn.turn_number) return;
             PlayerState::CostModifier m;
             m.source = sid;
             m.energy_reduction = 1;
@@ -47,9 +36,13 @@ public:
             m.affects_friendly_only = true;
             m.this_turn_only = false;
             m.from_aura = true;
+            m.optional = true;
+            m.used_marker = kUsed;
             state.player(controller).cost_modifiers.push_back(m);
         });
     }
+private:
+    static constexpr const char* kUsed = "__ori_used_turn";
 private:
     const CardDef def_ = [] {
         CardDef d;

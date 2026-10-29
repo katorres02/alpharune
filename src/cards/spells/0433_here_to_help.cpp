@@ -14,10 +14,10 @@ namespace {
 
 // "You may play a unit from hand to a battlefield you control, reducing its
 //  cost by [3]." ([Hidden] / [Action] are engine-handled timing.)
-//
-// NOTE: there is no partial cost-reduction play path (playIgnoringCost ignores
-// ALL cost). The chosen unit is played for free — documented approximation of
-// "-[3]"; most reachable units cost <= 3.
+// Played through EffectExecutor::playPayingCost with a [3] Energy reduction:
+// the rest of its cost (Energy above [3] and its Power) is paid; a unit whose
+// remaining cost can't be paid isn't offered, and one that can't be paid by
+// then goes back to hand.
 
 class HereToHelp : public SpellCard {
 public:

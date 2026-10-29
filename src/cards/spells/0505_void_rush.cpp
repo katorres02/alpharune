@@ -102,6 +102,7 @@ public:
         }
 
         // Reveal the top 2 (top of deck = back of vector).
+        ctx.executor.lookBeforeReveal(ctx.controller, ctx.controller);   // Void Hatchling
         std::vector<GameObjectId> top2;
         const int n = static_cast<int>(ps.main_deck.size());
         for (int i = 0; i < std::min(2, n); ++i) top2.push_back(ps.main_deck[n - 1 - i]);

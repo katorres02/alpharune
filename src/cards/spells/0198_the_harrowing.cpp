@@ -14,15 +14,21 @@ namespace {
 class TheHarrowing : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
-    // "Play a unit from your trash, ignoring its Energy cost." (Power cost
-    // approximated as free.) Target lives in trash — defer to resolve-time pick.
+    // "Play a unit from your trash, ignoring its Energy cost. (You must still
+    // pay its Power cost.)" Played through EffectExecutor::playPayingCost with
+    // its Energy ignored: only units whose Power can be paid are offered, and
+    // one that can't be paid by then stays in the trash. Target lives in
+    // trash — defer to resolve-time pick.
     bool needsPlayTimeTarget() const override { return true; }
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
-        auto& ps = ctx.state.player(ctx.controller);
+        const auto& tps = ctx.state.player(ctx.controller);
         std::vector<GameObjectId> trash_units;
-        for (auto cid : ps.trash) {
+        for (auto cid : tps.trash) {
             if (!ctx.state.objectExists(cid)) continue;
-            if (ctx.state.getObject(cid).isUnit()) trash_units.push_back(cid);
+            if (!ctx.state.getObject(cid).isUnit()) continue;
+            if (!ctx.executor.canPlayPayingCost(ctx.controller, cid, {.ignore_energy = true}))
+                continue;
+            trash_units.push_back(cid);
         }
         if (trash_units.empty()) return;
         GameObjectId picked = pickTarget(ctx, "The Harrowing (unit from trash)",
@@ -38,10 +44,15 @@ public:
         LocationId where;   // base or a battlefield I control (CR 355.2)
         if (pickPlayLocation(ctx, picked, where, PlayerId::None, "The Harrowing: play it where?") <= 0)
             return;
+        auto& ps = ctx.state.player(ctx.controller);
         auto it = std::find(ps.trash.begin(), ps.trash.end(), picked);
-        if (it != ps.trash.end()) ps.trash.erase(it);
-        ctx.executor.playPayingCost(ctx.controller, picked, where, power_only);
-        ctx.events.logTrace("THE HARROWING: played a unit from trash for free");
+        if (it == ps.trash.end()) return;
+        ps.trash.erase(it);
+        if (!ctx.executor.playPayingCost(ctx.controller, picked, where, power_only)) {
+            ps.trash.push_back(picked);   // its Power wasn't paid: it stays in the trash
+            return;
+        }
+        ctx.events.logTrace("THE HARROWING: played a unit from trash ignoring its Energy cost");
     }
 private:
     const CardDef def_ = [] {

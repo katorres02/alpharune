@@ -18,14 +18,19 @@ public:
     unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
     // "When you play me, you may play a unit from your trash, ignoring its
-    // Energy cost." (Power cost approximated as free — same convention as
-    // Spectral Matron / Fizz.)
+    // Energy cost. (You must still pay its Power cost.)" Played through
+    // EffectExecutor::playPayingCost with its Energy ignored: the Power is
+    // paid; only units whose Power can be paid are offered, and one that
+    // can't be paid by then stays in the trash.
     std::vector<GameObjectId> trashUnits(CardContext& ctx) const {
         std::vector<GameObjectId> out;
         const auto& ps = ctx.state.player(ctx.controller);
         for (auto cid : ps.trash) {
             if (!ctx.state.objectExists(cid)) continue;
-            if (ctx.state.getObject(cid).isUnit()) out.push_back(cid);
+            if (!ctx.state.getObject(cid).isUnit()) continue;
+            if (!ctx.executor.canPlayPayingCost(ctx.controller, cid, {.ignore_energy = true}))
+                continue;
+            out.push_back(cid);
         }
         return out;
     }
@@ -52,9 +57,13 @@ public:
             return;
         auto& ps = ctx.state.player(ctx.controller);
         auto it = std::find(ps.trash.begin(), ps.trash.end(), picked);
-        if (it != ps.trash.end()) ps.trash.erase(it);
-        ctx.executor.playPayingCost(ctx.controller, picked, where, power_only);
-        ctx.events.logTrace("SOULGORGER: played a unit from trash for free");
+        if (it == ps.trash.end()) return;
+        ps.trash.erase(it);
+        if (!ctx.executor.playPayingCost(ctx.controller, picked, where, power_only)) {
+            ps.trash.push_back(picked);   // its Power wasn't paid: it stays in the trash
+            return;
+        }
+        ctx.events.logTrace("SOULGORGER: played a unit from trash ignoring its Energy cost");
     }
 private:
     const CardDef def_ = [] {

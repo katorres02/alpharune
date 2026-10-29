@@ -18,10 +18,10 @@ public:
     // "[A], [E]: Give the next spell you play this turn [Repeat] equal to its
     // cost." Uses PlayerState::grant_repeat_base_to_next_spell (shared with The
     // Academy): the next spell played this turn gets a [Repeat] tranche equal
-    // to its Energy cost; the flag is consumed by that play and cleared at end
-    // of turn.
-    // GAP: the Power part of the spell's cost is not added to the tranche, and
-    // a spell that already prints [Repeat] keeps its own (the grant waits).
+    // to its Energy and Power cost (the Power in any of its domains); the flag
+    // is consumed by that play and cleared at end of turn. A spell that
+    // already prints [Repeat] uses its own tranche; the grant waits for the
+    // next spell without one.
     bool hasActivatedAbility() const override { return true; }
     ActivationCost getActivationCost() const override {
         return {.exhaust = true, .power = 1, .power_any_domain = true};   // [A], [E]

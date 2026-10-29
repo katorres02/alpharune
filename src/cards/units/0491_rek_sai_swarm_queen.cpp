@@ -79,6 +79,7 @@ public:
 
         if (ri.resume_point == kDone) return;
         if (ri.resume_point < kAwaitBanish) {
+            ctx.executor.lookBeforeReveal(ctx.controller, ctx.controller);   // Void Hatchling
             const int n = std::min(2, static_cast<int>(ps.main_deck.size()));
             if (n == 0) { ri.resume_point = kDone; return; }
             std::vector<Intent> choices;

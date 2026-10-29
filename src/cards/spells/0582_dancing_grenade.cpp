@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -17,33 +18,69 @@ public:
     // "Deal 2 to a unit. Its controller may play this spell again for [A]. If
     //  they do, this deals 1 additional Bonus Damage for each time this spell
     //  has dealt damage this turn."
-    // GAP: the recast-for-[A] loop is not wired — the trash-replay grants only
-    // cover the caster's own trash, and here the damaged unit's controller
-    // (possibly the opponent) recasts the caster's card. The escalating Bonus
-    // Damage IS modeled: each time this spell deals damage in a turn, the
-    // count is tracked on the source object (stamped with the turn, so it
-    // starts over on a later turn) and a re-play (by any means) escalates.
+    // The unit's controller (either player) decides as this resolves. Yes
+    // gives them an immediate TrashReplayGrant for [A]: as the spell lands in
+    // its owner's trash the engine pays it and plays the spell again
+    // (GameEngine::replayFromTrashNow), under their control, choosing a new
+    // target as it is finalized. The damage count lives on the card object,
+    // stamped with the turn ("this turn"); only a replay this way adds it.
+    // resume_point 0 = deal damage (and ask), kAwaitReplay = take the answer;
+    // resume_data[0] = the deciding player.
+    static constexpr int kAwaitReplay = 30;
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (targets.empty()) return;
-        int prior_hits = 0;
-        if (ctx.state.objectExists(ctx.source)) {
-            auto& src = ctx.state.getObject(ctx.source);
-            const int turn = ctx.state.turn.turn_number;
-            if (src.card_counters["__dancing_grenade_turn"] != turn) {
-                src.card_counters["__dancing_grenade_turn"] = turn;
-                src.card_counters["__dancing_grenade_hits"] = 0;   // "this turn"
-            }
-            prior_hits = src.card_counters["__dancing_grenade_hits"];
-            src.card_counters["__dancing_grenade_hits"] = prior_hits + 1;
+        auto& ri = ctx.state.chain.resuming;
+        if (ri.has_value() && ri->resume_point == kAwaitReplay) {
+            ri->resume_point = kAwaitReplay + 1;
+            if (ri->resume_data.empty()) return;
+            const auto who = static_cast<PlayerId>(ri->resume_data[0]);
+            if (takenValue(ctx, 0) != 1) return;
+            grantReplay(ctx, who);
+            return;
         }
-        int dmg = 2 + prior_hits;  // +1 Bonus Damage per prior hit this turn
-        ctx.executor.dealDamage(targets[0], dmg, ctx.source);
-        ctx.events.logTrace("DANCING GRENADE: deal " + std::to_string(dmg) +
-                            " (recast-for-[A] loop not engine-wired)");
-        if (ctx.state.objectExists(targets[0]) &&
-            ctx.state.getObject(targets[0]).hasLethalDamage()) {
-            ctx.executor.killObject(targets[0]);
+        if (ri.has_value() && ri->resume_point != 0) return;
+        if (!ctx.state.objectExists(ctx.source)) return;
+        auto& src = ctx.state.getObject(ctx.source);
+        const int turn = ctx.state.turn.turn_number;
+        if (src.card_counters["__dancing_grenade_turn"] != turn) {
+            src.card_counters["__dancing_grenade_turn"] = turn;
+            src.card_counters["__dancing_grenade_hits"] = 0;   // "this turn"
         }
+        // "If they do": this play is the replay granted when it last resolved.
+        const bool replayed = src.card_counters["__dancing_grenade_replay_turn"] == turn &&
+                              src.card_counters["__played_not_from_hand"] == 1;
+        src.card_counters["__dancing_grenade_replay_turn"] = 0;
+        if (targets.empty() || !ctx.state.objectExists(targets[0])) return;
+        const GameObjectId unit = targets[0];
+        const PlayerId its_controller = ctx.state.getObject(unit).controller;
+        const int bonus = replayed ? src.card_counters["__dancing_grenade_hits"] : 0;
+        const int dmg = 2 + bonus;
+        src.card_counters["__dancing_grenade_hits"] += 1;
+        ctx.executor.dealDamage(unit, dmg, ctx.source);
+        ctx.events.logTrace("DANCING GRENADE: deal " + std::to_string(dmg));
+        if (ctx.state.objectExists(unit) && ctx.state.getObject(unit).hasLethalDamage())
+            ctx.executor.killObject(unit);
+
+        // "Its controller may play this spell again for [A]."
+        if (!ri.has_value() || ctx.executor.payableAnyPower(its_controller) < 1) return;
+        ri->resume_data = {static_cast<int32_t>(its_controller)};
+        ri->resume_point = kAwaitReplay;
+        ctx.executor.requestChoice(its_controller,
+            {valChoice(its_controller, 0, "Don't play Dancing Grenade again"),
+             valChoice(its_controller, 1, "Play Dancing Grenade again for [A]")},
+            "Dancing Grenade: play this spell again for [A]?");
+    }
+    static void grantReplay(CardContext& ctx, PlayerId who) {
+        if (!ctx.state.objectExists(ctx.source)) return;
+        PlayerState::TrashReplayGrant g;
+        g.card = ctx.source;
+        g.power = 1;
+        g.any_domain = true;   // [A]
+        g.immediate = true;
+        ctx.state.player(who).trash_replay_grants.push_back(g);
+        ctx.state.getObject(ctx.source).card_counters["__dancing_grenade_replay_turn"] =
+            ctx.state.turn.turn_number;
+        ctx.events.logTrace("DANCING GRENADE: " + std::string(toString(who)) +
+                            " plays it again for [A]");
     }
     TargetRequirements getTargetRequirements() const override {
         return TargetRequirements{.count = 1, .must_be_unit = true};

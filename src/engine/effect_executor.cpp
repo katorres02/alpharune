@@ -1,4 +1,5 @@
 #include "effect_executor.h"
+#include "core/move_rules.h"
 
 #include "cards/card.h"
 #include "cards/card_registry.h"
@@ -850,46 +851,133 @@ void EffectExecutor::unattachGear(GameObjectId gear) {
     events_.emit(ObjectStateChangedEvent{gear, "detached"});
 }
 
-void EffectExecutor::moveToBase(GameObjectId target) {
-    if (!state_.objectExists(target)) return;
-    auto& obj = state_.getObject(target);
-    // Jagged Cutlass: "can't be moved by enemy spells and abilities."
-    if (obj.cant_be_moved_by_enemy && state_.chain.resuming.has_value() &&
-        state_.chain.resuming->controller != obj.controller) {
-        events_.logTrace("MOVE_BLOCKED: " + obj.name + " can't be moved by enemy effects");
-        return;
+bool EffectExecutor::payMoveCost(PlayerId mover, const LocationId& dest, int unit_count) {
+    const MoveCost cost = moveAppliedCost(state_, mover, dest, unit_count);
+    if (!cost.any() || !applied_cost_) return true;
+    const std::string what = "[" + std::to_string(cost.energy) + "] + " +
+                             std::to_string(cost.power) + "[A]";
+    if (!applied_cost_(mover, cost.energy, cost.power, /*pay=*/false)) {
+        events_.logTrace("MOVE_BLOCKED: " + std::string(toString(mover)) +
+                         " can't pay the applied move cost " + what);
+        return false;
     }
-    auto old_loc = obj.location;
-
-    LocationId dest = BaseLocation{obj.controller};
-    // "Moved this turn" counts effect moves too (Siren's Song, Kayn).
-    if (obj.isUnit() && old_loc.has_value() && !(*old_loc == dest)) ++obj.moves_this_turn;
-    obj.location = dest;
-    obj.zone = ZoneType::Base;
-
-    events_.emit(UnitMovedEvent{target, obj.controller,
-        old_loc.value_or(BaseLocation{obj.controller}), dest, false});
+    // CR 204.4.c: the mover may decline, and then the move doesn't happen.
+    if (!confirmNow(mover, "pay " + what + " to move " + std::to_string(unit_count) +
+                           " unit(s) there", /*fallback=*/true)) {
+        events_.logTrace("MOVE_BLOCKED: " + std::string(toString(mover)) +
+                         " declines the applied move cost " + what);
+        return false;
+    }
+    if (!applied_cost_(mover, cost.energy, cost.power, /*pay=*/true)) return false;
+    events_.logTrace("MOVE_TAX: " + std::string(toString(mover)) + " pays " + what);
+    return true;
 }
 
-void EffectExecutor::moveToBattlefield(GameObjectId target, BattlefieldId bf) {
+bool EffectExecutor::effectMove(GameObjectId target, const LocationId& dest, PlayerId mover,
+                                bool charge) {
+    if (!state_.objectExists(target)) return false;
+    auto& obj = state_.getObject(target);
+    if (mover == PlayerId::None) mover = effectMover(state_, obj);
+    if (obj.isUnit()) {
+        if (const char* why = moveForbidden(state_, obj, dest, mover, /*by_effect=*/true)) {
+            events_.logTrace("MOVE_BLOCKED: " + obj.name + " " + why);
+            return false;
+        }
+    }
+    if (charge && obj.isUnit() && !payMoveCost(mover, dest, 1)) return false;
+    auto& o = state_.getObject(target);
+    auto old_loc = o.location;
+    // "Moved this turn" counts effect moves too (Siren's Song, Kayn).
+    if (o.isUnit() && old_loc.has_value() && !(*old_loc == dest)) ++o.moves_this_turn;
+    o.location = dest;
+    o.zone = std::holds_alternative<BaseLocation>(dest) ? ZoneType::Base : ZoneType::BattlefieldZone;
+    events_.emit(UnitMovedEvent{target, o.controller,
+        old_loc.value_or(BaseLocation{o.controller}), dest, false});
+    return true;
+}
+
+bool EffectExecutor::moveToBase(GameObjectId target, PlayerId mover) {
+    if (!state_.objectExists(target)) return false;
+    return effectMove(target, BaseLocation{state_.getObject(target).controller}, mover, true);
+}
+
+bool EffectExecutor::moveToBattlefield(GameObjectId target, BattlefieldId bf, PlayerId mover) {
+    return effectMove(target, BattlefieldLocation{bf}, mover, true);
+}
+
+std::vector<GameObjectId> EffectExecutor::moveUnitsTogether(
+        const std::vector<GameObjectId>& units, const LocationId& dest, PlayerId mover) {
+    std::vector<GameObjectId> movable;
+    for (auto id : units) {
+        if (!state_.objectExists(id)) continue;
+        const auto& u = state_.getObject(id);
+        if (!u.location.has_value()) continue;
+        // To base means each unit's own controller's base.
+        LocationId d = std::holds_alternative<BaseLocation>(dest)
+            ? LocationId{BaseLocation{u.controller}} : dest;
+        if (*u.location == d) continue;
+        const PlayerId m = mover == PlayerId::None ? effectMover(state_, u) : mover;
+        if (const char* why = moveForbidden(state_, u, d, m, /*by_effect=*/true)) {
+            events_.logTrace("MOVE_BLOCKED: " + u.name + " " + why);
+            continue;
+        }
+        movable.push_back(id);
+    }
+    if (movable.empty()) return {};
+    const PlayerId m = mover == PlayerId::None
+        ? effectMover(state_, state_.getObject(movable.front())) : mover;
+    if (!payMoveCost(m, dest, static_cast<int>(movable.size()))) return {};
+    std::vector<GameObjectId> moved;
+    for (auto id : movable) {
+        LocationId d = std::holds_alternative<BaseLocation>(dest)
+            ? LocationId{BaseLocation{state_.getObject(id).controller}} : dest;
+        if (effectMove(id, d, m, /*charge=*/false)) moved.push_back(id);
+    }
+    return moved;
+}
+
+void EffectExecutor::recallToBase(GameObjectId target) {
     if (!state_.objectExists(target)) return;
     auto& obj = state_.getObject(target);
-    // Jagged Cutlass: "can't be moved by enemy spells and abilities."
-    if (obj.cant_be_moved_by_enemy && state_.chain.resuming.has_value() &&
-        state_.chain.resuming->controller != obj.controller) {
-        events_.logTrace("MOVE_BLOCKED: " + obj.name + " can't be moved by enemy effects");
+    if (!obj.location.has_value()) return;
+    // CR 457-460: relocated to its controller's base; not a Move (no move
+    // restriction, no UnitMovedEvent); damage and statuses are unaffected.
+    const LocationId dest = BaseLocation{obj.controller};
+    obj.location = dest;
+    obj.zone = ZoneType::Base;
+    for (auto gid : obj.attachments) {
+        if (!state_.objectExists(gid)) continue;
+        auto& g = state_.getObject(gid);
+        g.location = dest;
+        g.zone = ZoneType::Base;
+    }
+    events_.logTrace("RECALL: " + obj.name + " (id=" + std::to_string(target) + ") -> base");
+}
+
+void EffectExecutor::contestAsAttacker(BattlefieldId bf_id, PlayerId player) {
+    for (auto& bf : state_.battlefields) {
+        if (bf.id != bf_id) continue;
+        if (bf.controller.has_value() && *bf.controller == player) return;
+        if (bf.showdown_in_progress || bf.combat_in_progress) return;
+        const bool changed = !bf.is_contested || bf.contested_by != player;
+        bf.is_contested = true;
+        bf.contested_by = player;
+        if (changed) events_.emit(ContestedEvent{bf_id, player});
+        events_.logTrace("CONTESTED: BF#" + std::to_string(bf_id) + " by " +
+                         std::string(toString(player)) + " (will be the attacker)");
         return;
     }
-    auto old_loc = obj.location;
+}
 
-    LocationId dest = BattlefieldLocation{bf};
-    // "Moved this turn" counts effect moves too (Siren's Song, Kayn).
-    if (obj.isUnit() && old_loc.has_value() && !(*old_loc == dest)) ++obj.moves_this_turn;
-    obj.location = dest;
-    obj.zone = ZoneType::BattlefieldZone;
-
-    events_.emit(UnitMovedEvent{target, obj.controller,
-        old_loc.value_or(BaseLocation{obj.controller}), dest, false});
+std::vector<LocationId> EffectExecutor::tokenPlayLocations(PlayerId player) const {
+    std::vector<LocationId> out{BaseLocation{player}};
+    if (state_.player(player).units_play_base_only) return out;   // Mageseeker Warden
+    for (const auto& bf : state_.battlefields) {
+        if (bf.blocks_unit_play) continue;                          // Rockfall Path
+        if (bf.controller.has_value() && *bf.controller == player)
+            out.push_back(BattlefieldLocation{bf.id});
+    }
+    return out;
 }
 
 void EffectExecutor::stunUnit(GameObjectId target) {
@@ -1107,6 +1195,31 @@ void EffectExecutor::exhaustObject(GameObjectId target) {
     const bool was_ready = !obj.is_exhausted;
     obj.is_exhausted = true;
     if (was_ready) events_.emit(ObjectStateChangedEvent{target, "exhausted"});
+}
+
+void EffectExecutor::exhaustTogether(PlayerId by, const std::vector<GameObjectId>& objects) {
+    std::vector<GameObjectId> became;
+    for (auto id : objects) {
+        if (!state_.objectExists(id) || state_.getObject(id).is_exhausted) continue;
+        became.push_back(id);
+        exhaustObject(id);
+    }
+    reportExhaustedTogether(by, became);
+}
+
+void EffectExecutor::reportExhaustedTogether(PlayerId by, const std::vector<GameObjectId>& units) {
+    int n = 0;
+    GameObjectId anchor = kInvalidId;
+    for (auto id : units) {
+        if (!state_.objectExists(id)) continue;
+        const auto& o = state_.getObject(id);
+        if (!o.isUnit() || o.controller != by) continue;
+        if (anchor == kInvalidId) anchor = id;
+        ++n;
+    }
+    if (n == 0) return;
+    state_.player(by).last_exhaust_group_size = n;
+    events_.emit(ObjectStateChangedEvent{anchor, "exhausted_together"});
 }
 
 void EffectExecutor::channelRunes(PlayerId player, int count, bool enter_exhausted) {
@@ -1330,6 +1443,47 @@ void EffectExecutor::copyUnit(GameObjectId token_id, GameObjectId source_id) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Entering the board ready
+// ═══════════════════════════════════════════════════════════════════════════════
+
+bool EffectExecutor::unitEntersReady(PlayerId controller, const GameObject& unit,
+                                     UnitEntry how) const {
+    if (!unit.isUnit()) return false;
+    const auto& ps = state_.player(controller);
+    // The unit's own "I enter ready" (Daisy!, Monch's conditional ready).
+    if (how != UnitEntry::Token && card_registry_ && unit.card_def_id != kInvalidId) {
+        if (const Card* c = card_registry_->get(unit.card_def_id))
+            if (c->entersReadyOnPlay(state_, controller, unit)) return true;
+    }
+    // "Your tokens enter ready" (Renata Glasc, Industrialist).
+    if (how == UnitEntry::Token && ps.tokens_enter_ready) return true;
+    // "Units you play this turn enter ready" (Confront, Bushwhack).
+    if (ps.units_enter_ready_this_turn) return true;
+    // "Other units enter ready" for every player's units (Firebrand Raider).
+    if (state_.turn.all_units_enter_ready) return true;
+    // Continuous effects of the controller's other cards on the board and
+    // legend ("Other friendly units enter ready", Magma Wurm; Sun Disc).
+    if (card_registry_) {
+        for (const auto& [oid, other] : state_.objects) {
+            if (oid == unit.id || other.controller != controller) continue;
+            if (!other.location.has_value() && other.zone != ZoneType::LegendZone) continue;
+            if (other.card_def_id == kInvalidId) continue;
+            const Card* granter = card_registry_->get(other.card_def_id);
+            if (granter && granter->grantsEnterReadyTo(state_, oid, unit)) {
+                events_.logTrace("ENTERS_READY: " + unit.name + " (" + other.name + ")");
+                return true;
+            }
+        }
+    }
+    // "Your units enter ready" (Wuju Master [Level 11]).
+    if (ps.units_enter_ready) {
+        events_.logTrace("ENTERS READY: " + unit.name + " (your units enter ready)");
+        return true;
+    }
+    return false;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Token creation
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1351,15 +1505,10 @@ GameObjectId EffectExecutor::createToken(PlayerId controller, CardType type,
     obj.tags = tags;
     obj.keywords = keywords;
     obj.location = location;
-    // Renata Glasc, Industrialist: "Your tokens enter ready." Continuous
-    // replacement on token creation — a friendly token never enters exhausted
-    // while the flag is set (refreshed each cleanup via applyPassiveAura).
-    if (state_.player(controller).tokens_enter_ready) enter_ready = true;
-    // Bushwhack: friendly units enter ready this turn.
-    if (type == CardType::Unit && state_.player(controller).units_enter_ready_this_turn)
-        enter_ready = true;
-    // Firebrand Raider: "Other units enter ready."
-    if (type == CardType::Unit && state_.turn.all_units_enter_ready) enter_ready = true;
+    // "Enters ready" effects (Renata's "your tokens", Bushwhack, Firebrand
+    // Raider, Magma Wurm, Wuju Master, ...): the shared decision point.
+    if (type == CardType::Unit && !enter_ready)
+        enter_ready = unitEntersReady(controller, obj, UnitEntry::Token);
     obj.is_exhausted = !enter_ready && type == CardType::Unit; // units enter exhausted unless ready
 
     if (std::holds_alternative<BaseLocation>(location)) {
@@ -1378,14 +1527,16 @@ GameObjectId EffectExecutor::createToken(PlayerId controller, CardType type,
 
     // Zilean, Time Mage (648): "Once each turn, if you would play a token unit
     // while I'm at a battlefield, you may play that token and an additional copy
-    // instead." Approximated as automatic (token creation isn't an agent
-    // decision point). Stamp the turn BEFORE the recursive call to bound it to
-    // once per turn and to stop the recursion (the copy sees the stamp set).
+    // instead." The controller chooses now (confirmNow); declining leaves the
+    // once-per-turn use for a later token. Stamp the turn BEFORE the recursive
+    // call to bound it to once per turn and to stop the recursion (the copy
+    // sees the stamp set).
     if (type == CardType::Unit) {
         auto& ps = state_.player(controller);
         if (ps.zilean_present &&
-            ps.zilean_double_token_turn != state_.turn.turn_number) {
-            ps.zilean_double_token_turn = state_.turn.turn_number;
+            ps.zilean_double_token_turn != state_.turn.turn_number &&
+            confirmNow(controller, "Zilean, Time Mage: play an additional copy of " + name)) {
+            state_.player(controller).zilean_double_token_turn = state_.turn.turn_number;
             events_.logTrace("ZILEAN: play an additional copy of the token unit");
             createToken(controller, type, name, might, tags, keywords, location, enter_ready);
         }
@@ -1482,24 +1633,30 @@ void EffectExecutor::replaceBattlefieldWithToken(BattlefieldId target_bf,
 // Composite operations
 // ═══════════════════════════════════════════════════════════════════════════════
 
+void EffectExecutor::lookBeforeReveal(PlayerId revealer, PlayerId deck_owner, bool rune_deck) {
+    if (!state_.player(revealer).has_reveal_peek) return;
+    auto& deck = rune_deck ? state_.player(deck_owner).rune_deck
+                           : state_.player(deck_owner).main_deck;
+    if (deck.empty()) return;
+    const GameObjectId top = deck.back();
+    if (!state_.objectExists(top)) return;
+    const auto& obj = state_.getObject(top);
+    // Looking is private to the revealer.
+    events_.emit(CardRevealedEvent{top, obj.card_def_id, obj.owner,
+                                   /*revealed_to_all=*/false, /*revealed_to=*/revealer,
+                                   rune_deck ? ZoneType::RuneDeck : ZoneType::MainDeck});
+    if (!confirmNow(revealer, "Void Hatchling: recycle the top card (" + obj.name + ") before revealing",
+                    /*fallback=*/false))
+        return;
+    deck.pop_back();
+    recycleCards(revealer, {top});
+    events_.logTrace("VOID HATCHLING: recycled the top card before revealing");
+}
+
 std::pair<GameObjectId, std::vector<GameObjectId>>
 EffectExecutor::revealUntil(PlayerId player, CardType condition) {
     auto& ps = state_.player(player);
-    // Void Hatchling (341): "If you would reveal cards from a deck, look at the
-    // top card first. You may recycle it." Peek + optional recycle before reveal.
-    if (ps.has_reveal_peek && !ps.main_deck.empty() && agent_query_) {
-        GameObjectId top = ps.main_deck.back();
-        if (state_.objectExists(top)) {
-            Intent keep;  keep.type  = IntentType::MakeChoice; keep.player  = player; keep.chosen_value  = 0;
-            Intent recyc; recyc.type = IntentType::MakeChoice; recyc.player = player; recyc.chosen_value = 1;
-            auto chosen = agent_query_(player, {keep, recyc});
-            if (chosen.chosen_value.value_or(0) == 1) {
-                ps.main_deck.pop_back();
-                recycleCards(player, {top});
-                events_.logTrace("VOID HATCHLING: recycled the peeked top card before revealing");
-            }
-        }
-    }
+    lookBeforeReveal(player, player);   // Void Hatchling
     std::vector<GameObjectId> revealed;
     GameObjectId matched = kInvalidId;
 
@@ -1617,20 +1774,7 @@ void EffectExecutor::predict(PlayerId player, int count) {
 
 std::vector<GameObjectId> EffectExecutor::revealAndChoose(PlayerId player, int count) {
     auto& ps = state_.player(player);
-    // Void Hatchling (341): peek top, may recycle before revealing (see revealUntil).
-    if (ps.has_reveal_peek && !ps.main_deck.empty() && agent_query_) {
-        GameObjectId top = ps.main_deck.back();
-        if (state_.objectExists(top)) {
-            Intent keep;  keep.type  = IntentType::MakeChoice; keep.player  = player; keep.chosen_value  = 0;
-            Intent recyc; recyc.type = IntentType::MakeChoice; recyc.player = player; recyc.chosen_value = 1;
-            auto chosen = agent_query_(player, {keep, recyc});
-            if (chosen.chosen_value.value_or(0) == 1) {
-                ps.main_deck.pop_back();
-                recycleCards(player, {top});
-                events_.logTrace("VOID HATCHLING: recycled the peeked top card before revealing");
-            }
-        }
-    }
+    lookBeforeReveal(player, player);   // Void Hatchling
     int actual = std::min(count, static_cast<int>(ps.main_deck.size()));
     std::vector<GameObjectId> chosen_cards;
     if (actual <= 0) return chosen_cards;
@@ -1851,6 +1995,19 @@ void EffectExecutor::playIgnoringCost(PlayerId player, GameObjectId card,
                                        std::optional<LocationId> location) {
     if (!state_.objectExists(card)) return;
     auto& obj = state_.getObject(card);
+    // Where it is played from: the caller has already taken it out of that
+    // zone's list, but its zone still names it. Recorded for "if you played
+    // this from your hand" and announced like an engine play from elsewhere.
+    const bool from_hand = obj.zone == ZoneType::Hand;
+    obj.card_counters["__played_not_from_hand"] = from_hand ? 0 : 1;
+    // Announced only for a card leaving a real zone (a fresh object has none).
+    const bool from_elsewhere = obj.zone == ZoneType::Trash || obj.zone == ZoneType::Banishment ||
+                                obj.zone == ZoneType::ChampionZone ||
+                                obj.zone == ZoneType::FacedownZone;
+    auto announce_source = [&]() {
+        if (from_elsewhere && state_.objectExists(card))
+            events_.emit(ObjectStateChangedEvent{card, "played_not_from_hand"});
+    };
 
     // Landing zone: caller-supplied (CR 355.2.a — controller picks base
     // or a battlefield they control) or, by default, the controller's
@@ -1869,6 +2026,7 @@ void EffectExecutor::playIgnoringCost(PlayerId player, GameObjectId card,
         sps.cards_played_this_turn++;
         events_.emit(CardPlayedEvent{card, player, obj.card_type,
                                      sps.cards_played_this_turn});
+        announce_source();
         queue_spell_(player, card);
         return;
     }
@@ -1883,9 +2041,8 @@ void EffectExecutor::playIgnoringCost(PlayerId player, GameObjectId card,
     obj.controller = player;
 
     if (obj.isUnit()) {
-        // Bushwhack: friendly units enter ready this turn.
-        obj.is_exhausted = !state_.player(player).units_enter_ready_this_turn &&
-                           !state_.turn.all_units_enter_ready;   // Firebrand Raider
+        // CR 143.4: units enter exhausted unless an effect says otherwise.
+        obj.is_exhausted = !unitEntersReady(player, obj, UnitEntry::PlayedByEffect);
         // A unit (re-)entering play is a fresh presence — clear any marked
         // damage carried from a prior life (e.g. banished-then-replayed by
         // Thrill of the Hunt). New plays from hand are already at 0, so this
@@ -1920,6 +2077,7 @@ void EffectExecutor::playIgnoringCost(PlayerId player, GameObjectId card,
 
     events_.emit(CardPlayedEvent{card, player, obj.card_type,
         ps.cards_played_this_turn});
+    announce_source();
     events_.emit(EnteredBoardEvent{card, player, obj.card_type,
         final_loc, true});
 }

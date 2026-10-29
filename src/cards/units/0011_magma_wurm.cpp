@@ -15,10 +15,9 @@ namespace {
 class MagmaWurm : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    // "Other friendly units enter ready." Asked by resolvePermanent for each
-    // unit its controller plays while I'm on the board.
-    // GAP: units that enter the board other than by being played (tokens an
-    // effect creates) still use their own entry state.
+    // "Other friendly units enter ready." Asked by EffectExecutor::
+    // unitEntersReady for every unit its controller puts onto the board while
+    // I'm there: played from hand, played by an effect, or a token.
     bool grantsEnterReadyTo(const GameState& state, GameObjectId self,
                             const GameObject& played) const override {
         if (!state.objectExists(self) || played.id == self || !played.isUnit()) return false;

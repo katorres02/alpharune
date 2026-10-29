@@ -18,11 +18,10 @@ public:
     // "Units can't move to base." A continuous effect: while I'm on the board
     // (applyPassiveAura runs only then) every unit gets
     // GameObject::aura_cant_move_to_base, which recalculateAuras clears each
-    // pass, so the restriction ends as soon as I leave. The move-action
-    // generator reads it.
-    // GAP: EffectExecutor::moveToBase does not consult it (it also serves
-    // "recall", which isn't a move), so card effects that move a unit to base
-    // are not blocked.
+    // pass, so the restriction ends as soon as I leave. moveForbidden
+    // (core/move_rules.h) reads it for standard moves and for effect moves
+    // (EffectExecutor::moveToBase); recalls are not moves (CR 458.3) and go
+    // through EffectExecutor::recallToBase, which it doesn't block.
     void applyPassiveAura(GameState& state, PlayerId /*controller*/) const override {
         for (auto& [id, obj] : state.objects) {
             if (!obj.isUnit() || !obj.location.has_value()) continue;

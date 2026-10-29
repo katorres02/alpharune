@@ -16,8 +16,9 @@ public:
     const CardDef& def() const override { return def_; }
     // "[Level 6] Your units have +1 [M]."   (xp >= 6)
     // "[Level 11] Your units enter ready."  (xp >= 11: PlayerState::
-    //  units_enter_ready, read by GameEngine::resolvePermanent as a unit is
-    //  played). recalculateAuras runs this for the legend in its LegendZone.
+    //  units_enter_ready, read by EffectExecutor::unitEntersReady for every
+    //  unit entering the board: played, played by an effect, or a token).
+    //  recalculateAuras runs this for the legend in its LegendZone.
     void applyPassiveAura(GameState& state, PlayerId controller) const override {
         // Confirm an on-board (LegendZone) instance of this legend.
         bool present = false;
@@ -40,8 +41,6 @@ public:
             }
         }
         // [Level 11]: "Your units enter ready."
-        // GAP: covers units that are played; units put onto the board other
-        // ways (tokens created by effects) still use their own entry state.
         if (xp >= 11) state.player(controller).units_enter_ready = true;
     }
 private:

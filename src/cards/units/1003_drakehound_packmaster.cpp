@@ -41,6 +41,7 @@ public:
             std::vector<GameObjectId> revealed;
             for (PlayerId p : {PlayerId::Player1, PlayerId::Player2}) {
                 if (p == me) continue;
+                ctx.executor.lookBeforeReveal(me, p);   // Void Hatchling
                 auto& deck = ctx.state.player(p).main_deck;
                 if (deck.empty()) continue;
                 const GameObjectId top = deck.back();
@@ -118,8 +119,8 @@ private:
         if (!obj.isSpell())
             loc = dest <= 0 ? LocationId{BaseLocation{ctx.controller}}
                             : LocationId{BattlefieldLocation{static_cast<BattlefieldId>(dest - 1)}};
-        // GAP: a spell played this way gets no play-time targets unless its card
-        // picks them as it is finalized/resolves (needsPlayTimeTarget/pickTarget).
+        // A spell goes on the chain and its controller chooses its targets as
+        // it is finalized (GameEngine::chooseSpellTargetsAtFinalize).
         ctx.executor.playIgnoringCost(ctx.controller, card, loc);
     }
 

@@ -16,14 +16,12 @@ public:
     const CardDef& def() const override { return def_; }
     // "I have all [E] abilities of all friendly legends, units, and gear."
     // Wired via the aura-granted-ability pipeline: applyPassiveAura appends a
-    // GrantedAbilityRef{friendly_def, 0} for every friendly legend/unit/gear onto
-    // each Heimerdinger. The action generator skips refs whose granter has no
-    // ability at that index, so granting index 0 of every friendly card is safe;
-    // activation routes to the granting card's onActivate with Heimer as the
-    // bearer (ctx.source).
-    // APPROX: proxies ability index 0 of each friendly card (multi-ability cards'
-    // additional abilities are not copied); abilities that deeply reference their
-    // own source object act as Heimer's.
+    // GrantedAbilityRef{friendly_def, kAllExhaustAbilities} for every friendly
+    // legend/unit/gear onto each Heimerdinger; the action generator expands it
+    // to every [E] ability of that card (all indices whose cost exhausts).
+    // Activation routes to the granting card's onActivate with Heimer as the
+    // bearer (ctx.source). Abilities that deeply reference their own source
+    // object act as Heimer's.
     void applyPassiveAura(GameState& state, PlayerId controller) const override {
         std::vector<GameObjectId> heimers;
         for (auto& [id, obj] : state.objects)
@@ -39,7 +37,7 @@ public:
             const bool legend = obj.zone == ZoneType::LegendZone;
             if (!on_board && !legend) continue;
             if (!(obj.isUnit() || obj.isGear() || obj.isLegend())) continue;
-            refs.push_back({obj.card_def_id, 0});
+            refs.push_back({obj.card_def_id, GameObject::GrantedAbilityRef::kAllExhaustAbilities});
         }
         for (auto hid : heimers) {
             auto& h = state.getObject(hid);

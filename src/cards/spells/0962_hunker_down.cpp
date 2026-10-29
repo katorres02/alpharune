@@ -20,13 +20,13 @@ public:
         return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_friendly = true};
     }
     // "Ready a friendly unit. It can't move this turn. Draw 1."
-    // GameObject::cant_move_this_turn blocks its standard move until the
-    // expiration step.
+    // GameObject::forbidMovesThisTurn blocks its standard move and effect
+    // moves this turn.
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
         if (!targets.empty() && ctx.state.objectExists(targets[0]) &&
             ctx.state.getObject(targets[0]).location.has_value()) {
             ctx.executor.readyObject(targets[0]);
-            ctx.state.getObject(targets[0]).cant_move_this_turn = true;
+            ctx.state.getObject(targets[0]).forbidMovesThisTurn(ctx.state.turn.turn_number);
         }
         ctx.executor.drawCards(ctx.controller, 1);
     }

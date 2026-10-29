@@ -17,15 +17,22 @@ public:
     const CardDef& def() const override { return def_; }
     // "When you play your first card each turn, if I'm at a battlefield, the
     //  next card you play this turn costs [2][A][A] less." (errata 2026)
-    // "Your first card each turn" is read as the play happens (the trigger
-    // condition): a card played in response doesn't cancel it.
-    // GAP: a spell's play triggers fire as it resolves, so a first spell
-    // that resolves after a later card no longer reads as the first.
+    // "Your first card each turn" is the play's place in the turn, recorded as
+    // it is played (card_counters["__play_ordinal"], TriggerManager::
+    // onCardPlayed): a spell's play triggers fire as it resolves, so a first
+    // spell still counts when a card played in response resolved before it.
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayACard; }
     bool triggerCondition(const GameState& state, GameObjectId source, PlayerId controller,
-                          TriggerType /*trigger*/, GameObjectId /*subject*/) const override {
+                          TriggerType /*trigger*/, GameObjectId subject) const override {
         if (!state.objectExists(source) || !state.getObject(source).isAtBattlefield())
             return false;
+        if (subject != kInvalidId && state.objectExists(subject)) {
+            const auto& c = state.getObject(subject).card_counters;
+            auto ord = c.find("__play_ordinal");
+            auto turn = c.find("__play_turn");
+            if (ord != c.end() && turn != c.end() && turn->second == state.turn.turn_number)
+                return ord->second == 1;
+        }
         return state.player(controller).cards_played_this_turn == 1;
     }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {

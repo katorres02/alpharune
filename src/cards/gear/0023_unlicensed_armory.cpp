@@ -77,7 +77,7 @@ public:
         ctx.events.logTrace("UNLICENSED ARMORY: paid [C] -> heal/exhaust/recall " + victim.name);
         ctx.executor.healObject(dying_unit);
         ctx.executor.exhaustObject(dying_unit);
-        ctx.executor.moveToBase(dying_unit);
+        ctx.executor.recallToBase(dying_unit);
         return true;
     }
 private:

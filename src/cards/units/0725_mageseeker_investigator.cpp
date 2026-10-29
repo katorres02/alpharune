@@ -15,22 +15,20 @@ class MageseekerInvestigator : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
     // "Opponents must pay [A] for each unit beyond the first to move multiple
-    //  units to my battlefield at the same time." Represented via
-    //  BattlefieldState::surcharge_enemy_multi_move (set in applyPassiveAura on
-    //  this unit's battlefield).
-    // GAP: the engine has no move that takes several units at the same time (the
-    //  move generator emits one unit per StandardMove, and effects move units one
-    //  by one), so nothing reads the flag yet. Once a multi-unit move exists, it
-    //  should charge [A] per unit beyond the first when the flag is set on the
-    //  destination and the mover is an opponent of this unit's controller.
+    //  units to my battlefield at the same time." An applied cost (CR 204.4):
+    //  BattlefieldState::multi_move_surcharge_power[opponent] += 1 on this
+    //  unit's battlefield. moveAppliedCost charges it on a move of several
+    //  units at once — a group standard move (CR 144.3, built in
+    //  GameEngine::executeStandardMove) or EffectExecutor::moveUnitsTogether.
     void applyPassiveAura(GameState& state, PlayerId controller) const override {
+        const int opp = playerIndex(opponent(controller));
         for (auto& [id, obj] : state.objects) {
             if (obj.card_def_id != cardDefId() || obj.controller != controller)
                 continue;
             auto bf = obj.battlefieldId();
             if (!bf) continue;
             for (auto& b : state.battlefields)
-                if (b.id == *bf) b.surcharge_enemy_multi_move = true;
+                if (b.id == *bf) b.multi_move_surcharge_power[opp] += 1;
         }
     }
 private:

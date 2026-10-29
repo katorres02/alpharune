@@ -344,7 +344,11 @@ TEST_F(Radiance4Test, Orianna_GearDiscountOnceEachTurnWhileAtBattlefield) {
     };
     state.turn.turn_number = 2;
     EXPECT_EQ(pass(), 1);
-    state.player(P1).gears_played_this_turn = 1;   // a gear was played with it offered
+    state.player(P1).gears_played_this_turn = 1;   // a gear was played, discount declined
+    EXPECT_EQ(pass(), 1) << "declining keeps it for a later gear this turn";
+    for (const auto& m : state.player(P1).cost_modifiers)
+        if (m.source == ori) EXPECT_TRUE(m.optional) << "the player chooses whether to use it";
+    state.getObject(ori).card_counters["__ori_used_turn"] = 2;   // taken (decideOptionalCostModifiers)
     EXPECT_EQ(pass(), 0) << "used this turn";
     state.turn.turn_number = 3;
     state.player(P1).gears_played_this_turn = 0;

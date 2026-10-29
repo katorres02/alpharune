@@ -218,6 +218,7 @@ public:
         return resolveShowdownDecision(bf, chosen, current_focus, action_count);
     }
     void testHook_executeIntent(const Intent& i) { executeIntent(i); }
+    void testHook_settleChosenTargetDiscount(ChainItemId id) { settleChosenTargetDiscount(id); }
     // Install agents directly without going through run(). Required so
     // tests can exercise paths that invoke chain priority loops
     // (runChain → processFEPR → getAgent).
@@ -584,7 +585,15 @@ private:
     /// Check if a player can afford a card's cost with available runes.
     /// `extra_any_power`: [A] owed on top of everything else (a battlefield's
     /// pay-to-play-here cost).
-    bool canAfford(PlayerId player, GameObjectId card_obj, int extra_any_power = 0) const;
+    /// `energy_discount` prices the play with a location-dependent reduction
+    /// (firstPlayHereDiscount) the generic check can't know about.
+    bool canAfford(PlayerId player, GameObjectId card_obj, int extra_any_power = 0,
+                   int energy_discount = 0) const;
+    /// "For each player, the first unit or gear they play here on their turn
+    /// costs [N] less" (Hunters' Circle): the reduction `player` gets for
+    /// playing `card` to `loc` now (0 if none applies).
+    int firstPlayHereDiscount(PlayerId player, const GameObject& card,
+                              const std::optional<LocationId>& loc) const;
     /// Discount granted by paying a Card::OptionalAdditionalCost object cost
     /// ("kill a friendly unit", "spend a buff", ...): Energy / Power off, or
     /// the base cost ignored.
@@ -623,8 +632,11 @@ private:
     bool canPayActivationResources(PlayerId player, int energy,
                                    const ActivationCost& cost,
                                    SpendPurpose purpose = SpendPurpose::None) const;
-    /// Whether `player` can pay the move tax onto `bf` (Gravity Field).
-    bool canPayMoveTax(PlayerId player, const BattlefieldState& bf) const;
+    /// Whether `unit` may use its standard move to `dest` for `player`
+    /// (CR 144: ready, a reachable destination, no movement restriction).
+    /// Applied move costs are checked separately (moveAppliedCost).
+    bool canStandardMoveTo(PlayerId player, const GameObject& unit,
+                           const LocationId& dest) const;
     bool payActivationResources(PlayerId player, int energy, const ActivationCost& cost,
                                 SpendPurpose purpose = SpendPurpose::None);
     /// Apply `assigned` combat damage to a unit through the replacement
@@ -636,6 +648,19 @@ private:
                                   GameObjectId source, int index) const;
     /// Make the choices the rules place at finalization for `item` (targets).
     void chooseTargetsAtFinalize(ChainItem& item);
+    /// Targets for a spell that reached the chain without the ones its play
+    /// intent normally carries (played by an effect).
+    void chooseSpellTargetsAtFinalize(ChainItem& item, const Card& card);
+    /// A spell whose targets were chosen at finalization (after its cost was
+    /// paid): return the cost reductions those targets give (Irelia, Graceful;
+    /// Sandswept Tomb) that the payment did not already apply.
+    void settleChosenTargetDiscount(ChainItemId item_id);
+    /// "You may pay ... less" cost modifiers (CostModifier::optional) that
+    /// apply to `card_obj`: ask `player` whether to take each (declining only
+    /// when the card stays payable). Declined ones are skipped for this
+    /// payment; clearDeclinedCostModifiers re-offers them afterwards.
+    void decideOptionalCostModifiers(PlayerId player, GameObjectId card_obj);
+    void clearDeclinedCostModifiers(PlayerId player);
     // [Show Off] (CR 832): offered as a played card's chain item is finalized.
     void chooseShowOff(ChainItem& item);
     void runFinalizePass(ChainItem& item);
@@ -662,6 +687,19 @@ private:
     /// `card_id` (auto-spends via payAdditionalCost; an [A] grant picks the
     /// first payable domain) and consumes the grant. Returns true if a grant
     /// was found and paid, false otherwise (caller falls back to printed cost).
+    /// Plays `card` again from its owner's trash under an immediate
+    /// TrashReplayGrant (ChainManager::setReplayFromTrash).
+    /// Index of a PlayerState::ignore_energy_play_grants entry `card` (in
+    /// hand) may use, or -1.
+    /// Additional costs other cards grant `player`'s spells that could be
+    /// paid now (Card::grantedSpellAdditionalCost), with their granter.
+    std::vector<std::pair<GameObjectId, Card::GrantedSpellCost>>
+        grantedSpellCostOffers(PlayerId player) const;
+    /// Offers and pays them as `spell` is played; returns the Energy discount.
+    int payGrantedSpellCosts(PlayerId player, GameObjectId spell);
+    int ignoreEnergyGrantIndex(PlayerId player, GameObjectId card) const;
+    bool canAffordIgnoringEnergy(PlayerId player, GameObjectId card) const;
+    void replayFromTrashNow(GameObjectId card);
     bool payTrashReplayGrant(PlayerId player, GameObjectId card_id);
     /// `player`'s trash-replay grant for `card_id`, or nullptr.
     const PlayerState::TrashReplayGrant* trashReplayGrantFor(PlayerId player,
