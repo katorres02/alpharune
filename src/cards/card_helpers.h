@@ -18,59 +18,11 @@ namespace riftbound {
 
 // The engine-known Gold gear token's card_def_id.
 constexpr CardDefId kGoldGearCardDefId = 326;
+// The Bomb gear token (Radiance, CR 187.12): [Deploy] + a Deathknell.
+constexpr CardDefId kBombTokenCardDefId = 985;
 
-// ── Equip: pay one power (of `domain`, or any rune if nullopt), then attach ──
-// Complements the energy+Domain `standardEquip` overload in gear/equip_base.h.
-// One Power of `domain` (any domain if nullopt), the way CR 164.2 lets it be
-// paid: floating Power of that domain, then universal Power, then recycling a
-// matching rune — ready or exhausted (an exhausted one first, since a ready
-// rune can still be exhausted for Energy).
-inline bool runeMatchesDomain(const GameObject& rune, std::optional<Domain> domain) {
-    if (!domain.has_value()) return true;
-    for (auto d : rune.domains) if (d == *domain) return true;
-    return false;
-}
-inline bool payableOnePower(const GameState& state, PlayerId player,
-                            std::optional<Domain> domain) {
-    const auto& pool = state.player(player).rune_pool;
-    if (pool.universal_power > 0) return true;
-    if (domain.has_value()) { if (pool.power[static_cast<int>(*domain)] > 0) return true; }
-    else if (pool.totalPower() > 0) return true;
-    const LocationId base{BaseLocation{player}};
-    for (const auto& [id, obj] : state.objects)
-        if (obj.isRune() && obj.controller == player && obj.location.has_value() &&
-            *obj.location == base && runeMatchesDomain(obj, domain)) return true;
-    return false;
-}
-inline bool payOnePower(CardContext& ctx, PlayerId player,
-                        std::optional<Domain> domain) {
-    auto& state = ctx.state;
-    auto& pool = state.player(player).rune_pool;
-    if (domain.has_value()) {
-        int& own = pool.power[static_cast<int>(*domain)];
-        if (own > 0) { --own; return true; }
-    } else {
-        for (int di = 0; di < static_cast<int>(Domain::Count); ++di)
-            if (pool.power[di] > 0) { --pool.power[di]; return true; }
-    }
-    if (pool.universal_power > 0) { --pool.universal_power; return true; }
-    const LocationId base_loc{BaseLocation{player}};
-    GameObjectId rune = kInvalidId;
-    for (auto& [id, obj] : state.objects) {
-        if (!obj.isRune() || obj.controller != player) continue;
-        if (!obj.location.has_value() || *obj.location != base_loc) continue;
-        if (!runeMatchesDomain(obj, domain)) continue;
-        if (rune == kInvalidId || (obj.is_exhausted && !state.getObject(rune).is_exhausted))
-            rune = id;
-    }
-    if (rune == kInvalidId) return false;
-    auto& dr = state.getObject(rune);
-    dr.location = std::nullopt;
-    dr.zone = ZoneType::RuneDeck;
-    state.player(player).rune_deck.insert(state.player(player).rune_deck.begin(), rune);
-    ctx.events.logTrace("  ADDL_COST: recycled " + dr.name + " for power");
-    return true;
-}
+// Power / Energy payment helpers (payOnePower, payEnergy, ...) live in
+// gear/equip_base.h (included above) so the equip bases can use them.
 
 // ── Battlefields and combat ──
 /// The battlefield whose card object is `card_object` (a battlefield card's
@@ -93,7 +45,7 @@ inline bool standardEquip(CardContext& ctx, GameObjectId gear_id,
                           GameObjectId unit_id, std::optional<Domain> domain) {
     auto& state = ctx.state;
     if (!state.objectExists(gear_id) || !state.objectExists(unit_id)) return false;
-    if (!payOnePower(ctx, ctx.controller, domain)) return false;
+    if (!payOnePower(ctx, ctx.controller, domain, SpendPurpose::GearAbility)) return false;
     auto& gear = state.getObject(gear_id);
     auto& unit = state.getObject(unit_id);
     ctx.events.logTrace("EQUIP: " + gear.name + " -> " + unit.name +
@@ -281,6 +233,21 @@ inline GameObjectId createGoldExhausted(CardContext& ctx) {
     return tok;
 }
 
+// ── Bomb tokens (Radiance) ──
+// "Play a Bomb gear token to a battlefield": Bombs have [Deploy], so they are
+// only ever created at a battlefield (CR 830.1.b).
+inline GameObjectId createBombToken(CardContext& ctx, PlayerId controller, BattlefieldId bf) {
+    auto tok = ctx.executor.createToken(controller, CardType::Gear, "Bomb", 0, {"Bomb"},
+                                        KeywordSet{}, LocationId{BattlefieldLocation{bf}},
+                                        /*enter_ready=*/true);
+    if (ctx.state.objectExists(tok)) {
+        auto& b = ctx.state.getObject(tok);
+        b.card_def_id = kBombTokenCardDefId;
+        b.keywords.set(Keyword::Deathknell);
+    }
+    return tok;
+}
+
 // ── Misc ──
 inline GameObjectId findMostRecentlyPlayedSpell(const GameState& state, PlayerId player) {
     const auto& ps = state.player(player);
@@ -416,36 +383,6 @@ inline void auraKeyword(GameObject& obj, GameObjectId source, Keyword kw, int va
     obj.aura_effects.push_back(ae);
 }
 
-// ── Paying Energy inside an effect ("you may pay [N] to ...") ───────────────
-/// Energy `player` could pay right now: floating pool + ready runes in base.
-inline int payableEnergy(const GameState& state, PlayerId player) {
-    int n = state.player(player).rune_pool.energy;
-    for (const auto& [id, obj] : state.objects)
-        if (obj.isRune() && obj.controller == player && !obj.is_exhausted &&
-            obj.location.has_value()) ++n;
-    return n;
-}
-
-/// Pay `amount` Energy: floating pool first, then exhaust ready runes. Returns
-/// false (paying nothing) if it can't be covered.
-inline bool payEnergy(CardContext& ctx, PlayerId player, int amount) {
-    if (amount <= 0) return true;
-    if (payableEnergy(ctx.state, player) < amount) return false;
-    auto& pool = ctx.state.player(player).rune_pool;
-    int from_pool = std::min(pool.energy, amount);
-    pool.energy -= from_pool;
-    amount -= from_pool;
-    for (auto& [id, obj] : ctx.state.objects) {
-        if (amount <= 0) break;
-        if (!obj.isRune() || obj.controller != player || obj.is_exhausted) continue;
-        if (!obj.location.has_value()) continue;
-        obj.is_exhausted = true;
-        ctx.events.emit(ObjectStateChangedEvent{id, "exhausted"});
-        --amount;
-    }
-    return true;
-}
-
 // ── Board queries ───────────────────────────────────────────────────────────
 /// Runes `player` controls (in base, ready or exhausted).
 inline int runesControlled(const GameState& state, PlayerId player) {
@@ -495,6 +432,25 @@ inline int otherFriendlyUnitsHere(const GameState& state, const GameObject& self
     return n;
 }
 
+/// "Its base Might becomes N this turn" (Lulu, Whimsical; Herald of the
+/// Emperor). Modelled like Dragon Form: a this-turn Might delta of
+/// (N - base Might), so buffs, gear and other modifiers still apply and it
+/// expires with the other "this turn" Might. A later "becomes" this turn
+/// replaces an earlier one made through this helper instead of stacking.
+inline void setBaseMightThisTurn(GameState& state, GameObjectId unit, int n) {
+    if (!state.objectExists(unit)) return;
+    auto& u = state.getObject(unit);
+    const int stamp = state.turn.turn_number + 1;   // +1 so turn 0 differs from "unset"
+    auto it = u.card_counters.find("__base_set_turn");
+    if (it != u.card_counters.end() && it->second == stamp)
+        u.temp_might_bonus -= u.card_counters["__base_set_delta"];
+    const int delta = n - u.base_might;
+    u.card_counters["__base_set_turn"] = stamp;
+    u.card_counters["__base_set_delta"] = delta;
+    u.temp_might_bonus += delta;
+    u.recomputeMight();
+}
+
 // ── Agent choices by hand ──
 // For cards whose resolution asks a custom question (a unit from a computed
 // list, then a destination, …) and so build their own MakeChoice options
@@ -527,6 +483,171 @@ inline Intent valChoice(PlayerId p, int v, const std::string& label) {
 inline int takenValue(CardContext& ctx, int fallback) {
     auto c = ctx.executor.takeChoice();
     return (c && c->chosen_value.has_value()) ? *c->chosen_value : fallback;
+}
+
+// ── One step of a resumable resolution, answered by any player ──
+// For choices Card's helpers don't cover: a choice made by a player other than
+// the ability's controller ("each player kills one of their units", "its owner
+// places it on the top or bottom"), or several choices in one resolution. `rp`
+// is a resume_point the Card helpers don't use (20 and up); the step publishes
+// while resume_point < rp, takes the answer at rp and is done above it. The
+// answer is kept in resume_data[slot] (use 10 and up). Steps compose in
+// increasing `rp` order. Returns false while the agent is deciding (the caller
+// returns); otherwise `out` holds the answer (kInvalidId / the first option
+// when there is no chain item, nothing to choose → kInvalidId / `fallback`).
+inline bool stepChooseObject(CardContext& ctx, PlayerId chooser,
+                             const std::vector<GameObjectId>& options,
+                             const std::string& label, int rp, size_t slot,
+                             GameObjectId& out) {
+    auto& ri_opt = ctx.state.chain.resuming;
+    if (!ri_opt.has_value()) { out = options.empty() ? kInvalidId : options.front(); return true; }
+    auto& ri = *ri_opt;
+    while (ri.resume_data.size() <= slot) ri.resume_data.push_back(0);
+    if (ri.resume_point < rp) {
+        if (options.empty()) {
+            ri.resume_data[slot] = static_cast<int32_t>(kInvalidId);
+            ri.resume_point = rp + 1;
+            out = kInvalidId;
+            return true;
+        }
+        std::vector<Intent> opts;
+        for (auto id : options) opts.push_back(objChoice(chooser, id));
+        ctx.executor.requestChoice(chooser, std::move(opts), label);
+        ri.resume_point = rp;
+        return false;
+    }
+    if (ri.resume_point == rp) {
+        GameObjectId t = takenObject(ctx);
+        if (std::find(options.begin(), options.end(), t) == options.end())
+            t = options.empty() ? kInvalidId : options.front();
+        ri.resume_data[slot] = static_cast<int32_t>(t);
+        ri.resume_point = rp + 1;
+        out = t;
+        return true;
+    }
+    out = static_cast<GameObjectId>(ri.resume_data[slot]);
+    return true;
+}
+inline bool stepChooseValue(CardContext& ctx, PlayerId chooser,
+                            const std::vector<std::pair<int, std::string>>& options,
+                            const std::string& label, int rp, size_t slot,
+                            int fallback, int& out) {
+    auto& ri_opt = ctx.state.chain.resuming;
+    if (!ri_opt.has_value()) { out = options.empty() ? fallback : options.front().first; return true; }
+    auto& ri = *ri_opt;
+    while (ri.resume_data.size() <= slot) ri.resume_data.push_back(0);
+    if (ri.resume_point < rp) {
+        if (options.empty()) {
+            ri.resume_data[slot] = static_cast<int32_t>(fallback);
+            ri.resume_point = rp + 1;
+            out = fallback;
+            return true;
+        }
+        std::vector<Intent> opts;
+        for (const auto& [v, l] : options) opts.push_back(valChoice(chooser, v, l));
+        ctx.executor.requestChoice(chooser, std::move(opts), label);
+        ri.resume_point = rp;
+        return false;
+    }
+    if (ri.resume_point == rp) {
+        int v = takenValue(ctx, options.empty() ? fallback : options.front().first);
+        bool known = false;
+        for (const auto& o : options) if (o.first == v) known = true;
+        if (!known) v = options.empty() ? fallback : options.front().first;
+        ri.resume_data[slot] = static_cast<int32_t>(v);
+        ri.resume_point = rp + 1;
+        out = v;
+        return true;
+    }
+    out = static_cast<int>(ri.resume_data[slot]);
+    return true;
+}
+
+/// Several picks in a row from one list ("Kill any number of friendly Bomb
+/// tokens", "Choose two —", "a battlefield"): `chooser` picks one option at a
+/// time, never the same one twice, up to `max`, and may stop with "Done" once
+/// `min` are picked. `options` are object ids (offered with objChoice) or, with
+/// `values`, ints 0..14 (offered with valChoice and `labels`). The options are
+/// re-read on each call; picks already made stand.
+/// State lives in the resolving chain item: resume_data[slot] (0 fresh,
+/// 1 waiting, 2 done), [slot+1] the count, [slot+2 ...] the picks. Use slots
+/// >= 8 (Card's choice helpers own 0..5) with room for max+2 entries, and call
+/// Card::pickXAmount (which appends to resume_data) before this. Returns
+/// nullopt while waiting for the agent (the caller returns). With no resolving
+/// item (a direct call) it takes the first `max` options.
+constexpr int kPickSeveralDone = 15;
+inline std::optional<std::vector<int>> pickSeveral(
+        CardContext& ctx, PlayerId chooser, const std::string& label,
+        const std::vector<int>& options, bool values,
+        const std::vector<std::string>& labels, int min, int max, size_t slot) {
+    auto& ro = ctx.state.chain.resuming;
+    if (!ro.has_value()) {
+        std::vector<int> out(options.begin(),
+                             options.begin() + std::min<size_t>(options.size(), std::max(0, max)));
+        return out;
+    }
+    auto& rd = ro->resume_data;
+    if (rd.size() < slot + 2) rd.resize(slot + 2, 0);
+    auto picked = [&]() {
+        std::vector<int> out;
+        for (int i = 0; i < rd[slot + 1]; ++i) out.push_back(rd[slot + 2 + i]);
+        return out;
+    };
+    if (rd[slot] == 2) return picked();
+    if (rd[slot] == 1) {
+        auto c = ctx.executor.takeChoice();
+        bool stop = !c.has_value();
+        int v = 0;
+        if (c && !c->chosen_objects.empty()) v = static_cast<int>(c->chosen_objects[0]);
+        else if (c && c->chosen_value.has_value()) {
+            v = *c->chosen_value;
+            if (!values || v == kPickSeveralDone) stop = true;
+        } else stop = true;
+        if (stop) { rd[slot] = 2; return picked(); }
+        const int n = rd[slot + 1];
+        if (rd.size() < slot + 3 + n) rd.resize(slot + 3 + n, 0);
+        rd[slot + 2 + n] = v;
+        rd[slot + 1] = n + 1;
+        rd[slot] = 0;
+    }
+    std::vector<int> have = picked();
+    std::vector<Intent> offer;
+    std::string summary;
+    for (size_t i = 0; i < options.size(); ++i) {
+        const int o = options[i];
+        if (std::find(have.begin(), have.end(), o) != have.end()) continue;
+        if (values) {
+            const std::string l = i < labels.size() ? labels[i] : "#" + std::to_string(o);
+            offer.push_back(valChoice(chooser, o, l));
+            summary += (summary.empty() ? "" : "/") + l;
+        } else {
+            offer.push_back(objChoice(chooser, static_cast<GameObjectId>(o)));
+            summary += (summary.empty() ? "" : "/") +
+                (ctx.state.objectExists(o) ? ctx.state.getObject(o).name : std::string("?"));
+        }
+    }
+    if (static_cast<int>(have.size()) >= max || offer.empty()) { rd[slot] = 2; return have; }
+    if (static_cast<int>(have.size()) >= min)
+        offer.push_back(valChoice(chooser, kPickSeveralDone, "Done"));
+    ctx.events.logTrace("PICK_PROMPT: " + label + " [" + summary + "] (" +
+                        std::to_string(have.size()) + " picked)");
+    ctx.executor.requestChoice(chooser, std::move(offer), label);
+    rd[slot] = 1;
+    return std::nullopt;
+}
+
+/// A battlefield, int-coded by BattlefieldId, for pickSeveral(values=true).
+inline std::vector<int> battlefieldOptions(const GameState& state,
+                                           std::vector<std::string>* labels) {
+    std::vector<int> out;
+    for (const auto& bf : state.battlefields) {
+        out.push_back(static_cast<int>(bf.id));
+        if (labels)
+            labels->push_back(state.objectExists(bf.card_object_id)
+                ? state.getObject(bf.card_object_id).name
+                : "Battlefield #" + std::to_string(bf.id));
+    }
+    return out;
 }
 
 /// Destinations a card effect may move `u` to, int-coded for valChoice:

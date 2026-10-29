@@ -19,9 +19,15 @@ public:
     TargetRequirements getTargetRequirements() const override {
         return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_friendly = true};
     }
-    // "It can't move this turn" is not modeled (no engine flag).
+    // "Ready a friendly unit. It can't move this turn. Draw 1."
+    // GameObject::cant_move_this_turn blocks its standard move until the
+    // expiration step.
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty() && ctx.state.objectExists(targets[0])) ctx.executor.readyObject(targets[0]);
+        if (!targets.empty() && ctx.state.objectExists(targets[0]) &&
+            ctx.state.getObject(targets[0]).location.has_value()) {
+            ctx.executor.readyObject(targets[0]);
+            ctx.state.getObject(targets[0]).cant_move_this_turn = true;
+        }
         ctx.executor.drawCards(ctx.controller, 1);
     }
 private:

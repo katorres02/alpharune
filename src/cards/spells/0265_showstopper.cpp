@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -15,29 +16,48 @@ class Showstopper : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
     // "Buff a friendly unit in your base, then move it to a battlefield."
-    // (Previously moved to base — direction was inverted.)
+    // The unit is the spell's target (friendly, in base); the battlefield is
+    // chosen as it resolves (resume points 20/21/22, resume_data[15]).
+    TargetRequirements getTargetRequirements() const override {
+        return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_friendly = true};
+    }
+    std::vector<GameObjectId> enumerateLegalTargets(const GameState& state,
+                                                    PlayerId controller) const override {
+        std::vector<GameObjectId> out;
+        for (auto& [id, obj] : state.objects)
+            if (obj.isUnit() && obj.controller == controller && obj.isAtBase())
+                out.push_back(id);
+        return out;
+    }
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
         if (targets.empty() || !ctx.state.objectExists(targets[0])) return;
         GameObjectId unit = targets[0];
-        if (ctx.state.getObject(unit).buff_count == 0)
-            ctx.executor.buffUnit(unit);  // "+1 [M] buff if it doesn't have one"
-        // Move it to a battlefield (prefer one the controller already controls).
-        BattlefieldId dest = kInvalidId;
-        for (const auto& bf : ctx.state.battlefields) {
-            if (bf.controller.has_value() && *bf.controller == ctx.controller) {
-                dest = bf.id;
-                break;
+        const auto& u = ctx.state.getObject(unit);
+        if (!u.isUnit() || u.controller != ctx.controller || !u.isAtBase()) return;  // mistarget
+        if (ctx.state.battlefields.empty()) return;
+        BattlefieldId dest = ctx.state.battlefields.front().id;
+        if (ctx.state.chain.resuming.has_value()) {
+            auto& ri = *ctx.state.chain.resuming;
+            if (ri.resume_data.size() < 16) ri.resume_data.resize(16, 0);
+            if (ri.resume_point < 20) {
+                std::vector<Intent> opts;
+                for (const auto& bf : ctx.state.battlefields)
+                    opts.push_back(valChoice(ctx.controller, 1 + static_cast<int>(bf.id),
+                                             destLabel(1 + static_cast<int>(bf.id))));
+                ctx.executor.requestChoice(ctx.controller, std::move(opts),
+                                           "Showstopper: move it to which battlefield");
+                ri.resume_point = 21;
+                return;
             }
+            if (ri.resume_point == 21) {
+                ri.resume_data[15] = takenValue(ctx, 1 + static_cast<int>(dest));
+                ri.resume_point = 22;
+            }
+            dest = static_cast<BattlefieldId>(ri.resume_data[15] - 1);
         }
-        if (dest == kInvalidId && !ctx.state.battlefields.empty())
-            dest = ctx.state.battlefields.front().id;
-        if (dest != kInvalidId)
-            ctx.executor.moveToBattlefield(unit, dest);
-        ctx.events.logTrace("SHOWSTOPPER: buff base unit, move to a battlefield");
-    }
-    TargetRequirements getTargetRequirements() const override {
-        // "a friendly unit in your base"
-        return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_friendly = true};
+        ctx.executor.buffUnit(unit);  // "+1 [M] buff if it doesn't have one"
+        ctx.executor.moveToBattlefield(unit, dest);
+        ctx.events.logTrace("SHOWSTOPPER: buff base unit, move to BF#" + std::to_string(dest));
     }
 private:
     const CardDef def_ = [] {

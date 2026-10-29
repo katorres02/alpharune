@@ -1,4 +1,5 @@
 #include "cards/card.h"
+#include "cards/card_helpers.h"
 #include "cards/card_registry.h"
 #include "core/game_state.h"
 #include "core/events.h"
@@ -14,14 +15,44 @@ namespace {
 class BeastBelow : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty())
-            ctx.executor.bounceToHand(targets[0]);
+    // "When you play me, return another friendly unit and an enemy unit to
+    // their owners' hands." Both units are chosen at finalization: a pair
+    // (friendly, enemy) when another friendly unit exists, else just the
+    // enemy unit.
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        const PlayerId me = ctx.controller;
+        const GameObjectId self = ctx.source;
+        auto friendlies = [&]() {
+            return chooseableUnits(ctx.state, me, [&](const GameObject& u) {
+                return u.controller == me && u.id != self;
+            });
+        };
+        auto enemies = [&]() {
+            return chooseableUnits(ctx.state, me,
+                                   [&](const GameObject& u) { return u.controller != me; });
+        };
+        // Which helper was used at finalization (pair: resume_point >= 9).
+        const int rp = ctx.state.chain.resuming ? ctx.state.chain.resuming->resume_point : 0;
+        const bool use_pair = rp >= 9 || (rp < 6 && !friendlies().empty());
+        GameObjectId f = kInvalidId, e = kInvalidId;
+        if (use_pair) {
+            auto en = enemies();
+            auto pr = pickTargetPair(ctx, "Beast Below: return another friendly unit and an enemy unit",
+                                     friendlies(), [en](GameObjectId) { return en; });
+            f = pr.first;
+            e = pr.second;
+        } else {
+            e = pickTarget(ctx, "Beast Below: return an enemy unit", enemies());
+        }
+        if (ctx.executor.hasPendingChoice()) return;
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        for (auto t : {f, e})
+            if (t != kInvalidId && ctx.state.objectExists(t) &&
+                ctx.state.getObject(t).location.has_value())
+                ctx.executor.bounceToHand(t);
     }
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_enemy = true, .must_be_friendly = true};
-    }
 private:
     const CardDef def_ = [] {
         CardDef d;

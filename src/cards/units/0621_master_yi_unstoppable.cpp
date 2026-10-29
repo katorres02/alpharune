@@ -21,21 +21,32 @@ public:
     //   [Level 3]  I cost [2][G] less.
     //   [Level 6]  I cost [4][G][G] less instead.
     //   [Level 11] I cost [6][G][G][G] less instead.
-    // selfCostReduction only expresses an ENERGY reduction (clamped >= 0); the
-    // engine has no per-card POWER reduction hook, so the [G]/[G][G]/[G][G][G]
-    // power portion of each tier is an ENGINE GAP and is NOT applied here.
-    int selfCostReduction(const GameState& state, PlayerId player) const override {
+    // Energy through selfCostReduction, the [G] part through
+    // selfPowerCostReduction (both clamped at 0 by the engine).
+    static int tier(const GameState& state, PlayerId player) {
         int xp = state.player(player).xp;
-        if (xp >= 11) return 6;
-        if (xp >= 6)  return 4;
-        if (xp >= 3)  return 2;
+        if (xp >= 11) return 3;
+        if (xp >= 6)  return 2;
+        if (xp >= 3)  return 1;
         return 0;
     }
+    int selfCostReduction(const GameState& state, PlayerId player) const override {
+        return 2 * tier(state, player);
+    }
+    int selfPowerCostReduction(const GameState& state, PlayerId player) const override {
+        return tier(state, player);
+    }
 
-    // "[Level 16] I can't be chosen by enemy spells and abilities." is an
-    // ENGINE GAP: canBeChosenByEnemy() is a stateless static hook (no GameState/
-    // XP access), so the L16-gated untargetability cannot be expressed. Left
-    // unimplemented.
+    // "[Level 16] I can't be chosen by enemy spells and abilities." Set on
+    // myself during the aura pass (the engine resets the flag before it).
+    void applyPassiveAura(GameState& state, PlayerId controller) const override {
+        if (state.player(controller).xp < 16) return;
+        for (auto& [id, obj] : state.objects) {
+            if (obj.card_def_id != cardDefId() || obj.controller != controller) continue;
+            if (!obj.location.has_value()) continue;
+            obj.untargetable_by_enemy = true;
+        }
+    }
 private:
     const CardDef def_ = [] {
         CardDef d;

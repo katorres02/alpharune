@@ -59,14 +59,14 @@ public:
                 auto it = std::find(ps.main_deck.begin(), ps.main_deck.end(), cid);
                 if (it != ps.main_deck.end()) ps.main_deck.erase(it);
             }
-            if (drawn != kInvalidId && ctx.state.objectExists(drawn)) {
-                auto& d = ctx.state.getObject(drawn);
-                d.zone = ZoneType::Hand;
-                d.location = std::nullopt;
-                ps.hand.push_back(drawn);
-            }
+            // "Draw one": put it back on top and draw it, so it is a real draw
+            // (draw counters, "when you draw" triggers).
             std::vector<GameObjectId> rest;
             for (auto cid : top) if (cid != drawn) rest.push_back(cid);
+            if (drawn != kInvalidId && ctx.state.objectExists(drawn)) {
+                ps.main_deck.push_back(drawn);
+                ctx.executor.drawCards(ctx.controller, 1);
+            }
             if (!rest.empty()) ctx.executor.recycleCards(ctx.controller, rest);
             ctx.events.logTrace("CALLED SHOT: drew one of top 2, recycled the other");
             return;

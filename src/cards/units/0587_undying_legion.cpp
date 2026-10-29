@@ -14,7 +14,21 @@ namespace {
 class UndyingLegion : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
+    // "[Legion][>] You may play me from your trash for [3][R]." A standing
+    // trash-play permission (Card::trashPlayCost -> TrashReplayGrant): while
+    // I'm in my owner's trash and they've played another card this turn
+    // (Legion), I'm offered at the usual unit play locations for [3][R]
+    // instead of my printed cost.
     bool requiresLegion() const override { return true; }
+    TrashPlayCost trashPlayCost(const GameState& state, PlayerId owner) const override {
+        if (state.player(owner).cards_played_this_turn < 1) return {};   // [Legion]
+        TrashPlayCost c;
+        c.valid = true;
+        c.energy = 3;
+        c.power = 1;
+        c.power_domain = Domain::Fury;   // [R]
+        return c;
+    }
 private:
     const CardDef def_ = [] {
         CardDef d;

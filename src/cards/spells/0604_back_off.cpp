@@ -19,9 +19,8 @@ public:
         return TargetRequirements{.count = 1, .must_be_unit = true};
     }
     // Phase 6q — defer target selection so the policy head gets
-    // distinct vocab slots per target choice. Draw-1 rider is a
-    // partial-fizzle that fires whether or not the stun target is
-    // legal at resolve time (matches existing "always-draw" reading).
+    // distinct vocab slots per target choice. The draw-1 rider fires whether
+    // or not the stun target is still legal, but only for a play from hand.
     bool needsPlayTimeTarget() const override { return true; }
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         auto legal = enumerateLegalTargets(ctx.state, ctx.controller);
@@ -36,10 +35,22 @@ public:
         if (picked != kInvalidId) {
             ctx.executor.stunUnit(picked);
         }
-        // "If you played this from your hand, draw 1." Always-draw
-        // (more generous reading); rider fires whether or not the
-        // stun target was legal.
-        ctx.executor.drawCards(ctx.controller, 1);
+        // "If you played this from your hand, draw 1." A [Hidden] play from
+        // face down (GameEngine::executePlayFromHidden stamps
+        // __played_from_facedown) is not from hand. The marker is consumed so
+        // a later play of this card from hand draws again.
+        // GAP: a play from the trash (a trash-replay grant) is not recorded on
+        // the object and still reads as "from hand".
+        bool from_hand = true;
+        if (ctx.state.objectExists(ctx.source)) {
+            auto& self = ctx.state.getObject(ctx.source);
+            auto it = self.card_counters.find("__played_from_facedown");
+            if (it != self.card_counters.end() && it->second == 1) {
+                from_hand = false;
+                it->second = 0;
+            }
+        }
+        if (from_hand) ctx.executor.drawCards(ctx.controller, 1);
     }
 private:
     const CardDef def_ = [] {

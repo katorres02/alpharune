@@ -16,7 +16,7 @@ class DeadlyFlourish : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
     TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true};
+        return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_enemy = true};
     }
     // Phase 6q — defer target selection so the policy head gets
     // distinct vocab slots per target choice.
@@ -36,6 +36,7 @@ public:
         da.controller = ctx.controller;
         da.trigger = TriggerType::WhenIDie;
         da.target_filter = victim;
+        da.expires_on_turn = ctx.state.turn.turn_number;   // "when it dies THIS TURN"
         ctx.state.delayed_abilities.push_back(da);
         ctx.events.logTrace("DEADLY FLOURISH: armed death-watch on victim "
                              "(id=" + std::to_string(victim) + ")");

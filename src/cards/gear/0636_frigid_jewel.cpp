@@ -15,24 +15,33 @@ class FrigidJewel : public GearCard {
 public:
     const CardDef& def() const override { return def_; }
     // "When you draw your second card each turn, give a friendly unit +2 [M]
-    // this turn." WhenYouDrawACard fires per draw; we act once when the
-    // controller's draws_this_turn first reaches 2 (once-per-turn guard).
+    // this turn." WhenYouDrawACard fires per draw event; it triggers only once
+    // the controller has drawn 2+ this turn and it hasn't resolved yet this
+    // turn. The friendly unit is chosen as the ability is finalized.
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     TriggerType triggerType() const override { return TriggerType::WhenYouDrawACard; }
+    static int sentinel(const GameState& state) { return state.turn.turn_number + 1; }
+    bool triggerCondition(const GameState& state, GameObjectId source, PlayerId controller,
+                          TriggerType, GameObjectId) const override {
+        if (state.player(controller).draws_this_turn < 2) return false;
+        if (!state.objectExists(source)) return false;
+        const auto& cc = state.getObject(source).card_counters;
+        auto it = cc.find("__frigid_fired_turn");
+        return it == cc.end() || it->second != sentinel(state);
+    }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>&) override {
-        auto& ps = ctx.state.player(ctx.controller);
-        if (ps.draws_this_turn < 2) return;                 // not yet the 2nd draw
+        if (!ctx.state.objectExists(ctx.source)) return;
+        if (ctx.state.player(ctx.controller).draws_this_turn < 2) return;
+        std::vector<GameObjectId> friendly;
+        for (auto& [id, obj] : ctx.state.objects)
+            if (obj.isUnit() && obj.controller == ctx.controller && obj.location.has_value())
+                friendly.push_back(id);
+        GameObjectId tgt = pickTarget(ctx, "Frigid Jewel: +2 [M] to a friendly unit", friendly);
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (tgt == kInvalidId || !ctx.state.objectExists(tgt)) return;   // none / waiting
         auto& self = ctx.state.getObject(ctx.source);
-        const int sentinel = ctx.state.turn.turn_number + 1; // avoid 0-default clash
-        if (self.card_counters["__frigid_fired_turn"] == sentinel) return;  // once/turn
-        // Pick a friendly unit (deterministic: first on-board friendly unit).
-        GameObjectId tgt = kInvalidId;
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (id == ctx.source) continue;
-            if (obj.isUnit() && obj.controller == ctx.controller &&
-                obj.location.has_value()) { tgt = id; break; }
-        }
-        if (tgt == kInvalidId) return;                      // no friendly unit -> no effect
-        self.card_counters["__frigid_fired_turn"] = sentinel;
+        if (self.card_counters["__frigid_fired_turn"] == sentinel(ctx.state)) return;  // once/turn
+        self.card_counters["__frigid_fired_turn"] = sentinel(ctx.state);
         ctx.executor.giveTemporaryMight(tgt, 2);
         ctx.events.logTrace("FRIGID JEWEL: 2nd draw -> a friendly unit +2 [M] this turn");
     }

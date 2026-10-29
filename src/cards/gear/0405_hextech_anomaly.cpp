@@ -16,7 +16,8 @@ class HextechAnomaly : public GearCard {
 public:
     const CardDef& def() const override { return def_; }
     bool hasActivatedAbility() const override { return true; }
-    bool isActionAbility() const override { return false; }  // Reaction
+    bool isActionAbility() const override { return false; }
+    bool isReactionAbility() const override { return true; }   // "[E]: [Reaction] — ..." 
     ActivationCost getActivationCost() const override {
         ActivationCost c;
         c.exhaust = true;

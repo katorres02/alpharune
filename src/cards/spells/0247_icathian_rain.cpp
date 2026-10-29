@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "cards/card_helpers.h"
 
 namespace riftbound {
 namespace {
@@ -14,52 +15,61 @@ namespace {
 class IcathianRain : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty()) {
-            ctx.executor.dealDamage(targets[0], 2, ctx.source);
-            if (ctx.state.objectExists(targets[0]) &&
-                ctx.state.getObject(targets[0]).hasLethalDamage()) {
-                ctx.executor.killObject(targets[0]);
-            }
-        }
-        if (!targets.empty()) {
-            ctx.executor.dealDamage(targets[0], 2, ctx.source);
-            if (ctx.state.objectExists(targets[0]) &&
-                ctx.state.getObject(targets[0]).hasLethalDamage()) {
-                ctx.executor.killObject(targets[0]);
-            }
-        }
-        if (!targets.empty()) {
-            ctx.executor.dealDamage(targets[0], 2, ctx.source);
-            if (ctx.state.objectExists(targets[0]) &&
-                ctx.state.getObject(targets[0]).hasLethalDamage()) {
-                ctx.executor.killObject(targets[0]);
-            }
-        }
-        if (!targets.empty()) {
-            ctx.executor.dealDamage(targets[0], 2, ctx.source);
-            if (ctx.state.objectExists(targets[0]) &&
-                ctx.state.getObject(targets[0]).hasLethalDamage()) {
-                ctx.executor.killObject(targets[0]);
-            }
-        }
-        if (!targets.empty()) {
-            ctx.executor.dealDamage(targets[0], 2, ctx.source);
-            if (ctx.state.objectExists(targets[0]) &&
-                ctx.state.getObject(targets[0]).hasLethalDamage()) {
-                ctx.executor.killObject(targets[0]);
-            }
-        }
-        if (!targets.empty()) {
-            ctx.executor.dealDamage(targets[0], 2, ctx.source);
-            if (ctx.state.objectExists(targets[0]) &&
-                ctx.state.getObject(targets[0]).hasLethalDamage()) {
-                ctx.executor.killObject(targets[0]);
-            }
-        }
-    }
+    // "Deal 2 to a unit." x6 — six separate instructions, each choosing its
+    // own unit (the same unit may be chosen more than once). All six units
+    // are chosen as the spell is played (kFinalizeResolve, CR 355); each
+    // instruction is skipped if its unit is gone by resolution.
+    // Resumable: resume_point 20 + 2i publishes choice i, 21 + 2i consumes it;
+    // the picks live in resume_data[10 + i]. 32 = all chosen.
+    static constexpr int kHits = 6, kFirstRp = 20, kDoneRp = kFirstRp + 2 * kHits,
+                         kData = 10;
+    unsigned choicesAtFinalization() const override { return kFinalizeResolve; }
     TargetRequirements getTargetRequirements() const override {
         return TargetRequirements{.count = 1, .must_be_unit = true};
+    }
+    // One Play intent with no targets; the six choices are made through the
+    // card's own prompts (same opt-in Falling Star uses for its two).
+    bool needsPlayTimeTargetPair() const override { return true; }
+
+    static std::vector<GameObjectId> units(const GameState& state) {
+        std::vector<GameObjectId> out;
+        for (auto& [id, obj] : state.objects)
+            if (obj.isUnit() && obj.location.has_value()) out.push_back(id);
+        return out;
+    }
+
+    void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        if (!ctx.state.chain.resuming.has_value()) return;
+        auto& ri = *ctx.state.chain.resuming;
+        while (ri.resume_data.size() < static_cast<size_t>(kData + kHits))
+            ri.resume_data.push_back(static_cast<int32_t>(kInvalidId));
+        if (ri.resume_point < kFirstRp) ri.resume_point = kFirstRp;
+        while (ri.resume_point < kDoneRp) {
+            const int i = (ri.resume_point - kFirstRp) / 2;
+            if ((ri.resume_point - kFirstRp) % 2 == 0) {
+                auto legal = units(ctx.state);
+                if (legal.empty()) { ri.resume_point += 2; continue; }
+                std::vector<Intent> options;
+                for (auto t : legal) options.push_back(objChoice(ctx.controller, t));
+                ctx.executor.requestChoice(ctx.controller, std::move(options),
+                    "Icathian Rain: deal 2 to a unit (" + std::to_string(i + 1) + "/6)");
+                ri.resume_point += 1;
+                return;   // waiting for the agent
+            }
+            ri.resume_data[kData + i] = static_cast<int32_t>(takenObject(ctx));
+            ri.resume_point += 1;
+        }
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+
+        for (int i = 0; i < kHits; ++i) {
+            const auto t = static_cast<GameObjectId>(ri.resume_data[kData + i]);
+            if (t == kInvalidId || !ctx.state.objectExists(t)) continue;
+            const auto& u = ctx.state.getObject(t);
+            if (!u.isUnit() || !u.location.has_value()) continue;   // left the board
+            ctx.executor.dealDamage(t, 2, ctx.source);
+            if (ctx.state.objectExists(t) && ctx.state.getObject(t).hasLethalDamage())
+                ctx.executor.killObject(t);
+        }
     }
 private:
     const CardDef def_ = [] {

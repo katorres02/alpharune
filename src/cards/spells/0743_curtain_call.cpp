@@ -12,51 +12,140 @@
 namespace riftbound {
 namespace {
 
+// "[Repeat] — [1] / [A] / [1][A]. Choose one you haven't already chosen —
+//  Draw 1. / Deal 2 to a unit at a battlefield. / Deal 3 to a unit at a base. /
+//  Give a unit at a battlefield -4 [M] this turn."
+//
+// Three separate Repeat costs, each paid at most once (the engine's Repeat
+// parser handles a single repeatable cost, so this card runs its own): every
+// one paid adds one more resolution of the effect, each with a mode not chosen
+// before. Costs, modes and targets are all chosen as the spell is put on the
+// chain (kFinalizeResolve, CR 355 / 820); the effects happen as it resolves,
+// and a target that is no longer legal then is skipped.
+//
+// Resumable layout (stepChooseValue / stepChooseObject):
+//   tranche t (0..2): resume_point 20+2t, resume_data[10+t] (1 = paid)
+//   execution i:      mode at 30+4i -> data[13+2i]; target at 32+4i -> data[14+2i]
 class CurtainCall : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true, .optional = true};
+    unsigned choicesAtFinalization() const override { return kFinalizeResolve; }
+
+    enum Mode { kDraw = 0, kDeal2Bf = 1, kDeal3Base = 2, kMinus4Bf = 3 };
+    static bool needsBf(int m) { return m == kDeal2Bf || m == kMinus4Bf; }
+
+    static std::vector<GameObjectId> modeTargets(CardContext& ctx, int m) {
+        if (m == kDraw) return {};
+        const PlayerId me = ctx.controller;
+        const int payable = ctx.executor.payableAnyPower(me);
+        auto out = chooseableUnits(ctx.state, me, [&](const GameObject& o) {
+            if (needsBf(m) ? !o.isAtBattlefield() : !o.isAtBase()) return false;
+            return ctx.executor.deflectCostFor(me, o.id) <= payable;
+        });
+        std::sort(out.begin(), out.end());
+        return out;
     }
-    void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        auto& src = ctx.state.getObject(ctx.source);
-        int& used_mask = src.card_counters["curtain_call_used_mask"];
+    static bool stillLegal(const CardContext& ctx, int m, GameObjectId t) {
+        if (!ctx.state.objectExists(t)) return false;
+        const auto& o = ctx.state.getObject(t);
+        if (!o.isUnit() || !o.location.has_value()) return false;
+        return needsBf(m) ? o.isAtBattlefield() : o.isAtBase();
+    }
 
-        // Compute legal-mode bitmask. Mode 0 (Draw) always legal if not
-        // used. Modes 1, 2, 3 require a compatible target.
-        uint32_t legal = 0;
-        if (!(used_mask & (1 << 0))) legal |= (1u << 0);  // Draw 1 — no target needed
-        bool has_target = !targets.empty() && ctx.state.objectExists(targets[0]);
-        bool tgt_at_bf  = has_target && ctx.state.getObject(targets[0]).isAtBattlefield();
-        bool tgt_at_base = has_target && ctx.state.getObject(targets[0]).isAtBase();
-        if (!(used_mask & (1 << 1)) && tgt_at_bf)   legal |= (1u << 1);
-        if (!(used_mask & (1 << 2)) && tgt_at_base) legal |= (1u << 2);
-        if (!(used_mask & (1 << 3)) && tgt_at_bf)   legal |= (1u << 3);
+    void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        auto* ri = ctx.state.chain.resuming.has_value() ? &*ctx.state.chain.resuming : nullptr;
+        auto rp_now = [&]() { return ri ? ri->resume_point : 0; };
+        const PlayerId me = ctx.controller;
 
-        int mode = pickMode(ctx, "Curtain Call", 4,
-                             {"Draw 1", "Deal 2 (BF)",
-                              "Deal 3 (base)", "-4M (BF)"},
-                             legal);
-        if (mode < 0) return;  // -1 pending, -2 no legal mode
+        // ── Repeat costs: [1], [A], [1][A] ──
+        int executions = 1;
+        for (int t = 0; t < 3; ++t) {
+            const int e = (t == 1) ? 0 : 1, p = (t == 0) ? 0 : 1;
+            const bool affordable = payableEnergy(ctx.state, me) >= e &&
+                                    (p == 0 || payableOnePower(ctx.state, me, std::nullopt));
+            static const char* kLabels[3] = {"[1]", "[A]", "[1][A]"};
+            std::vector<std::pair<int, std::string>> opts;
+            if (affordable)
+                opts = {{0, "Don't pay"}, {1, std::string("Pay ") + kLabels[t] + " to repeat"}};
+            const int rp = 20 + 2 * t;
+            const int before = rp_now();
+            int paid = 0;
+            if (!stepChooseValue(ctx, me, opts, std::string("Curtain Call: [Repeat] ") + kLabels[t],
+                                 rp, 10 + t, 0, paid))
+                return;
+            if (paid == 1 && (!ri || before == rp)) {   // answered just now: pay it
+                if (e > 0) payEnergy(ctx, me, e);
+                if (p > 0) payOnePower(ctx, me, std::nullopt);
+                ctx.events.logTrace(std::string("CURTAIN CALL: paid Repeat ") + kLabels[t]);
+            }
+            if (paid == 1) ++executions;
+        }
 
-        used_mask |= (1 << mode);
-        switch (mode) {
-            case 0:
+        // ── Modes and targets, one per execution ──
+        std::vector<int> modes;
+        std::vector<GameObjectId> tgts;
+        uint32_t used = 0;
+        for (int i = 0; i < executions; ++i) {
+            std::vector<std::pair<int, std::string>> opts;
+            static const char* kModeLabels[4] = {"Draw 1", "Deal 2 to a unit at a battlefield",
+                                                 "Deal 3 to a unit at a base",
+                                                 "Give a unit at a battlefield -4 [M] this turn"};
+            for (int m = 0; m < 4; ++m) {
+                if (used & (1u << m)) continue;
+                if (m != kDraw && modeTargets(ctx, m).empty()) continue;
+                opts.push_back({m, kModeLabels[m]});
+            }
+            int mode = -1;
+            if (!stepChooseValue(ctx, me, opts, "Curtain Call: choose one", 30 + 4 * i,
+                                 13 + 2 * i, -1, mode))
+                return;
+            if (mode < 0) break;                     // nothing left to choose
+            used |= (1u << mode);
+            GameObjectId t = kInvalidId;
+            if (mode != kDraw) {
+                const int rp = 32 + 4 * i;
+                const int before = rp_now();
+                if (!stepChooseObject(ctx, me, modeTargets(ctx, mode),
+                                      std::string("Curtain Call: ") + kModeLabels[mode],
+                                      rp, 14 + 2 * i, t))
+                    return;
+                if (t != kInvalidId && (!ri || before == rp)) {
+                    // Chosen just now: Deflect (CR 809) is paid as it is chosen.
+                    const int deflect = ctx.executor.deflectCostFor(me, t);
+                    if (deflect > 0) ctx.executor.payAnyPower(me, deflect);
+                }
+            }
+            modes.push_back(mode);
+            tgts.push_back(t);
+        }
+        if (finalizingChoices(ctx)) return;   // choices and costs end here
+
+        for (size_t i = 0; i < modes.size(); ++i) {
+            const int m = modes[i];
+            const GameObjectId t = tgts[i];
+            if (m == kDraw) {
                 ctx.events.logTrace("CURTAIN CALL: Draw 1");
-                ctx.executor.drawCards(ctx.controller, 1);
-                break;
-            case 1:
+                ctx.executor.drawCards(me, 1);
+                continue;
+            }
+            if (!stillLegal(ctx, m, t)) {
+                ctx.events.logTrace("CURTAIN CALL: target no longer legal, mode skipped");
+                continue;
+            }
+            switch (m) {
+            case kDeal2Bf:
                 ctx.events.logTrace("CURTAIN CALL: Deal 2 (BF)");
-                ctx.executor.dealDamage(targets[0], 2, ctx.source);
+                ctx.executor.dealDamage(t, 2, ctx.source);
                 break;
-            case 2:
+            case kDeal3Base:
                 ctx.events.logTrace("CURTAIN CALL: Deal 3 (base)");
-                ctx.executor.dealDamage(targets[0], 3, ctx.source);
+                ctx.executor.dealDamage(t, 3, ctx.source);
                 break;
-            case 3:
+            case kMinus4Bf:
                 ctx.events.logTrace("CURTAIN CALL: -4M (BF)");
-                ctx.executor.giveTemporaryMight(targets[0], -4, /*minimum=*/0);
+                ctx.executor.giveTemporaryMight(t, -4, /*minimum=*/0);
                 break;
+            }
         }
     }
 private:

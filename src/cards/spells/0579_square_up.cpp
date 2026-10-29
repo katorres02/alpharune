@@ -15,13 +15,47 @@ namespace {
 class SquareUp : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
+    // "[Repeat] — Discard 1. Give a unit [Assault 4] this turn."
+    // The engine's [Repeat] reads only Energy/Power costs, so the discard is
+    // offered as an optional additional cost at play
+    // (GameEngine::maybePayOptionalAdditionalCost); paying it repeats the
+    // effect once, on a unit chosen as the repeat resolves.
+    static constexpr const char* kRepeatPaid = "__square_up_repeat_paid";
+    OptionalAdditionalCost optionalAdditionalCost() const override {
+        OptionalAdditionalCost c;
+        c.valid = true;
+        c.discard_cards = 1;
+        c.paid_flag = kRepeatPaid;
+        return c;
+    }
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        GameObjectId target = targets.empty() ? kInvalidId : targets[0];
-        discardThenAct(ctx, 1, "Square Up: discard 1 then +Assault 4",
-            [target](CardContext& c) {
-                if (target != kInvalidId)
-                    c.executor.giveTemporaryKeyword(target, Keyword::Assault, 4);
-            });
+        auto& ri = ctx.state.chain.resuming;
+        // First effect, once (the repeat's pickTarget re-enters at 6..8).
+        if (!ri.has_value() || ri->resume_point < 6) {
+            if (!targets.empty() && ctx.state.objectExists(targets[0]) &&
+                ctx.state.getObject(targets[0]).location.has_value())
+                ctx.executor.giveTemporaryKeyword(targets[0], Keyword::Assault, 4);
+        }
+        bool paid = false;
+        if (ctx.state.objectExists(ctx.source)) {
+            auto& c = ctx.state.getObject(ctx.source).card_counters;
+            auto it = c.find(kRepeatPaid);
+            paid = it != c.end() && it->second == 1;
+        }
+        if (!paid) return;
+        std::vector<GameObjectId> legal;
+        for (auto& [id, obj] : ctx.state.objects) {
+            if (!obj.isUnit() || !obj.location.has_value()) continue;
+            if (obj.controller != ctx.controller && obj.untargetable_by_enemy) continue;
+            legal.push_back(id);
+        }
+        GameObjectId again = pickTarget(ctx, "Square Up (repeat): give a unit [Assault 4]", legal);
+        if (ctx.executor.hasPendingChoice()) return;   // waiting for the agent
+        if (ctx.state.objectExists(ctx.source))
+            ctx.state.getObject(ctx.source).card_counters.erase(kRepeatPaid);  // one play, one payment
+        if (again == kInvalidId || !ctx.state.objectExists(again)) return;
+        ctx.executor.giveTemporaryKeyword(again, Keyword::Assault, 4);
+        ctx.events.logTrace("SQUARE UP: repeat -> [Assault 4]");
     }
     TargetRequirements getTargetRequirements() const override {
         return TargetRequirements{.count = 1, .must_be_unit = true};

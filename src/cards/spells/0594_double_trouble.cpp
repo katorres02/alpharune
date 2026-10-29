@@ -21,30 +21,59 @@ public:
     const CardDef& def() const override { return def_; }
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         auto& ps = ctx.state.player(ctx.controller);
-        // Look at the top 3 (top = back of vector).
+        // Look at the top 3 (top = back of vector). Their ids are stashed in
+        // resume_data[6..8] on the first pass so re-entries after the choices
+        // see the same cards.
+        auto& ri = ctx.state.chain.resuming;
         std::vector<GameObjectId> top3;
-        for (int i = (int)ps.main_deck.size() - 1;
-             i >= 0 && (int)top3.size() < 3; --i) {
-            top3.push_back(ps.main_deck[i]);
+        if (ri.has_value() && ri->resume_data.size() >= 10 && ri->resume_data[9] == 1) {
+            for (int i = 6; i < 9; ++i)
+                if (ri->resume_data[i] != static_cast<int32_t>(kInvalidId))
+                    top3.push_back(static_cast<GameObjectId>(ri->resume_data[i]));
+        } else {
+            for (int i = (int)ps.main_deck.size() - 1;
+                 i >= 0 && (int)top3.size() < 3; --i)
+                top3.push_back(ps.main_deck[i]);
+            if (ri.has_value()) {
+                while (ri->resume_data.size() < 10) ri->resume_data.push_back(0);
+                for (int i = 0; i < 3; ++i)
+                    ri->resume_data[6 + i] = i < (int)top3.size()
+                        ? static_cast<int32_t>(top3[i]) : static_cast<int32_t>(kInvalidId);
+                ri->resume_data[9] = 1;
+            }
         }
         if (top3.empty()) return;
 
-        // Reveal + draw a unit from among them (first unit found).
+        // "You may reveal a unit from among them and draw it."
+        auto units = [&]() {
+            std::vector<GameObjectId> out;
+            for (auto cid : top3)
+                if (ctx.state.objectExists(cid) && ctx.state.getObject(cid).isUnit() &&
+                    std::find(ps.main_deck.begin(), ps.main_deck.end(), cid) != ps.main_deck.end())
+                    out.push_back(cid);
+            return out;
+        };
         GameObjectId drawn_unit = kInvalidId;
-        for (auto cid : top3) {
-            if (ctx.state.objectExists(cid) && ctx.state.getObject(cid).isUnit()) {
-                drawn_unit = cid;
-                break;
-            }
+        int conf = confirmOptional(ctx, "Double Trouble: reveal a unit and draw it?",
+                                   [&]() { return !units().empty(); });
+        if (conf == -1) return;   // waiting for the agent
+        if (conf == 1) {
+            drawn_unit = pickTarget(ctx, "Double Trouble: which unit?", units());
+            if (ctx.executor.hasPendingChoice()) return;   // waiting for the agent
         }
-        if (drawn_unit != kInvalidId) {
+        if (drawn_unit != kInvalidId && ctx.state.objectExists(drawn_unit)) {
             auto& deck = ps.main_deck;
             deck.erase(std::remove(deck.begin(), deck.end(), drawn_unit), deck.end());
             auto& obj = ctx.state.getObject(drawn_unit);
+            ctx.events.emit(CardRevealedEvent{drawn_unit, obj.card_def_id, obj.owner,
+                                              /*revealed_to_all=*/true, PlayerId::None,
+                                              ZoneType::MainDeck});
             obj.zone = ZoneType::Hand;
             obj.location = std::nullopt;
             ps.hand.push_back(drawn_unit);
-            ctx.events.logTrace("DOUBLE TROUBLE: drew unit " + obj.name);
+            ps.draws_this_turn += 1;
+            ctx.events.emit(CardsDrawnEvent{ctx.controller, 1});
+            ctx.events.logTrace("DOUBLE TROUBLE: revealed and drew " + obj.name);
         }
 
         // Recycle the rest (the remaining looked-at cards) to bottom of deck.
@@ -59,6 +88,7 @@ public:
             }
         }
         if (!rest.empty()) {
+            // GAP: the recycle order is not chosen by the player.
             ctx.executor.recycleCards(ctx.controller, rest);
             ctx.events.logTrace("DOUBLE TROUBLE: recycled " +
                                 std::to_string(rest.size()) + " card(s)");

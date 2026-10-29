@@ -19,60 +19,74 @@ public:
     // "[Action][>] Exhaust a unit you control, [E]: Move a different unit you
     //  control to the location of the unit you exhausted to pay for this
     //  ability."
-    // [>]/[E] = exhaust the gear. The target is the friendly unit to exhaust as
-    // an additional cost; onActivate then moves a DIFFERENT friendly unit to
-    // that unit's location.
+    // [>]/[E] = exhaust the gear (engine-paid). Exhausting a friendly unit is
+    // an ADDITIONAL COST: it is chosen and paid as the ability is played
+    // (kFinalizeActivate), together with the unit to move, so the exhausted
+    // unit is exhausted while the ability is on the chain.
+    unsigned choicesAtFinalization() const override { return kFinalizeActivate; }
     std::vector<ActivatedAbility> activatedAbilities() const override {
         return {{
             .cost = {.exhaust = true},
-            .targets = TargetRequirements{.count = 1, .must_be_unit = true,
-                                          .must_be_friendly = true},
+            .targets = {},
             .is_action = true, .is_reaction = false,
-            .needs_activation_time_target = true,
         }};
     }
-    std::vector<GameObjectId> enumerateLegalTargets(
-        const GameState& state, PlayerId controller,
-        int /*ability_index*/) const override {
-        // Eligible exhaust targets: ready friendly units; also require a second
-        // friendly unit to exist (the one to move).
+    // Playable only if a ready friendly unit can pay and a different friendly
+    // unit could be moved to its location.
+    bool canActivateAbilityAt(const GameState& state, PlayerId controller,
+                              GameObjectId source, int ability_index) const override {
+        if (!Card::canActivateAbilityAt(state, controller, source, ability_index)) return false;
+        for (auto a : payers(state, controller, /*need_ready=*/true))
+            if (!movers(state, controller, a).empty()) return true;
+        return false;
+    }
+    static std::vector<GameObjectId> payers(const GameState& state, PlayerId controller,
+                                            bool need_ready) {
         std::vector<GameObjectId> out;
-        int friendly_units = 0;
         for (auto& [id, obj] : state.objects) {
             if (!obj.isUnit() || obj.controller != controller || !obj.location.has_value()) continue;
-            friendly_units++;
+            if (need_ready && obj.is_exhausted) continue;
+            out.push_back(id);
         }
-        if (friendly_units < 2) return out;
+        return out;
+    }
+    static std::vector<GameObjectId> movers(const GameState& state, PlayerId controller,
+                                            GameObjectId exhausted) {
+        std::vector<GameObjectId> out;
+        if (!state.objectExists(exhausted)) return out;
+        auto dest = state.getObject(exhausted).location;
+        if (!dest) return out;
         for (auto& [id, obj] : state.objects) {
+            if (id == exhausted) continue;
             if (!obj.isUnit() || obj.controller != controller || !obj.location.has_value()) continue;
-            if (obj.is_exhausted) continue;  // can only exhaust a ready unit
+            if (*obj.location == *dest) continue;  // already there
             out.push_back(id);
         }
         return out;
     }
     void onActivate(CardContext& ctx, int /*ability_index*/,
-                    const std::vector<GameObjectId>& targets) override {
-        GameObjectId to_exhaust = kInvalidId;
-        if (!targets.empty()) to_exhaust = targets[0];
-        else to_exhaust = pickTarget(ctx, "Forgotten Signpost: exhaust a friendly unit",
-                                     enumerateLegalTargets(ctx.state, ctx.controller, 0));
-        if (to_exhaust == kInvalidId || !ctx.state.objectExists(to_exhaust)) return;
+                    const std::vector<GameObjectId>& /*targets*/) override {
+        // Choices: the unit exhausted as the cost (ready, unless it was already
+        // exhausted to pay) and a different unit to move.
+        const bool paid = costAlreadyPaid(ctx);
+        auto [to_exhaust, mover] = pickTargetPair(ctx,
+            "Forgotten Signpost: exhaust a friendly unit / move a different one",
+            payers(ctx.state, ctx.controller, /*need_ready=*/!paid),
+            [&](GameObjectId a) { return movers(ctx.state, ctx.controller, a); });
+        if (to_exhaust == kInvalidId) return;   // suspended, or nothing to pay with
+        if (mover == kInvalidId && ctx.state.chain.resuming.has_value() &&
+            ctx.state.chain.resuming->resume_point < 13) return;   // suspended
+        if (costDueNow(ctx)) {
+            if (!ctx.state.objectExists(to_exhaust) ||
+                ctx.state.getObject(to_exhaust).is_exhausted) return;
+            ctx.executor.exhaustObject(to_exhaust);
+        }
+        if (finalizingChoices(ctx)) return;   // choices and costs end here (CR 383.3)
+
+        if (mover == kInvalidId || !ctx.state.objectExists(mover)) return;
+        if (!ctx.state.objectExists(to_exhaust)) return;
         auto dest = ctx.state.getObject(to_exhaust).location;
         if (!dest) return;
-        // Pay the additional cost: exhaust the chosen unit.
-        ctx.executor.exhaustObject(to_exhaust);
-
-        // "Move a different unit you control to the location of the exhausted unit."
-        std::vector<GameObjectId> movers;
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (id == to_exhaust) continue;
-            if (!obj.isUnit() || obj.controller != ctx.controller || !obj.location.has_value()) continue;
-            if (obj.location == *dest) continue;  // already there
-            movers.push_back(id);
-        }
-        if (movers.empty()) return;
-        GameObjectId mover = pickTarget(ctx, "Forgotten Signpost: move a different unit", movers);
-        if (mover == kInvalidId || !ctx.state.objectExists(mover)) return;
         moveToLocation(ctx.executor, mover, dest);
         ctx.events.logTrace("FORGOTTEN SIGNPOST: moved a friendly unit to the exhausted unit's location");
     }

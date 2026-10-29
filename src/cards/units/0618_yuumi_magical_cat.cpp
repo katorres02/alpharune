@@ -14,13 +14,32 @@ namespace {
 class YuumiMagicalCat : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty())
-            ctx.executor.giveTemporaryMight(targets[0], 3);
-    }
+    // "When I attack or defend, give one of your other units here +3 [M] and
+    //  [Tank] this turn." The unit is chosen as the ability is finalized.
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     TriggerType triggerType() const override { return TriggerType::WhenIAttackOrDefend; }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_friendly = true, .must_be_at_battlefield = true};
+    static std::vector<GameObjectId> otherUnitsHere(const GameState& state, PlayerId controller,
+                                                    GameObjectId self) {
+        std::vector<GameObjectId> out;
+        if (!state.objectExists(self)) return out;
+        const auto& me = state.getObject(self);
+        if (!me.location.has_value()) return out;
+        for (auto& [id, obj] : state.objects) {
+            if (id == self) continue;
+            if (!obj.isUnit() || obj.controller != controller) continue;
+            if (!obj.location.has_value() || *obj.location != *me.location) continue;
+            out.push_back(id);
+        }
+        return out;
+    }
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        GameObjectId t = pickTarget(ctx, "Yuumi: +3 [M] and [Tank] to another unit here",
+                                    otherUnitsHere(ctx.state, ctx.controller, ctx.source));
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (t == kInvalidId || !ctx.state.objectExists(t)) return;
+        ctx.executor.giveTemporaryMight(t, 3);
+        ctx.executor.giveTemporaryKeyword(t, Keyword::Tank, 0);
+        ctx.events.logTrace("YUUMI: +3 [M] and [Tank] this turn to " + ctx.state.getObject(t).name);
     }
 private:
     const CardDef def_ = [] {
@@ -41,7 +60,6 @@ private:
         d.power_cost = 1;
         d.might = 1;
         d.rarity = Rarity::Rare;
-        d.keywords.set(Keyword::Tank);
         d.ability_text = R"RB(When I attack or defend, give one of your other units here +3 [M] and [Tank] this turn. (It must be assigned combat damage first.))RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/588ddfeb01ab7b37110d8a7e656cf9f35530ce4e-744x1039.png)RB";
         return d;

@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -19,85 +20,84 @@ public:
     // Do one of the following based on its domain:
     //  [R] Deal 2 to an enemy unit here and 1 to all other enemy units here.
     //  [B] Draw 1.  [Y] Stun an enemy unit."
+    // The reveal is part of the effect, so the [R]/[Y] target is chosen at
+    // resolution once the domain is known. The revealed branch is stashed in
+    // resume_data[kBranchSlot] so re-entering after the target choice does not
+    // reveal and recycle a second rune.
+    static constexpr size_t kBranchSlot = 6;
+    enum Branch : int { kNone = 4, kR = 1, kB = 2, kY = 3 };
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        auto& ri_opt = ctx.state.chain.resuming;
+        int branch = 0;
+        if (ri_opt.has_value() && ri_opt->resume_data.size() > kBranchSlot)
+            branch = ri_opt->resume_data[kBranchSlot];
+        if (branch == 0) {
+            branch = revealAndRecycle(ctx);
+            if (ri_opt.has_value()) {
+                if (ri_opt->resume_data.size() <= kBranchSlot)
+                    ri_opt->resume_data.resize(kBranchSlot + 1, 0);
+                ri_opt->resume_data[kBranchSlot] = branch;
+            }
+        }
         if (!ctx.state.objectExists(ctx.source)) return;
-        auto& ps = ctx.state.player(ctx.controller);
-        if (ps.rune_deck.empty()) return;
-        GameObjectId rune = ps.rune_deck.back();
-        if (!ctx.state.objectExists(rune)) return;
+        auto my_bf = ctx.state.getObject(ctx.source).battlefieldId();
+        auto enemies_here = [&]() {
+            return chooseableUnits(ctx.state, ctx.controller, [&](const GameObject& o) {
+                return o.controller != ctx.controller && my_bf && o.battlefieldId() == my_bf;
+            });
+        };
 
-        // Determine domain payoff BEFORE recycling (read its domains).
-        const auto& rdomains = ctx.state.getObject(rune).domains;
+        if (branch == kR) {
+            GameObjectId focus = pickTarget(ctx, "Twisted Fate [R] (deal 2 here)", enemies_here());
+            if (focus == kInvalidId && ctx.executor.hasPendingChoice()) return;  // suspended
+            // All enemy units here: 2 to the chosen one, 1 to the others.
+            std::vector<GameObjectId> hit;
+            for (auto& [id, obj] : ctx.state.objects) {
+                if (!obj.isUnit() || obj.controller == ctx.controller) continue;
+                if (!my_bf || obj.battlefieldId() != my_bf) continue;
+                hit.push_back(id);
+            }
+            if (focus == kInvalidId) hit.clear();  // no enemy unit to choose: nothing happens
+            for (auto id : hit) ctx.executor.dealDamage(id, id == focus ? 2 : 1, ctx.source);
+            for (auto id : hit)
+                if (ctx.state.objectExists(id) && ctx.state.getObject(id).location.has_value() &&
+                    ctx.state.getObject(id).hasLethalDamage())
+                    ctx.executor.killObject(id);
+        } else if (branch == kB) {
+            ctx.executor.drawCards(ctx.controller, 1);
+        } else if (branch == kY) {
+            auto enemies = chooseableUnits(ctx.state, ctx.controller, [&](const GameObject& o) {
+                return o.controller != ctx.controller;
+            });
+            GameObjectId t = pickTarget(ctx, "Twisted Fate [Y] (stun)", enemies);
+            if (t == kInvalidId && ctx.executor.hasPendingChoice()) return;  // suspended
+            if (t != kInvalidId && ctx.state.objectExists(t))
+                ctx.executor.stunUnitBy(t, ctx.source);
+        }
+        ctx.events.logTrace("TWISTED FATE: revealed rune -> domain payoff");
+    }
+
+private:
+    // Reveal the top rune of the rune deck, recycle it, and return its branch.
+    int revealAndRecycle(CardContext& ctx) const {
+        auto& ps = ctx.state.player(ctx.controller);
+        if (ps.rune_deck.empty()) return kNone;
+        GameObjectId rune = ps.rune_deck.back();
+        if (!ctx.state.objectExists(rune)) return kNone;
+        const auto& robj = ctx.state.getObject(rune);
         auto has = [&](Domain d) {
-            for (auto x : rdomains) if (x == d) return true;
+            for (auto x : robj.domains) if (x == d) return true;
             return false;
         };
-        bool is_r = has(Domain::Fury);
-        bool is_b = has(Domain::Mind);
-        bool is_y = has(Domain::Order);
-
-        // Reveal (public) then recycle the rune to the bottom of the rune deck.
-        const auto& robj = ctx.state.getObject(rune);
+        int branch = has(Domain::Fury) ? kR : has(Domain::Mind) ? kB
+                   : has(Domain::Order) ? kY : kNone;
         ctx.events.emit(CardRevealedEvent{
             /*card=*/rune, /*card_def_id=*/robj.card_def_id, /*owner=*/robj.owner,
             /*revealed_to_all=*/true, /*revealed_to=*/PlayerId::None,
             /*source_zone=*/ZoneType::RuneDeck});
         ps.rune_deck.pop_back();
         ctx.executor.recycleCards(ctx.controller, {rune});
-
-        auto my_bf = ctx.state.getObject(ctx.source).battlefieldId();
-        auto enemies_here = [&]() {
-            std::vector<GameObjectId> out;
-            if (!my_bf) return out;
-            for (auto& [id, obj] : ctx.state.objects) {
-                if (!obj.isUnit() || obj.controller == ctx.controller) continue;
-                if (obj.battlefieldId() != my_bf) continue;
-                out.push_back(id);
-            }
-            return out;
-        };
-
-        // Act on the first matching domain (R, then B, then Y).
-        if (is_r) {
-            auto targets = enemies_here();
-            if (!targets.empty()) {
-                GameObjectId focus = pickTarget(ctx, "Twisted Fate [R] (deal 2 here)",
-                                                 targets);
-                if (focus == kInvalidId && ctx.state.chain.resuming.has_value() &&
-                    ctx.state.chain.resuming->resume_point == 7) {
-                    return;  // suspended
-                }
-                // Collect-then-kill: deal damage to all first.
-                std::vector<GameObjectId> hit;
-                for (auto id : enemies_here()) {
-                    if (!ctx.state.objectExists(id)) continue;
-                    int amt = (id == focus) ? 2 : 1;
-                    ctx.executor.dealDamage(id, amt, ctx.source);
-                    hit.push_back(id);
-                }
-                for (auto id : hit)
-                    if (ctx.state.objectExists(id) &&
-                        ctx.state.getObject(id).hasLethalDamage())
-                        ctx.executor.killObject(id);
-            }
-        } else if (is_b) {
-            ctx.executor.drawCards(ctx.controller, 1);
-        } else if (is_y) {
-            std::vector<GameObjectId> enemies;
-            for (auto& [id, obj] : ctx.state.objects) {
-                if (!obj.isUnit() || obj.controller == ctx.controller) continue;
-                if (!obj.location.has_value()) continue;
-                enemies.push_back(id);
-            }
-            GameObjectId t = pickTarget(ctx, "Twisted Fate [Y] (stun)", enemies);
-            if (t == kInvalidId && ctx.state.chain.resuming.has_value() &&
-                ctx.state.chain.resuming->resume_point == 7) {
-                return;  // suspended
-            }
-            if (t != kInvalidId && ctx.state.objectExists(t))
-                ctx.executor.stunUnitBy(t, ctx.source);
-        }
-        ctx.events.logTrace("TWISTED FATE: revealed rune -> domain payoff");
+        return branch;
     }
 private:
     const CardDef def_ = [] {

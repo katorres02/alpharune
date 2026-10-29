@@ -31,19 +31,31 @@ public:
         }
         return out;
     }
-    void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        GameObjectId picked = kInvalidId;
-        if (!targets.empty()) picked = targets[0];
-        else picked = pickTarget(ctx, "Keeper's Verdict: place enemy unit on deck",
-                                 enumerateLegalTargets(ctx.state, ctx.controller));
+    // The caster chooses the unit (as the spell is played); its OWNER chooses
+    // top or bottom (stepChooseValue publishes that choice to them, after
+    // pickTarget's resume points). A token ceases to exist instead (CR 183.1).
+    void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        GameObjectId picked = pickTarget(ctx, "Keeper's Verdict: place enemy unit on deck",
+                                         enumerateLegalTargets(ctx.state, ctx.controller));
+        if (picked == kInvalidId && ctx.state.chain.resuming.has_value() &&
+            ctx.state.chain.resuming->resume_point == 7)
+            return;   // waiting on the agent
         if (picked == kInvalidId || !ctx.state.objectExists(picked)) return;
-        int mode = pickMode(ctx, "Keeper's Verdict: top or bottom of deck", 2,
-                            {"Top", "Bottom"});
-        if (mode < 0) return;  // suspended
+        if (!ctx.state.getObject(picked).location.has_value()) return;
+        const PlayerId owner = ctx.state.getObject(picked).owner;
+        const bool token = ctx.state.getObject(picked).isToken();
+
+        int mode = 0;   // 0 = top, 1 = bottom
+        if (!token &&
+            !stepChooseValue(ctx, owner, {{0, "Top of your Main Deck"}, {1, "Bottom of your Main Deck"}},
+                             "Keeper's Verdict: top or bottom of your Main Deck", 20, 10, 0, mode))
+            return;   // the owner is choosing
+        if (!ctx.state.objectExists(picked) || !ctx.state.getObject(picked).location.has_value())
+            return;
 
         auto& u = ctx.state.getObject(picked);
-        PlayerId owner = u.owner;
         auto was_at = u.location.value_or(BaseLocation{owner});
+        const PlayerId was_controller = u.controller;
         // Detach any attached gear first (CR 719.5).
         for (auto gid : std::vector<GameObjectId>(u.attachments)) {
             if (ctx.state.objectExists(gid)) ctx.executor.unattachGear(gid);
@@ -53,14 +65,21 @@ public:
         u.damage_marked = 0;
         u.combat_designation = CombatDesignation::None;
         u.location = std::nullopt;
+        if (token) {
+            u.zone = ZoneType::Banishment;   // ceases to exist; never enters the deck
+            ctx.events.emit(LeftBoardEvent{picked, was_controller, CardType::Unit, was_at,
+                                           ZoneType::Banishment, /*was_killed=*/false});
+            ctx.events.logTrace("KEEPER'S VERDICT: token " + u.name + " ceases to exist");
+            return;
+        }
         u.zone = ZoneType::MainDeck;
         auto& deck = ctx.state.player(owner).main_deck;
         if (mode == 0) deck.push_back(picked);            // top = back
         else           deck.insert(deck.begin(), picked); // bottom = front
-        ctx.events.emit(LeftBoardEvent{picked, owner, CardType::Unit, was_at,
+        ctx.events.emit(LeftBoardEvent{picked, was_controller, CardType::Unit, was_at,
                                        ZoneType::MainDeck, /*was_killed=*/false});
-        ctx.events.logTrace("KEEPER'S VERDICT: placed " + u.name +
-                            (mode == 0 ? " on TOP" : " on BOTTOM") + " of deck");
+        ctx.events.logTrace("KEEPER'S VERDICT: owner placed " + u.name +
+                            (mode == 0 ? " on TOP" : " on BOTTOM") + " of their deck");
     }
 private:
     const CardDef def_ = [] {

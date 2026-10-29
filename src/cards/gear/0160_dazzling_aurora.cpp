@@ -41,36 +41,17 @@ public:
         GameObjectId unit_id = ri.targets.front();
         if (unit_id == kInvalidId) return;
 
-        // Per CR 355.2.a, the controller picks the landing location: base
-        // or any battlefield they control. pickMode publishes one option
-        // per legal location so the agent records the decision (mandatory
-        // even when only base is legal — engine-wide rule).
-        std::vector<LocationId> locations;
-        std::vector<std::string> labels;
-        locations.push_back(LocationId{BaseLocation{ctx.controller}});
-        labels.push_back("base");
-        for (const auto& bf : ctx.state.battlefields) {
-            if (bf.controller.has_value() && *bf.controller == ctx.controller) {
-                locations.push_back(LocationId{BattlefieldLocation{bf.id}});
-                std::string bf_name = "BF#" + std::to_string(bf.id);
-                if (ctx.state.objectExists(bf.card_object_id)) {
-                    bf_name = ctx.state.getObject(bf.card_object_id).name;
-                }
-                labels.push_back(bf_name);
-            }
+        // Per CR 355.2, the controller picks the landing location: base or
+        // any battlefield they control (plus the unit's own permissions).
+        LocationId where;
+        const int r = pickPlayLocation(ctx, unit_id, where, PlayerId::None,
+                                       "Aurora: where to play unit");
+        if (r == -1) return;   // waiting for the agent
+        if (r == 0) {          // nowhere it may be played: it stays banished
+            ctx.state.player(ctx.state.getObject(unit_id).owner).banishment.push_back(unit_id);
+            return;
         }
-        uint32_t legal_mask = (locations.size() >= 32)
-            ? 0xFFFFFFFFu
-            : ((1u << locations.size()) - 1);
-        int chosen = pickMode(ctx, "Aurora: where to play unit",
-                               static_cast<int>(locations.size()),
-                               labels, legal_mask);
-        if (chosen == -1) return;  // yielded for agent input
-        if (chosen < 0 || static_cast<size_t>(chosen) >= locations.size()) {
-            chosen = 0;
-        }
-        ctx.executor.playIgnoringCost(ctx.controller, unit_id,
-                                       locations[chosen]);
+        ctx.executor.playIgnoringCost(ctx.controller, unit_id, where);
     }
 private:
     const CardDef def_ = [] {

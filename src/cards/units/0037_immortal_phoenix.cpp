@@ -62,10 +62,12 @@ public:
         }
         if (finalizingChoices(ctx)) return;   // choices and costs end here (CR 383.3)
         if (ctx.state.getObject(ctx.source).zone != ZoneType::Trash) return;
+        LocationId where;   // base or a battlefield I control (CR 355.2)
+        if (pickPlayLocation(ctx, ctx.source, where, PlayerId::None, "Immortal Phoenix: play me where?") <= 0) return;
         auto& ps = ctx.state.player(ctx.controller);
         auto it = std::find(ps.trash.begin(), ps.trash.end(), ctx.source);
         if (it != ps.trash.end()) ps.trash.erase(it);
-        ctx.executor.playIgnoringCost(ctx.controller, ctx.source, std::nullopt);
+        ctx.executor.playIgnoringCost(ctx.controller, ctx.source, where);
         ctx.events.logTrace("IMMORTAL PHOENIX: paid [1][R] -> played from trash");
     }
 private:

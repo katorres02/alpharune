@@ -55,9 +55,16 @@ public:
 
         std::vector<GameObjectId> legal;
         PlayerId opp = opponent(ctx.controller);
+        // "an enemy unit": any enemy unit on the board (at its base or at
+        // another battlefield) that isn't already at this battlefield. (The
+        // delayed ability is independent of Iascylla once created, CR 389:
+        // her object, holding the stash, stays in the pool off-board.)
         for (auto& [id, obj] : ctx.state.objects) {
             if (!obj.isUnit() || obj.controller != opp) continue;
-            if (!obj.isAtBattlefield()) continue;
+            if (!obj.location.has_value()) continue;
+            auto obf = obj.battlefieldId();
+            if (obf && *obf == bf) continue;
+            if (obj.untargetable_by_enemy) continue;
             legal.push_back(id);
         }
         auto still_legal = [&legal]() { return !legal.empty(); };

@@ -72,7 +72,6 @@ public:
         if (!ctx.state.chain.resuming.has_value()) return;  // needs the chain's resume slot
         auto& ri = *ctx.state.chain.resuming;
         auto& ps = ctx.state.player(ctx.controller);
-        const auto& bfs = ctx.state.battlefields;
 
         if (ri.resume_point == 0) {
             auto top = topFive(ctx.state, ctx.controller);
@@ -135,34 +134,18 @@ public:
                 return;
             }
 
-            // A unit goes to your base or a battlefield you control; gear to base.
-            std::vector<Intent> where;
-            if (ctx.state.getObject(chosen).isUnit()) {
-                for (size_t i = 0; i < bfs.size(); ++i)
-                    if (bfs[i].controller.has_value() && *bfs[i].controller == ctx.controller)
-                        where.push_back(intChoice(ctx.controller, static_cast<int>(i) + 1,
-                                                  "Wild Claw: play to battlefield " + std::to_string(i)));
-            }
-            if (!where.empty()) {
-                where.insert(where.begin(), intChoice(ctx.controller, 0, "Wild Claw: play to base"));
-                ctx.executor.requestChoice(ctx.controller, std::move(where),
-                                           "Wild Claw: where to play it");
-                ri.resume_point = 2;
-                return;
-            }
-            ctx.executor.playPayingCost(ctx.controller, chosen, std::nullopt, kReduced);
-            ri.resume_point = 3;
+            ri.resume_point = 2;
         }
 
         if (ri.resume_point == 2) {
-            auto choice = ctx.executor.takeChoice();
+            // Where it goes (CR 355.2): a unit to my base or a battlefield I
+            // control, a gear to base ([Deploy] gear: a battlefield).
             const GameObjectId chosen = static_cast<GameObjectId>(ri.resume_data[0]);
-            LocationId loc = BaseLocation{ctx.controller};
-            const int v = (choice && choice->chosen_value.has_value()) ? *choice->chosen_value : 0;
-            if (v >= 1 && static_cast<size_t>(v) <= bfs.size() &&
-                bfs[v - 1].controller.has_value() && *bfs[v - 1].controller == ctx.controller)
-                loc = BattlefieldLocation{bfs[v - 1].id};
-            ctx.executor.playPayingCost(ctx.controller, chosen, loc, kReduced);
+            LocationId loc;
+            const int r = pickPlayLocation(ctx, chosen, loc, PlayerId::None,
+                                           "Wild Claw: where to play it");
+            if (r == -1) return;   // waiting for the agent
+            if (r == 1) ctx.executor.playPayingCost(ctx.controller, chosen, loc, kReduced);
             ri.resume_point = 3;
         }
 

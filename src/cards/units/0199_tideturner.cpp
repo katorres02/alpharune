@@ -17,40 +17,40 @@ public:
     const CardDef& def() const override { return def_; }
     unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true,
-                                   .must_be_friendly = true};
-    }
-    std::vector<GameObjectId> enumerateLegalTargets(
-        const GameState& state, PlayerId controller) const override {
+    // "When you play me, you may choose a unit you control at another
+    //  location. Move me to its location and it to my original location."
+    // The "may" and the unit are chosen as the trigger is finalized.
+    static std::vector<GameObjectId> elsewhere(const GameState& state, PlayerId controller,
+                                               GameObjectId self) {
         std::vector<GameObjectId> out;
+        if (!state.objectExists(self)) return out;
+        const auto& me = state.getObject(self);
+        if (!me.location.has_value()) return out;
         for (auto& [id, obj] : state.objects) {
-            if (!obj.isUnit() || obj.controller != controller) continue;
-            if (!obj.location.has_value()) continue;
+            if (id == self || !obj.isUnit() || obj.controller != controller) continue;
+            if (!obj.location.has_value() || *obj.location == *me.location) continue;
             out.push_back(id);
         }
         return out;
     }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (targets.empty()) return;
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         if (!ctx.state.objectExists(ctx.source)) return;
-        if (!ctx.state.objectExists(targets[0])) return;
-        // "you may" — wrap in confirmOptional.
-        auto still_legal = [&ctx, &targets]() {
-            return ctx.state.objectExists(ctx.source) &&
-                   ctx.state.objectExists(targets[0]) &&
-                   ctx.state.getObject(ctx.source).location.has_value() &&
-                   ctx.state.getObject(targets[0]).location.has_value();
+        auto still_legal = [&ctx, this]() {
+            return !elsewhere(ctx.state, ctx.controller, ctx.source).empty();
         };
-        if (!still_legal()) return;
-        auto conf = confirmOptional(ctx,
-            "Tideturner: swap locations with target?", still_legal);
+        int conf = confirmOptional(ctx, "Tideturner: swap places with a unit elsewhere?",
+                                   still_legal);
+        if (conf == -1) return;
+        if (conf < 1) return;                 // declined / nothing elsewhere
+        GameObjectId other = pickTarget(ctx, "Tideturner: unit at another location",
+                                        elsewhere(ctx.state, ctx.controller, ctx.source));
         if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
-        if (conf < 1) return;
+        if (other == kInvalidId || !ctx.state.objectExists(other)) return;
         auto my_loc  = ctx.state.getObject(ctx.source).location;
-        auto tgt_loc = ctx.state.getObject(targets[0]).location;
-        moveToLocation(ctx.executor, ctx.source,   tgt_loc);
-        moveToLocation(ctx.executor, targets[0],   my_loc);
+        auto tgt_loc = ctx.state.getObject(other).location;
+        if (!my_loc || !tgt_loc || *my_loc == *tgt_loc) return;
+        moveToLocation(ctx.executor, ctx.source, tgt_loc);
+        moveToLocation(ctx.executor, other,      my_loc);
         ctx.events.logTrace("TIDETURNER: swapped locations");
     }
 private:

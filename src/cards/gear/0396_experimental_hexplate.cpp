@@ -1,4 +1,5 @@
 #include "cards/card.h"
+#include "cards/card_helpers.h"
 #include "cards/card_registry.h"
 #include "core/game_state.h"
 #include "core/events.h"
@@ -16,6 +17,31 @@ class ExperimentalHexplate : public SimpleEquipGear {
 public:
     ExperimentalHexplate() : SimpleEquipGear(Domain::Mind) {}
     const CardDef& def() const override { return def_; }
+    // effect_text "I am a Mech.": the unit this is attached to gains the Mech
+    // tag while attached (removed again on unattach unless it prints it).
+    bool onEquip(CardContext& ctx, GameObjectId unit) override {
+        if (!SimpleEquipGear::onEquip(ctx, unit)) return false;
+        if (!ctx.state.objectExists(ctx.source)) return true;
+        auto& gear = ctx.state.getObject(ctx.source);
+        if (gear.attached_to.has_value() && ctx.state.objectExists(*gear.attached_to)) {
+            auto& u = ctx.state.getObject(*gear.attached_to);
+            if (!hasTag(u, "Mech")) {
+                u.tags.push_back("Mech");
+                gear.card_counters["__granted_mech_to"] = static_cast<int>(u.id);
+            }
+        }
+        return true;
+    }
+    void onUnattached(CardContext& ctx, GameObjectId unit) override {
+        if (!ctx.state.objectExists(ctx.source) || !ctx.state.objectExists(unit)) return;
+        auto& gear = ctx.state.getObject(ctx.source);
+        auto it = gear.card_counters.find("__granted_mech_to");
+        if (it == gear.card_counters.end() || it->second != static_cast<int>(unit)) return;
+        gear.card_counters.erase(it);
+        auto& tags = ctx.state.getObject(unit).tags;
+        auto t = std::find(tags.begin(), tags.end(), std::string("Mech"));
+        if (t != tags.end()) tags.erase(t);
+    }
 private:
     const CardDef def_ = [] {
         CardDef d;

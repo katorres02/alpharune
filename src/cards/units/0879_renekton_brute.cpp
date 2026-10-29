@@ -29,6 +29,16 @@ public:
         ctx.executor.giveTemporaryMight(ctx.source, 1);
         ctx.events.logTrace("RENEKTON, BRUTE: [1] -> +1 [M] this turn");
     }
+    // "When my Might becomes 10 or more, empower me. (I become Empowered if I'm
+    // not already.)" The engine's cleanup pass announces the <10 -> 10+ edge.
+    TriggerType triggerType() const override { return TriggerType::WhenMyMightBecomes10OrMore; }
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        if (!ctx.state.objectExists(ctx.source)) return;
+        const auto& me = ctx.state.getObject(ctx.source);
+        if (!me.location.has_value() || me.isEmpowered()) return;
+        ctx.executor.empower(ctx.source);
+        ctx.events.logTrace("RENEKTON, BRUTE: Might reached 10 -> empowered");
+    }
     // "[Empowered][>] I have [Deflect] and [Ganking]." (No printed [Empower]:
     // he is Empowered by other effects.)
     void applyPassiveAura(GameState& state, PlayerId controller) const override {

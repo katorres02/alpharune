@@ -1,5 +1,6 @@
 #include "cards/card.h"
 #include "cards/card_registry.h"
+#include "cards/card_helpers.h"
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
@@ -14,33 +15,67 @@ namespace {
 class GemcraftSeer : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-
-    // Clause 1: "[Vision]" on me — engine-handled (TriggerManager::onCardPlayed
-    // peeks the top card on play for any unit with the Vision keyword).
-    // Clause 2: "Other friendly units have [Vision]." Grant the Vision keyword
-    // via aura to every other friendly unit. Mirrors Forecaster's grant.
-    // NOTE: the engine's play-time Vision peek reads obj.keywords.has(Vision),
-    // not the aura-granted set, so an aura-only Vision unit won't peek on play
-    // (documented engine gap shared with Forecaster); the keyword presence is
-    // still correctly reflected via hasKeyword() for any reader that uses it.
+    // "[Vision]" on me is engine-handled (TriggerManager::onCardPlayed).
+    // "Other friendly units have [Vision]": the keyword is granted by aura, and
+    // because the engine's play-time Vision look reads printed keywords only,
+    // the look itself for a friendly unit played while I'm on the board is
+    // this card's WhenYouPlayAUnit trigger (one Seer does it; a unit with
+    // printed [Vision] already looks on its own).
     void applyPassiveAura(GameState& state, PlayerId controller) const override {
-        GameObjectId self_id = kInvalidId;
-        for (auto& [id, obj] : state.objects) {
-            if (obj.card_def_id != cardDefId()) continue;
-            if (obj.controller != controller || !obj.location.has_value()) continue;
-            self_id = id;
-            break;
+        forEachSelfOnce(*this, state, controller, [&](GameObjectId sid, GameObject&) {
+            for (auto& [uid, u] : state.objects) {
+                if (uid == sid) continue;  // "other"
+                if (!u.isUnit() || u.controller != controller || !u.location.has_value())
+                    continue;
+                auraKeyword(u, sid, Keyword::Vision);
+            }
+        });
+    }
+    TriggerType triggerType() const override { return TriggerType::WhenYouPlayAUnit; }
+    bool triggerCondition(const GameState& state, GameObjectId source, PlayerId controller,
+                          TriggerType, GameObjectId subject) const override {
+        if (subject == kInvalidId || subject == source || !state.objectExists(subject))
+            return false;
+        const auto& played = state.getObject(subject);
+        if (!played.isUnit() || played.keywords.has(Keyword::Vision)) return false;
+        // Only the lowest-id Seer its controller has on the board looks.
+        for (const auto& [id, obj] : state.objects)
+            if (id < source && obj.card_def_id == cardDefId() &&
+                obj.controller == controller && obj.location.has_value())
+                return false;
+        return true;
+    }
+    // [Vision]: "look at the top card of your Main Deck. You may recycle it."
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        auto& deck = ctx.state.player(ctx.controller).main_deck;
+        if (deck.empty()) return;
+        const GameObjectId top = deck.back();
+        auto& ri_opt = ctx.state.chain.resuming;
+        if (!ri_opt.has_value() || ri_opt->resume_point < 20) {
+            const auto& t = ctx.state.getObject(top);
+            ctx.events.emit(CardRevealedEvent{top, t.card_def_id, t.owner,
+                /*revealed_to_all=*/false, /*revealed_to=*/ctx.controller,
+                ZoneType::MainDeck});
         }
-        if (self_id == kInvalidId) return;
-        for (auto& [uid, u] : state.objects) {
-            if (uid == self_id) continue;  // "other"
-            if (!u.isUnit() || u.controller != controller || !u.location.has_value())
-                continue;
-            GameObject::AuraEffect ae;
-            ae.source = self_id;
-            ae.keyword = Keyword::Vision;
-            u.aura_effects.push_back(ae);
+        int recycle = 0;
+        if (ri_opt.has_value()) {
+            auto& ri = *ri_opt;
+            if (ri.resume_point < 20) {
+                std::vector<Intent> opts = {valChoice(ctx.controller, 0, "Keep it on top"),
+                                            valChoice(ctx.controller, 1, "Recycle it")};
+                ctx.executor.requestChoice(ctx.controller, std::move(opts),
+                                           "Vision (Gemcraft Seer): recycle the top card?");
+                ri.resume_point = 20;
+                return;
+            }
+            if (ri.resume_point != 20) return;
+            ri.resume_point = 21;
+            recycle = takenValue(ctx, 0);
         }
+        if (recycle != 1 || deck.empty() || deck.back() != top) return;
+        deck.pop_back();
+        deck.insert(deck.begin(), top);
+        ctx.events.logTrace("VISION (Gemcraft Seer): recycled the top card");
     }
 private:
     const CardDef def_ = [] {

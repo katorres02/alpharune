@@ -15,11 +15,14 @@ namespace {
 class Direwing : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    bool entersReadyOnPlay(const GameState& state, PlayerId controller) const override {
+    // "I enter ready if you control another Dragon." The engine asks with me
+    // already at my destination: skip only this object.
+    bool entersReadyOnPlay(const GameState& state, PlayerId controller,
+                           const GameObject& self) const override {
         for (auto& [id, obj] : state.objects) {
+            if (id == self.id) continue;
             if (!obj.isUnit() || obj.controller != controller || !obj.location.has_value())
                 continue;
-            if (obj.card_def_id == cardDefId()) continue;   // "another Dragon"
             if (hasTag(obj, "Dragon")) return true;
         }
         return false;

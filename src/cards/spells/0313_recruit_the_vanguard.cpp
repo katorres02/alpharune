@@ -1,4 +1,5 @@
 #include "cards/card.h"
+#include "cards/card_helpers.h"
 #include "cards/card_registry.h"
 #include "core/game_state.h"
 #include "core/events.h"
@@ -15,15 +16,49 @@ class RecruitTheVanguard : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
     // "Play four 1 [M] Recruit unit tokens. (They can be played to your base
-    //  or to battlefields you control.)" Free token plays default to the
-    //  controller's base (CR 355.2.a — base is always a legal landing spot).
+    //  or to battlefields you control.)" Each token's location is the
+    // player's choice (valChoice: 0 = base, 1 + i = battlefield i) when they
+    // control a battlefield; otherwise it goes to base.
+    // resume_point 20 = consume a location pick; resume_data[6] = tokens played.
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
-        LocationId loc{BaseLocation{ctx.controller}};
-        for (int i = 0; i < 4; ++i) {
+        auto dests = [&]() {
+            std::vector<int> out{0};
+            for (const auto& bf : ctx.state.battlefields)
+                if (bf.controller && *bf.controller == ctx.controller)
+                    out.push_back(1 + static_cast<int>(bf.id));
+            return out;
+        };
+        auto play = [&](int dest) {
+            LocationId loc = dest <= 0
+                ? LocationId{BaseLocation{ctx.controller}}
+                : LocationId{BattlefieldLocation{static_cast<BattlefieldId>(dest - 1)}};
             ctx.executor.createToken(ctx.controller, CardType::Unit, "Recruit",
                                      1, {"Recruit"}, KeywordSet{}, loc,
                                      /*enter_ready=*/false);
+        };
+        if (!ctx.state.chain.resuming.has_value()) {
+            for (int i = 0; i < 4; ++i) play(0);
+            return;
         }
+        auto& ri = *ctx.state.chain.resuming;
+        while (ri.resume_data.size() < 7) ri.resume_data.push_back(0);
+        if (ri.resume_point == 20) {
+            const int picked = takenValue(ctx, 0);
+            auto d = dests();
+            play(std::find(d.begin(), d.end(), picked) != d.end() ? picked : 0);
+            ++ri.resume_data[6];
+        }
+        while (ri.resume_data[6] < 4) {
+            auto d = dests();
+            if (d.size() == 1) { play(0); ++ri.resume_data[6]; continue; }
+            std::vector<Intent> opts;
+            for (int v : d) opts.push_back(valChoice(ctx.controller, v, destLabel(v)));
+            ctx.executor.requestChoice(ctx.controller, std::move(opts),
+                                       "Recruit the Vanguard: where to play a Recruit");
+            ri.resume_point = 20;
+            return;
+        }
+        ri.resume_point = 21;
         ctx.events.logTrace("RECRUIT THE VANGUARD: played four 1[M] Recruit tokens");
     }
 private:

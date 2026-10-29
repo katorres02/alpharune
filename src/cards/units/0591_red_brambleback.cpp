@@ -19,9 +19,9 @@ class RedBrambleback : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
     unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
-    // ENGINE GAP: "Your conquer effects for conquering here trigger an
-    // additional time" has no engine counter analogous to
-    // deathknell_double_count for conquer triggers; not wired.
+    // "Your conquer effects for conquering here trigger an additional time."
+    // Read by TriggerManager::onScore for the units at the conquered battlefield.
+    int extraConquerTriggersHere() const override { return 1; }
     TriggerType triggerType() const override { return TriggerType::WhenIConquer; }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         // "[Buff] a friendly unit." Pick a friendly unit on the board.
@@ -35,8 +35,7 @@ public:
         if (picked == kInvalidId) return;
         if (!ctx.state.objectExists(picked)) return;
         ctx.executor.buffUnit(picked);
-        ctx.events.logTrace("RED BRAMBLEBACK: conquer -> buffed a friendly unit "
-                            "(additional-conquer-trigger doubling not engine-wired)");
+        ctx.events.logTrace("RED BRAMBLEBACK: conquer -> buffed a friendly unit");
     }
 private:
     const CardDef def_ = [] {

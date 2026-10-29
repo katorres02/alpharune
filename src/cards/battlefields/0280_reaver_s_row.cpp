@@ -16,11 +16,9 @@ public:
     const CardDef& def() const override { return def_; }
     unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     // "When you defend here, you may move a friendly unit here to base."
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         GameObjectId unit = kInvalidId;
-        if (!targets.empty()) {
-            unit = targets[0];
-        } else {
+        {
             auto unitsHere = [&]() {
                 std::vector<GameObjectId> out;
                 for (const auto& bf : ctx.state.battlefields) {
@@ -37,15 +35,13 @@ public:
                                      [&]() { return !unitsHere().empty(); });
             if (go < 1) return;   // waiting on the agent, declined or no unit here
             unit = pickTarget(ctx, "Reaver's Row: move which unit to base", unitsHere());
+            if (unit == kInvalidId && ctx.executor.hasPendingChoice()) return;  // suspended
         }
         if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
         if (unit == kInvalidId || !ctx.state.objectExists(unit)) return;
         ctx.executor.moveToBase(unit);
     }
     TriggerType triggerType() const override { return TriggerType::WhenYouDefendHere; }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_friendly = true, .must_be_at_battlefield = true};
-    }
 private:
     const CardDef def_ = [] {
         CardDef d;

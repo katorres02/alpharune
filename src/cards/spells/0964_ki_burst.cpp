@@ -24,7 +24,7 @@ public:
         return false;
     }
     TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_enemy = true};
+        return TargetRequirements{.count = 1, .must_be_unit = true};   // "a unit": friendly or enemy
     }
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
         GameObjectId pay = kInvalidId;

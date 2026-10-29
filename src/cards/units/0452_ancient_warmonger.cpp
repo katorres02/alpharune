@@ -34,9 +34,15 @@ public:
                 if (!tgt.isUnit() || tgt.controller == controller) continue;
                 if (tgt.battlefieldId() == my_bf) ++enemies;
             }
+            if (enemies == 0) continue;   // [Assault] 0: no Assault at all
+            bool seen = false;           // once per pass, however many copies
+            for (const auto& e : self.aura_effects)
+                if (e.source == sid && e.keyword == Keyword::Assault) seen = true;
+            if (seen) continue;
             GameObject::AuraEffect ae;
             ae.source = sid;
             ae.keyword = Keyword::Assault;
+            ae.keyword_value = enemies;
             if (self.combat_designation == CombatDesignation::Attacker)
                 ae.might_bonus = enemies;  // +1 [M] per Assault while attacking
             self.aura_effects.push_back(ae);
@@ -59,9 +65,7 @@ private:
         d.energy_cost = 5;
         d.might = 4;
         d.rarity = Rarity::Uncommon;
-        d.assault_value = 1;
         d.keywords.set(Keyword::Accelerate);
-        d.keywords.set(Keyword::Assault);
         d.ability_text = R"RB([Accelerate] (You may pay [1][P] as an additional cost to have me enter ready.)
 I have [Assault] equal to the number of enemy units here. (+1 [M] while I'm an attacker for each instance of Assault.))RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/8ba05afcfbe6901fb4bdb736d5e61656a551f668-744x1039.png?accountingTag=RB)RB";

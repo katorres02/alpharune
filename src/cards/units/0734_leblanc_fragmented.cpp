@@ -17,7 +17,12 @@ public:
     const CardDef& def() const override { return def_; }
     TriggerType triggerType() const override { return TriggerType::WhenIDie; }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        int draw_count = (ctx.state.turn.phase == TurnPhase::BeginningStep) ? 2 : 1;
+        // "If it's your Beginning Phase": your turn, Beginning or Scoring Step
+        // (CR 315.2 — the Awaken Phase is not part of it).
+        const auto ph = ctx.state.turn.phase;
+        const bool your_beginning = ctx.state.turn.turn_player == ctx.controller &&
+            (ph == TurnPhase::BeginningStep || ph == TurnPhase::ScoringStep);
+        int draw_count = your_beginning ? 2 : 1;
         ctx.executor.drawCards(ctx.controller, draw_count);
     }
 private:

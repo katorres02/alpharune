@@ -44,8 +44,11 @@ TEST_F(SuppressionTest, MageseekerWarden_NoSuppressFromBase) {
     EXPECT_FALSE(state.player(P2).effects_cant_ready_my_units);
 }
 
-// ── LeBlanc: a Temporary unit's trigger at her BF is suppressed ──
-TEST_F(SuppressionTest, LeBlanc_SuppressesTemporaryTriggerHere) {
+// ── LeBlanc: "Your [Temporary] effects at my battlefield don't trigger" means
+// the [Temporary] kill itself (CR 816.1). A Temporary unit's OTHER triggered
+// abilities fire normally (2026-10 audit; the kill is tested in
+// test_audit_2026_10_cards4.cpp). ──
+TEST_F(SuppressionTest, LeBlanc_DoesNotSuppressOtherTriggersOfTemporaryUnits) {
     EXPECT_TRUE(card_registry.get(kLeBlanc)->suppressesTemporaryTriggersHere());
 
     addUnit(P1, kLeBlanc, 4, /*at_bf=*/0);
@@ -56,8 +59,8 @@ TEST_F(SuppressionTest, LeBlanc_SuppressesTemporaryTriggerHere) {
     tm.subscribe();
     size_t before = state.chain.items.size();
     events.emit(ObjectStateChangedEvent{prize, "gear_ability_used"});
-    EXPECT_EQ(state.chain.items.size(), before)
-        << "Temporary unit's trigger is suppressed at LeBlanc's battlefield";
+    EXPECT_GT(state.chain.items.size(), before)
+        << "a Temporary unit's other triggers still fire at LeBlanc's battlefield";
 }
 
 TEST_F(SuppressionTest, LeBlanc_DoesNotSuppressNonTemporaryOrElsewhere) {

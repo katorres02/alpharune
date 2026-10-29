@@ -50,33 +50,37 @@ GameObjectId taggedUnit(GameState& s, PlayerId owner, int might,
     return id;
 }
 
-TEST_F(CardTestFixture, TheList_OnPlayNamesMostCommonEnemyTag) {
+// "As you play this, name a tag" is the player's choice (2026-10 audit): an
+// AsYouPlayMe choice among the tags on units on the board / in hand, sorted.
+TEST_F(CardTestFixture, TheList_PlayerNamesTheTag) {
     auto gear = makeList(state, P1);
     taggedUnit(state, P2, 3, {"Poro"});
     taggedUnit(state, P2, 3, {"Poro", "Demacia"});
-    taggedUnit(state, P2, 3, {"Demacia"});  // Poro:2, Demacia:2 → lexical "Demacia"
+    taggedUnit(state, P2, 3, {"Demacia"});   // candidates: Demacia(0), Poro(1)
 
     EffectExecutor exec(state, events, card_db, &card_registry);
-    CardContext ctx{state, events, exec, P1, gear};
-    Card* c = card_registry.get(kTheList);
-    ASSERT_NE(c, nullptr);
-    c->onPlay(ctx);
-
-    // Poro:2, Demacia:2 → tie broken lexically (std::map order) → "Demacia".
-    EXPECT_EQ(state.getObject(gear).string_state["named_tag"], "Demacia");
-}
-
-TEST_F(CardTestFixture, TheList_OnPlayClearWinnerNamed) {
-    auto gear = makeList(state, P1);
-    taggedUnit(state, P2, 3, {"Poro"});
-    taggedUnit(state, P2, 3, {"Poro"});
-    taggedUnit(state, P2, 3, {"Demacia"});  // Poro:2 > Demacia:1
-
-    EffectExecutor exec(state, events, card_db, &card_registry);
-    CardContext ctx{state, events, exec, P1, gear};
-    card_registry.get(kTheList)->onPlay(ctx);
+    driveResumableTrigger(kTheList, P1, gear,
+        [](const std::vector<Intent>& legal) -> Intent {
+            for (auto& i : legal) if (i.chosen_value == 1) return i;
+            return legal.front();
+        }, exec, TriggerType::AsYouPlayMe);
 
     EXPECT_EQ(state.getObject(gear).string_state["named_tag"], "Poro");
+}
+
+TEST_F(CardTestFixture, TheList_CanNameAFriendlyTag) {
+    auto gear = makeList(state, P1);
+    taggedUnit(state, P1, 3, {"Yordle"});
+    taggedUnit(state, P2, 3, {"Poro"});      // candidates: Poro(0), Yordle(1)
+
+    EffectExecutor exec(state, events, card_db, &card_registry);
+    driveResumableTrigger(kTheList, P1, gear,
+        [](const std::vector<Intent>& legal) -> Intent {
+            for (auto& i : legal) if (i.chosen_value == 1) return i;
+            return legal.front();
+        }, exec, TriggerType::AsYouPlayMe);
+
+    EXPECT_EQ(state.getObject(gear).string_state["named_tag"], "Yordle");
 }
 
 TEST_F(CardTestFixture, TheList_OnPlayNoEnemyUnitsNamesNothing) {

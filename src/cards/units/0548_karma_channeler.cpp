@@ -19,29 +19,24 @@ class KarmaChanneler_548 : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
 
-    // [Vision] is keyword-driven in the engine but card 548's registry data
-    // has no keyword set; implement the look-at-top here on play. A spell on
-    // top is recycled to the bottom (mirrors the engine's Vision behavior);
-    // non-spell top cards are left in place.
-    TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
+    // "[Vision]" is the keyword set in def(): TriggerManager performs it when
+    // I'm played, so this card adds no play trigger of its own.
+    // "When you recycle one or more cards to your Main Deck, buff a friendly
+    // unit." EffectExecutor::recycleCards emits "recycled_main" per owner and
+    // TriggerManager fires WhenYouRecycle on that player's cards.
+    TriggerType triggerType() const override { return TriggerType::WhenYouRecycle; }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
-        auto& ps = ctx.state.player(ctx.controller);
-        if (ps.main_deck.empty()) return;
-        auto top_card = ps.main_deck.back();
-        if (!ctx.state.objectExists(top_card)) return;
-        auto& top_obj = ctx.state.getObject(top_card);
-        ctx.events.emit(CardRevealedEvent{
-            top_card, top_obj.card_def_id, top_obj.owner,
-            /*revealed_to_all=*/false, /*revealed_to=*/ctx.controller,
-            ZoneType::MainDeck});
-        if (top_obj.isSpell()) {
-            ps.main_deck.pop_back();
-            ps.main_deck.insert(ps.main_deck.begin(), top_card);
-            ctx.events.logTrace("KARMA, CHANNELER: [Vision] recycled top spell to bottom");
+        std::vector<GameObjectId> friendly;
+        for (auto& [id, obj] : ctx.state.objects) {
+            if (obj.isUnit() && obj.controller == ctx.controller && obj.location.has_value())
+                friendly.push_back(id);
         }
-        // ENGINE GAP: "When you recycle one or more cards to your Main Deck,
-        // buff a friendly unit" — there is no WhenYouRecycle(-to-deck) trigger
-        // event in the engine, so the recycle-buff clause is not wired.
+        GameObjectId pick = pickTarget(ctx, "Karma, Channeler: buff a friendly unit", friendly);
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (pick == kInvalidId || !ctx.state.objectExists(pick)) return;
+        ctx.executor.buffUnit(pick);
+        ctx.events.logTrace("KARMA, CHANNELER: buffed a friendly unit on recycle");
     }
 private:
     const CardDef def_ = [] {

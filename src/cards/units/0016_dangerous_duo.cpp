@@ -1,5 +1,6 @@
 #include "cards/card.h"
 #include "cards/card_registry.h"
+#include "cards/card_helpers.h"
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
@@ -14,16 +15,24 @@ namespace {
 class DangerousDuo : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (ctx.state.player(ctx.controller).cards_played_this_turn < 2) return;
-        if (!targets.empty())
-            ctx.executor.giveTemporaryMight(targets[0], 2);
-    }
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true};
-    }
     bool requiresLegion() const override { return true; }
+    // "[Legion] — When you play me, give a unit +2 [M] this turn." Triggers get
+    // no targets: the unit is chosen as the ability is finalized.
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        // Legion: another card played this turn (I count as one).
+        if (ctx.state.player(ctx.controller).cards_played_this_turn < 2) {
+            if (finalizingChoices(ctx)) return;
+            return;
+        }
+        auto legal = chooseableUnits(ctx.state, ctx.controller,
+                                     [](const GameObject&) { return true; });
+        GameObjectId t = pickTarget(ctx, "Dangerous Duo: +2 [M]", legal);
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (t == kInvalidId || !ctx.state.objectExists(t)) return;
+        ctx.executor.giveTemporaryMight(t, 2);
+    }
 private:
     const CardDef def_ = [] {
         CardDef d;

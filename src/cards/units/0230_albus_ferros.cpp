@@ -35,11 +35,8 @@ public:
             if (remaining <= 0) break;
             if (!obj.isUnit() || obj.controller != ctx.controller || !obj.location.has_value())
                 continue;
-            while (obj.buff_count > 0 && remaining > 0) {
-                obj.buff_count -= 1;
+            while (obj.buff_count > 0 && remaining > 0 && ctx.executor.spendBuff(id))
                 remaining--;
-            }
-            obj.recomputeMight();
         }
         ctx.executor.channelRunes(ctx.controller, x, /*enter_exhausted=*/true);
         ctx.events.logTrace("ALBUS FERROS: spend " + std::to_string(x) +

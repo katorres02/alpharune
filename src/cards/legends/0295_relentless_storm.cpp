@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -16,20 +17,16 @@ public:
     const CardDef& def() const override { return def_; }
     unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayAUnit; }
+    // "When you play a [Mighty] unit, ..." — the played unit (the trigger's
+    // subject) must itself be Mighty as it is played.
+    bool triggerCondition(const GameState& state, GameObjectId /*source*/, PlayerId /*controller*/,
+                          TriggerType /*trigger*/, GameObjectId subject) const override {
+        return subject != kInvalidId && state.objectExists(subject) &&
+               isMighty(state.getObject(subject));
+    }
     void onTrigger(CardContext& ctx,
                    const std::vector<GameObjectId>& /*targets*/) override {
         if (!ctx.state.objectExists(ctx.source)) return;
-        // Gate: a [Mighty] (5+ [M]) friendly unit was just played. The trigger
-        // carries no played-object id, so scan friendly units for any Mighty
-        // one currently in play (best-effort identification of the play that
-        // fired this).
-        bool any_mighty = false;
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (!obj.isUnit() || obj.controller != ctx.controller) continue;
-            if (!obj.location.has_value()) continue;
-            if (obj.current_might >= 5) { any_mighty = true; break; }
-        }
-        if (!any_mighty) return;
         auto still_legal = [&]() -> bool {
             return ctx.state.objectExists(ctx.source) &&
                    !ctx.state.getObject(ctx.source).is_exhausted;

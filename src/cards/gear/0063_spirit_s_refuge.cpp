@@ -1,5 +1,6 @@
 #include "cards/card.h"
 #include "cards/card_registry.h"
+#include "cards/card_helpers.h"
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
@@ -14,35 +15,34 @@ namespace {
 class SpiritSRefuge : public GearCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty())
-            ctx.executor.buffUnit(targets[0]);
-    }
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayThis; }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_friendly = true};
+    // "When you play this, buff a friendly unit." Chosen at finalization.
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        auto legal = chooseableUnits(ctx.state, ctx.controller, [&](const GameObject& u) {
+            return u.controller == ctx.controller;
+        });
+        GameObjectId t = pickTarget(ctx, "Spirit's Refuge: buff", legal);
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (t == kInvalidId || !ctx.state.objectExists(t)) return;
+        ctx.executor.buffUnit(t);
     }
-    // "Friendly buffed units have [Deflect] if they didn't already."
+    // "Friendly buffed units have [Deflect] if they didn't already." The gear
+    // itself doesn't have [Deflect].
     void applyPassiveAura(GameState& state, PlayerId controller) const override {
-        // Active only while an on-board instance exists.
-        GameObjectId self_id = kInvalidId;
-        for (auto& [id, obj] : state.objects) {
-            if (obj.card_def_id != cardDefId()) continue;
-            if (obj.controller != controller || !obj.location.has_value()) continue;
-            self_id = id;
-            break;
-        }
-        if (self_id == kInvalidId) return;
-        for (auto& [uid, u] : state.objects) {
-            if (!u.isUnit() || u.controller != controller || !u.location.has_value())
-                continue;
-            if (u.buff_count <= 0) continue;  // "buffed" = has a +1 [M] buff
-            GameObject::AuraEffect ae;
-            ae.source = self_id;
-            ae.keyword = Keyword::Deflect;
-            ae.keyword_value = 1;
-            u.aura_effects.push_back(ae);
-        }
+        forEachSelfOnce(*this, state, controller, [&](GameObjectId sid, GameObject&) {
+            for (auto& [uid, u] : state.objects) {
+                if (!u.isUnit() || u.controller != controller || !u.location.has_value())
+                    continue;
+                if (u.buff_count <= 0) continue;
+                if (u.keywords.has(Keyword::Deflect)) continue;  // "if they didn't already"
+                bool granted = false;
+                for (const auto& ae : u.aura_effects)
+                    if (ae.keyword == Keyword::Deflect) { granted = true; break; }
+                if (granted) continue;
+                auraKeyword(u, sid, Keyword::Deflect, 1);
+            }
+        });
     }
 private:
     const CardDef def_ = [] {
@@ -60,8 +60,6 @@ private:
         d.energy_cost = 2;
         d.power_cost = 1;
         d.rarity = Rarity::Uncommon;
-        d.deflect_value = 1;
-        d.keywords.set(Keyword::Deflect);
         d.ability_text = R"RB(When you play this, buff a friendly unit. (If it doesn't have a buff, it gets a +1 [M] buff.)
 Friendly buffed units have [Deflect] if they didn't already. (Opponents must pay [A] to choose those units with a spell or ability.))RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/26d5e54580d1f17ed6c35a66ac6a90ce56c99ec8-744x1039.png)RB";

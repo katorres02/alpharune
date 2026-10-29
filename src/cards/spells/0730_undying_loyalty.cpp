@@ -16,61 +16,92 @@ namespace {
 //  Play a unit with cost no more than [2] and no more than [A] from your
 //  trash, ignoring its cost."
 //
-// The revival target lives in the trash → defer to resolve-time pickTarget.
-// Eligible = unit with printed Energy cost <= 2 (the "no more than [A]" Power
-// clause is approximated as no Power gate — no structured Power-budget hook).
-// Cost reduction ([2] less) is applied when at least one eligible target is a
-// Bird/Cat/Dog/Poro (approximation: the discount is committed at play time,
-// before the agent's exact choice; over-grants only if the agent then picks a
-// non-tagged unit while a tagged one was available).
+// The unit is chosen as the spell is played (needsPlayTimeTarget: the engine
+// asks before paying, CR 355), so the discount follows the actual choice:
+// selfCostReduction offers [2] off while a qualifying tagged unit is in the
+// trash (so the play is offered when only the discounted price is payable) and
+// targetCostAdjustment takes it back when the chosen unit isn't tagged. When
+// only the discounted price is payable, only tagged units are offered.
+
+// Printed costs of cards in a zone the GameState can't price (the trash): the
+// card classes own their CardDefs, so ask a registry of them, built once.
+const CardDef* printedDef_730(CardDefId id) {
+    static const CardRegistry* reg = [] {
+        auto* r = new CardRegistry();
+        r->loadAll();
+        return r;
+    }();
+    return id == kInvalidId ? nullptr : reg->classDef(id);
+}
 
 class UndyingLoyalty : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
     bool needsPlayTimeTarget() const override { return true; }
 
-    static bool eligible(const GameState& state, const EffectExecutor& exec,
-                         const GameObject& obj) {
-        if (!obj.isUnit() || obj.card_def_id == kInvalidId) return false;
-        return exec.cardDB().get(obj.card_def_id).energy_cost <= 2;
+    static bool eligible(const GameObject& obj) {
+        if (!obj.isUnit() || obj.isToken()) return false;
+        const CardDef* d = printedDef_730(obj.card_def_id);
+        return d && d->energy_cost <= 2 && d->power_cost <= 1;
+    }
+    static bool tagged(const GameObject& obj) {
+        return hasTag(obj, "Bird") || hasTag(obj, "Cat") ||
+               hasTag(obj, "Dog") || hasTag(obj, "Poro");
+    }
+    static std::vector<GameObjectId> eligibleInTrash(const GameState& state, PlayerId player) {
+        std::vector<GameObjectId> out;
+        for (auto cid : state.player(player).trash)
+            if (state.objectExists(cid) && eligible(state.getObject(cid))) out.push_back(cid);
+        return out;
+    }
+    static bool taggedAvailable(const GameState& state, PlayerId player) {
+        for (auto cid : eligibleInTrash(state, player))
+            if (tagged(state.getObject(cid))) return true;
+        return false;
+    }
+
+    // Targets offered as the spell is played.
+    std::vector<GameObjectId> enumerateLegalTargets(
+        const GameState& state, PlayerId controller) const override {
+        auto out = eligibleInTrash(state, controller);
+        // Undiscounted price not payable: only a discount-giving choice is.
+        if (taggedAvailable(state, controller) &&
+            payableEnergy(state, controller) < def_.energy_cost) {
+            out.erase(std::remove_if(out.begin(), out.end(), [&](GameObjectId id) {
+                return !tagged(state.getObject(id));
+            }), out.end());
+        }
+        return out;
     }
 
     int selfCostReduction(const GameState& state, PlayerId player) const override {
-        // We can't see the executor here; energy cost comes from CardDB via
-        // the static def. Conservatively grant the [2] discount if a tagged
-        // eligible unit exists in trash.
-        const auto& ps = state.player(player);
-        for (auto cid : ps.trash) {
-            if (!state.objectExists(cid)) continue;
-            const auto& obj = state.getObject(cid);
-            if (!obj.isUnit()) continue;
-            // Energy gate re-checked at resolve; tag check here.
-            if (hasTag(obj, "Bird") || hasTag(obj, "Cat") ||
-                hasTag(obj, "Dog") || hasTag(obj, "Poro")) {
-                return 2;
-            }
-        }
-        return 0;
+        return taggedAvailable(state, player) ? 2 : 0;
+    }
+    int targetCostAdjustment(const GameState& state, PlayerId player,
+                             const std::vector<GameObjectId>& targets) const override {
+        if (!taggedAvailable(state, player)) return 0;   // no discount was offered
+        const bool chose_tagged = !targets.empty() && state.objectExists(targets[0]) &&
+                                  tagged(state.getObject(targets[0]));
+        return chose_tagged ? 0 : 2;
     }
 
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         auto& ps = ctx.state.player(ctx.controller);
-        std::vector<GameObjectId> legal;
-        for (auto cid : ps.trash) {
-            if (!ctx.state.objectExists(cid)) continue;
-            if (eligible(ctx.state, ctx.executor, ctx.state.getObject(cid)))
-                legal.push_back(cid);
-        }
-        if (legal.empty()) return;
+        // Legal at resolution: any eligible unit still in the trash (the cost
+        // is already paid, so no affordability filter).
+        auto legal = eligibleInTrash(ctx.state, ctx.controller);
         GameObjectId picked = pickTarget(ctx, "Undying Loyalty (unit from trash)", legal);
         if (picked == kInvalidId && ctx.state.chain.resuming.has_value() &&
             ctx.state.chain.resuming->resume_point == 7) {
             return;  // suspended
         }
         if (picked == kInvalidId || !ctx.state.objectExists(picked)) return;
+        LocationId where;   // base or a battlefield I control (CR 355.2)
+        if (pickPlayLocation(ctx, picked, where, PlayerId::None, "Undying Loyalty: play it where?") <= 0)
+            return;
         auto it = std::find(ps.trash.begin(), ps.trash.end(), picked);
         if (it != ps.trash.end()) ps.trash.erase(it);
-        ctx.executor.playIgnoringCost(ctx.controller, picked);
+        ctx.executor.playIgnoringCost(ctx.controller, picked, where);
         ctx.events.logTrace("UNDYING LOYALTY: played a unit from trash, ignoring cost");
     }
 private:

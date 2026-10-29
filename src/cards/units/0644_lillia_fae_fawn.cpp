@@ -16,19 +16,38 @@ class LilliaFaeFawn : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
     TriggerType triggerType() const override { return TriggerType::WhenIMove; }
+    // "When I move from a location, play a 3 [M] Sprite unit token with
+    // [Temporary] there." "There" is the location she moved FROM, noted when
+    // the ability goes on the chain (CR example under 355: a later move does
+    // not change it). TriggerManager::onUnitMoved stamps __moved_from_bf
+    // (battlefield id, or -1 for a base) before the trigger fires; the
+    // finalize pass copies it into resume_data[6] (+1, so 0 = unset).
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     void onTrigger(CardContext& ctx,
                    const std::vector<GameObjectId>& /*targets*/) override {
-        LocationId loc = BaseLocation{ctx.controller};  // fallback
-        if (ctx.state.objectExists(ctx.source)) {
-            const auto& self = ctx.state.getObject(ctx.source);
-            if (self.location.has_value()) loc = *self.location;
+        auto& ri = ctx.state.chain.resuming;
+        auto readFrom = [&]() -> int {
+            if (!ctx.state.objectExists(ctx.source)) return -1;
+            const auto& cc = ctx.state.getObject(ctx.source).card_counters;
+            auto it = cc.find("__moved_from_bf");
+            return it == cc.end() ? -1 : it->second;
+        };
+        int from = -1;
+        if (ri.has_value()) {
+            while (ri->resume_data.size() < 7) ri->resume_data.push_back(0);
+            if (ri->resume_data[6] == 0) ri->resume_data[6] = readFrom() + 2;   // -1 -> 1
+            from = ri->resume_data[6] - 2;
+        } else {
+            from = readFrom();
         }
+        if (finalizingChoices(ctx)) return;   // the origin is noted; nothing else to choose
+        LocationId loc = BaseLocation{ctx.controller};
+        if (from >= 0) loc = BattlefieldLocation{static_cast<BattlefieldId>(from)};
         KeywordSet kw; kw.set(Keyword::Temporary);
         ctx.executor.createToken(ctx.controller, CardType::Unit, "Sprite",
                                  /*might=*/3, /*tags=*/{"Fae"}, kw, loc,
-                                 /*enter_ready=*/true);
-        ctx.events.logTrace("LILLIA: creates 3M Sprite token (Temporary) at "
-                            "move location");
+                                 /*enter_ready=*/false);
+        ctx.events.logTrace("LILLIA: 3 [M] Sprite token (Temporary) where she moved from");
     }
 private:
     const CardDef def_ = [] {
@@ -49,7 +68,6 @@ private:
         d.might = 3;
         d.rarity = Rarity::Rare;
         d.keywords.set(Keyword::Accelerate);
-        d.keywords.set(Keyword::Temporary);
         d.ability_text = R"RB([Accelerate] (You may pay [1][B] as an additional cost to have me enter ready.)
 When I move from a location, play a 3 [M] Sprite unit token with [Temporary] there. (Kill it at the start of its controller's Beginning Phase, before scoring.))RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/65d0af5361b335a7e65c7aa03a099fc0de3431e6-744x1039.png)RB";

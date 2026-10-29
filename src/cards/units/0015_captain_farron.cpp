@@ -1,5 +1,6 @@
 #include "cards/card.h"
 #include "cards/card_registry.h"
+#include "cards/card_helpers.h"
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
@@ -15,31 +16,20 @@ class CaptainFarron : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
 
-    // "Other friendly units here have [Assault]." Grant the Assault keyword
-    // (and its +1 [M] while attacking) to every OTHER friendly unit at the
-    // same battlefield as me. Mirrors Rumble/Forecaster aura pattern, scoped
-    // to "here" (same battlefield).
+    // "Other friendly units here have [Assault]." Each instance of me grants
+    // [Assault] (with its +1 [M] while attacking) to every OTHER friendly unit
+    // at my battlefield. I don't have [Assault] myself.
     void applyPassiveAura(GameState& state, PlayerId controller) const override {
-        for (auto& [sid, self] : state.objects) {
-            if (self.card_def_id != cardDefId() || self.controller != controller)
-                continue;
+        forEachSelfOnce(*this, state, controller, [&](GameObjectId sid, GameObject& self) {
             auto my_bf = self.battlefieldId();
-            if (!my_bf) continue;  // only active while I'm at a battlefield
+            if (!my_bf) return;  // "here" is a battlefield
             for (auto& [uid, u] : state.objects) {
-                if (uid == sid) continue;  // "other" — exclude myself
+                if (uid == sid) continue;  // "other"
                 if (!u.isUnit() || u.controller != controller) continue;
-                if (u.battlefieldId() != my_bf) continue;  // "here"
-                GameObject::AuraEffect ae;
-                ae.source = sid;
-                ae.keyword = Keyword::Assault;
-                // Aura Assault grants +1 [M] while attacking (recomputeMight
-                // only sums the dedicated assault_value, not keyword presence,
-                // so model the +1 directly while the unit is an attacker).
-                if (u.combat_designation == CombatDesignation::Attacker)
-                    ae.might_bonus = 1;
-                u.aura_effects.push_back(ae);
+                if (u.battlefieldId() != my_bf) continue;
+                auraKeyword(u, sid, Keyword::Assault);
             }
-        }
+        });
     }
 private:
     const CardDef def_ = [] {
@@ -59,8 +49,6 @@ private:
         d.power_cost = 1;
         d.might = 5;
         d.rarity = Rarity::Uncommon;
-        d.assault_value = 1;
-        d.keywords.set(Keyword::Assault);
         d.ability_text = R"RB(Other friendly units here have [Assault]. (+1 [M] while they're attackers.))RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/4c65e2cae6748590f589ad8b26bc5a20c0d770c2-744x1039.png?accountingTag=RB)RB";
         return d;

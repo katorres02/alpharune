@@ -194,6 +194,15 @@ public:
     bool testHook_payAdditionalCost(PlayerId p, int energy, int power, Domain d) {
         return payAdditionalCost(p, energy, power, d);
     }
+    bool testHook_canPayActivationResources(PlayerId p, int energy, const ActivationCost& c,
+                                            SpendPurpose purpose) const {
+        return canPayActivationResources(p, energy, c, purpose);
+    }
+    bool testHook_payActivationResources(PlayerId p, int energy, const ActivationCost& c,
+                                         SpendPurpose purpose) {
+        return payActivationResources(p, energy, c, purpose);
+    }
+    void testHook_awakenPhase() { awakenPhase(); }
     void testHook_beginningStep() { beginningStep(); }
     void testHook_scoringStep() { scoringStep(); }
     void testHook_executeStandardMove(const Intent& i) { executeStandardMove(i); }
@@ -576,6 +585,25 @@ private:
     /// `extra_any_power`: [A] owed on top of everything else (a battlefield's
     /// pay-to-play-here cost).
     bool canAfford(PlayerId player, GameObjectId card_obj, int extra_any_power = 0) const;
+    /// Discount granted by paying a Card::OptionalAdditionalCost object cost
+    /// ("kill a friendly unit", "spend a buff", ...): Energy / Power off, or
+    /// the base cost ignored.
+    struct ObjectCostDiscount { int energy = 0; int power = 0; bool ignore = false; };
+    /// Discount `objs` give when paying `cost` (read before they are paid).
+    ObjectCostDiscount objectCostDiscount(const Card::OptionalAdditionalCost& cost,
+                                          const std::vector<GameObjectId>& objs) const;
+    /// Upper bound on the discount up to `slots` more of `cands` could add
+    /// (`slots` < 0: any number) on top of `already` paid objects.
+    ObjectCostDiscount bestObjectCostDiscount(const Card::OptionalAdditionalCost& cost,
+                                              const std::vector<GameObjectId>& cands,
+                                              int slots, int already) const;
+    /// Asks `player` which objects pay `card_id`'s object cost (one at a time,
+    /// or stop), pays each as it is chosen and returns the discount. Only
+    /// choices that leave the play payable are offered; a mandatory cost
+    /// offers no stop before min_objects. Called before the rune cost is paid
+    /// (executePlayCard / executePlaySpell), with transient_optional_cost_decided set.
+    ObjectCostDiscount payObjectAdditionalCost(PlayerId player, GameObjectId card_id,
+                                               const std::optional<LocationId>& play_location);
 
     /// Auto-pay a card's cost by exhausting/recycling runes.
     /// Returns false if payment failed (shouldn't happen if canAfford was checked).
@@ -593,9 +621,12 @@ private:
     /// Energy + power affordability / payment for an activated ability whose
     /// cost has a power component (honors ActivationCost::power_any_domain).
     bool canPayActivationResources(PlayerId player, int energy,
-                                   const ActivationCost& cost, bool for_unit = false) const;
+                                   const ActivationCost& cost,
+                                   SpendPurpose purpose = SpendPurpose::None) const;
+    /// Whether `player` can pay the move tax onto `bf` (Gravity Field).
+    bool canPayMoveTax(PlayerId player, const BattlefieldState& bf) const;
     bool payActivationResources(PlayerId player, int energy, const ActivationCost& cost,
-                                bool for_unit = false);
+                                SpendPurpose purpose = SpendPurpose::None);
     /// Apply `assigned` combat damage to a unit through the replacement
     /// effects that govern it (CR 467.2.c.5).
     void applyCombatDamage(GameObjectId target, int assigned);
@@ -605,6 +636,8 @@ private:
                                   GameObjectId source, int index) const;
     /// Make the choices the rules place at finalization for `item` (targets).
     void chooseTargetsAtFinalize(ChainItem& item);
+    // [Show Off] (CR 832): offered as a played card's chain item is finalized.
+    void chooseShowOff(ChainItem& item);
     void runFinalizePass(ChainItem& item);
     /// "You may make new choices for it" (CR 750-755).
     void makeNewChoicesFor(ChainItemId item_id);
@@ -621,15 +654,24 @@ private:
     /// Rebuild the standing [Flow] play-from-trash grants (called from recalculateAuras).
     void refreshFlowGrants();
     bool canPayAdditionalCost(PlayerId player, int energy, int power,
-                                Domain domain, bool for_unit = false) const;
+                                Domain domain, SpendPurpose purpose = SpendPurpose::None) const;
     bool payAdditionalCost(PlayerId player, int energy, int power,
-                            Domain domain, bool for_unit = false);
+                            Domain domain, SpendPurpose purpose = SpendPurpose::None);
 
     /// Pays the matching PlayerState::TrashReplayGrant's override cost for
     /// `card_id` (auto-spends via payAdditionalCost; an [A] grant picks the
     /// first payable domain) and consumes the grant. Returns true if a grant
     /// was found and paid, false otherwise (caller falls back to printed cost).
     bool payTrashReplayGrant(PlayerId player, GameObjectId card_id);
+    /// `player`'s trash-replay grant for `card_id`, or nullptr.
+    const PlayerState::TrashReplayGrant* trashReplayGrantFor(PlayerId player,
+                                                             GameObjectId card_id) const;
+    /// Whether `player` can pay `grant`'s override cost (any payable domain
+    /// for an [A] grant), spending restricted resources allowed for `purpose`.
+    bool canPayTrashReplayGrant(PlayerId player, const PlayerState::TrashReplayGrant& grant,
+                                SpendPurpose purpose) const;
+    /// Units / gear in `player`'s trash a standing grant lets them play now.
+    std::vector<GameObjectId> playablePermanentsInTrash(PlayerId player) const;
 
     // ── Repeat (CR 820) — optional additional cost ──
     //
@@ -658,9 +700,16 @@ private:
     /// On accept, pays the card's Card::optionalAdditionalCost and sets
     /// card_counters[paid_flag] = 1. No-op if the card has none or can't pay.
     void maybePayOptionalAdditionalCost(PlayerId player, GameObjectId card_id);
+    /// "Return a friendly gear to its owner's hand as an additional cost"
+    /// (OptionalAdditionalCost::return_friendly_gear): asks `player` which
+    /// gear to return (or to decline, when `allow_decline`), returns it and
+    /// stamps card_counters on `card`. Returns true if a gear was returned.
+    bool offerReturnFriendlyGear(PlayerId player, GameObject& card,
+                                 const Card::OptionalAdditionalCost& cost,
+                                 bool allow_decline);
 
     /// Count available Energy from ready runes (exhaust potential).
-    int availableEnergy(PlayerId player, bool for_unit = false) const;
+    int availableEnergy(PlayerId player, SpendPurpose purpose = SpendPurpose::None) const;
 
     /// Count available Power of a specific domain (recycle potential).
     int availablePower(PlayerId player, Domain domain) const;

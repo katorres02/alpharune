@@ -15,16 +15,31 @@ namespace {
 class EkkoRecurrent : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     TriggerType triggerType() const override { return TriggerType::WhenIDie; }
+    // "[Deathknell] — Recycle me to ready your runes." "Recycle me" is the
+    // ability's base cost (CR 383.3.b), paid as it is finalized; without it
+    // (I'm no longer in the trash) the runes aren't readied.
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         if (!ctx.state.objectExists(ctx.source)) return;
-        // "Recycle me to ready your runes" — ready every friendly
-        // on-board rune. Same iteration pattern as MSona.
+        auto& me = ctx.state.getObject(ctx.source);
+        if (!costAlreadyPaid(ctx)) {
+            if (me.zone != ZoneType::Trash) {
+                if (finalizingChoices(ctx)) return;
+                return;   // can't pay the cost
+            }
+            if (costDueNow(ctx)) {
+                auto& trash = ctx.state.player(me.owner).trash;
+                trash.erase(std::remove(trash.begin(), trash.end(), ctx.source), trash.end());
+                ctx.executor.recycleCards(ctx.controller, {ctx.source});
+                ctx.events.logTrace("EKKO: recycled me");
+            }
+        }
+        if (finalizingChoices(ctx)) return;   // costs end here (CR 383.3)
         int readied = 0;
         for (auto& [id, obj] : ctx.state.objects) {
             if (!obj.isRune() || obj.controller != ctx.controller) continue;
-            if (!obj.is_exhausted) continue;
-            if (!obj.location.has_value()) continue;
+            if (!obj.is_exhausted || !obj.location.has_value()) continue;
             ctx.executor.readyObject(id);
             ++readied;
         }

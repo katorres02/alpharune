@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -14,13 +15,21 @@ namespace {
 class NavoriFightingPit : public BattlefieldCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty())
-            ctx.executor.buffUnit(targets[0]);
-    }
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     TriggerType triggerType() const override { return TriggerType::WhenYouHoldHere; }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_at_battlefield = true};
+    // "When you hold here, buff a unit here." Any unit at this battlefield.
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        std::optional<BattlefieldId> here;
+        for (const auto& bf : ctx.state.battlefields)
+            if (bf.card_object_id == ctx.source) here = bf.id;
+        if (!here) return;
+        auto legal = chooseableUnits(ctx.state, ctx.controller,
+            [&](const GameObject& o) { return o.battlefieldId() == here; });
+        GameObjectId t = pickTarget(ctx, "Navori Fighting Pit (buff a unit here)", legal);
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (t == kInvalidId && ctx.executor.hasPendingChoice()) return;  // suspended
+        if (t == kInvalidId || !ctx.state.objectExists(t)) return;
+        ctx.executor.buffUnit(t);
     }
 private:
     const CardDef def_ = [] {

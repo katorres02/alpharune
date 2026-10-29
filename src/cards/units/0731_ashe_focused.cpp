@@ -16,6 +16,12 @@ public:
     const CardDef& def() const override { return def_; }
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>&) override {
+        // The delayed "When they hold" ability (registered below) fires with
+        // the holding player as its controller: return what I banished.
+        if (ctx.firing_trigger == TriggerType::WhenIHold) {
+            returnBanished(ctx);
+            return;
+        }
         PlayerId opp = opponent(ctx.controller);
         auto& opp_ps = ctx.state.player(opp);
 
@@ -45,9 +51,40 @@ public:
         auto& h = ctx.state.player(opp).hand;
         h.erase(std::remove(h.begin(), h.end(), picked), h.end());
         ctx.executor.banishObject(picked);
-        ctx.events.logTrace("ASHE FOCUSED: banished a card from opponent's hand "
-                            "(hold-return rider not implemented — no deferred "
-                            "board-independent hold hook)");
+        // "When they hold, return it to their hand (even if I'm no longer on
+        // the board)": a delayed ability keyed to the opponent's next hold,
+        // which outlives me. The banished card is remembered on this object.
+        if (ctx.state.objectExists(ctx.source))
+            ctx.state.getObject(ctx.source).tracked_objects.push_back(picked);
+        DelayedAbility da;
+        da.source = ctx.source;
+        da.card_def_id = cardDefId();
+        da.controller = opp;              // fires when THIS player holds
+        da.trigger = TriggerType::WhenIHold;
+        da.expires_on_turn = -1;          // no expiry
+        ctx.state.delayed_abilities.push_back(da);
+        ctx.events.logTrace("ASHE FOCUSED: banished a card from the opponent's hand "
+                            "until they hold");
+    }
+
+private:
+    void returnBanished(CardContext& ctx) {
+        if (!ctx.state.objectExists(ctx.source)) return;
+        auto& tracked = ctx.state.getObject(ctx.source).tracked_objects;
+        std::vector<GameObjectId> keep;
+        for (auto cid : tracked) {
+            if (!ctx.state.objectExists(cid)) continue;
+            auto& c = ctx.state.getObject(cid);
+            if (c.owner != ctx.controller) { keep.push_back(cid); continue; }
+            if (c.zone != ZoneType::Banishment) continue;   // already gone elsewhere
+            auto& bz = ctx.state.player(c.owner).banishment;
+            bz.erase(std::remove(bz.begin(), bz.end(), cid), bz.end());
+            c.zone = ZoneType::Hand;
+            c.location = std::nullopt;
+            ctx.state.player(c.owner).hand.push_back(cid);
+            ctx.events.logTrace("ASHE FOCUSED: " + c.name + " returns to its owner's hand");
+        }
+        ctx.state.getObject(ctx.source).tracked_objects = keep;
     }
 private:
     const CardDef def_ = [] {

@@ -14,37 +14,44 @@ namespace {
 class Conscription : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
-    // Broad play-time requirement; the 3M cap / "any" widening is applied at
-    // resolve based on whether 5 XP was paid.
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true,
-                                   .must_be_enemy = true,
-                                   .must_be_at_battlefield = true};
-    }
-    bool needsPlayTimeTarget() const override { return true; }
+    // "You may spend 5 XP as an additional cost to play this." The XP is paid
+    // as the spell is played (kFinalizeResolve: confirmOptional + costDueNow),
+    // and the enemy unit is chosen then too, under the cap the payment sets.
+    unsigned choicesAtFinalization() const override { return kFinalizeResolve; }
     bool hasLegalTargets(const GameState& state, PlayerId controller) const override {
-        // Legal if any enemy unit sits at a battlefield (might cap is checked
-        // at resolve; if 5 XP would be paid the cap is irrelevant).
+        // Legal if any enemy unit sits at a battlefield (the 3 [M] cap is
+        // lifted by paying 5 XP, so with 5+ XP any such unit will do).
+        const bool can_widen = state.player(controller).xp >= 5;
         auto opp = opponent(controller);
         for (auto& [id, obj] : state.objects) {
             if (!obj.isUnit() || obj.controller != opp) continue;
             if (!obj.isAtBattlefield()) continue;
             if (obj.untargetable_by_enemy) continue;
+            if (!can_widen && obj.current_might > 3) continue;
             return true;
         }
         return false;
     }
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         auto& ps = ctx.state.player(ctx.controller);
-        // Optional additional cost: spend 5 XP (only offered if affordable).
         int paid = confirmOptional(ctx, "Conscription: spend 5 XP (any enemy unit)",
-            [&]() { return ps.xp >= 5; });
+            [&]() { return costAlreadyPaid(ctx) || ps.xp >= 5; });
         if (paid == -1) return;  // waiting on agent
+        const bool widened = (paid == 1);
+        // resume_data[7] = 1 once paid, so a re-entry after the target prompt
+        // (when this resolves without a finalize pass) does not pay again.
+        auto& ri = ctx.state.chain.resuming;
+        const bool paid_here = ri.has_value() && ri->resume_data.size() > 7 &&
+                               ri->resume_data[7] == 1;
+        if (widened && !paid_here && costDueNow(ctx)) {
+            if (ps.xp < 5) return;
+            ps.xp -= 5;
+            if (ri.has_value()) {
+                while (ri->resume_data.size() < 8) ri->resume_data.push_back(0);
+                ri->resume_data[7] = 1;
+            }
+        }
 
-        bool widened = (paid == 1);
-        if (widened) ps.xp -= 5;
-
-        // Build the legal enemy-unit set under the current restriction.
         auto opp = opponent(ctx.controller);
         std::vector<GameObjectId> legal;
         for (auto& [id, obj] : ctx.state.objects) {
@@ -59,12 +66,16 @@ public:
             ctx.state.chain.resuming->resume_point == 7) {
             return;  // suspended for agent decision
         }
+        if (finalizingChoices(ctx)) return;   // choices and costs end here (CR 383.3)
         if (picked == kInvalidId || !ctx.state.objectExists(picked)) return;
 
-        // Take control of it, exhaust it, and recall it (to its base).
+        // Take control of it, exhaust it, and recall it. A recall puts it in
+        // its (new) controller's base and is not a move (no move triggers).
         ctx.executor.takeControl(picked, ctx.controller, /*until_end_of_turn=*/false);
         ctx.executor.exhaustObject(picked);
-        ctx.executor.moveToBase(picked);
+        auto& obj = ctx.state.getObject(picked);
+        obj.location = BaseLocation{obj.controller};
+        obj.zone = ZoneType::Base;
         ctx.events.logTrace("CONSCRIPTION: take control + exhaust + recall (paid="
                             + std::to_string(widened) + ")");
     }

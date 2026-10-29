@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -15,9 +16,13 @@ class Stormbringer : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
 
+    // "Choose a friendly unit in your base. Deal damage equal to its Might to
+    // all enemy units at a battlefield, then move your unit there."
+    // The unit is chosen with pickTarget; the battlefield is the player's
+    // choice among all battlefields (resume points 20/21/22, resume_data[15]).
+    // The unit moves even if no enemy unit is there.
     void onResolve(CardContext& ctx,
                    const std::vector<GameObjectId>& /*targets*/) override {
-        // 1) Choose a friendly unit in your base.
         std::vector<GameObjectId> base_units;
         for (auto& [id, obj] : ctx.state.objects) {
             if (!obj.isUnit() || obj.controller != ctx.controller) continue;
@@ -27,66 +32,51 @@ public:
         std::sort(base_units.begin(), base_units.end());
         GameObjectId mover = pickTarget(ctx, "Stormbringer: friendly unit in base",
                                         base_units);
-        // Distinguish suspend (resume_point 7) from fizzle.
-        if (mover == kInvalidId) {
-            if (ctx.state.chain.resuming.has_value() &&
-                ctx.state.chain.resuming->resume_point == 7) return;  // suspend
-            return;  // no legal mover — fizzle
+        if (mover == kInvalidId) return;   // suspended, or no unit in base
+        if (!ctx.state.objectExists(mover) || ctx.state.battlefields.empty()) return;
+
+        BattlefieldId dest = ctx.state.battlefields.front().id;
+        if (ctx.state.chain.resuming.has_value()) {
+            auto& ri = *ctx.state.chain.resuming;
+            if (ri.resume_data.size() < 16) ri.resume_data.resize(16, 0);
+            if (ri.resume_point < 20) {
+                std::vector<Intent> opts;
+                for (const auto& bf : ctx.state.battlefields)
+                    opts.push_back(valChoice(ctx.controller, 1 + static_cast<int>(bf.id),
+                                             destLabel(1 + static_cast<int>(bf.id))));
+                ctx.executor.requestChoice(ctx.controller, std::move(opts),
+                                           "Stormbringer: choose a battlefield");
+                ri.resume_point = 21;
+                return;
+            }
+            if (ri.resume_point == 21) {
+                ri.resume_data[15] = takenValue(ctx, 1 + static_cast<int>(dest));
+                ri.resume_point = 22;
+            }
+            dest = static_cast<BattlefieldId>(ri.resume_data[15] - 1);
         }
-        if (!ctx.state.objectExists(mover)) return;
         int dmg = ctx.state.getObject(mover).current_might;
 
-        // 2) Choose a battlefield with enemy units (anchored by an enemy unit).
+        // Deal damage to all enemy units there, collect-then-kill.
         PlayerId opp = opponent(ctx.controller);
-        std::vector<GameObjectId> enemy_at_bf;
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (!obj.isUnit() || obj.controller != opp) continue;
-            if (!obj.isAtBattlefield()) continue;
-            enemy_at_bf.push_back(id);
-        }
-        std::sort(enemy_at_bf.begin(), enemy_at_bf.end());
-        // The first pickTarget above already consumed the pickTarget resume
-        // slots (6/7/8), so we cannot pose a SECOND resumable target choice for
-        // the battlefield in the same resolve. Instead we anchor the AoE on the
-        // first enemy unit found at a battlefield; the damage hits ALL enemy
-        // units at that BF regardless, and the mover lands there. The agent's
-        // battlefield preference is not surfaced as a separate vocab slot here
-        // (acceptable simplification — documented in report).
-        if (enemy_at_bf.empty()) {
-            ctx.events.logTrace("STORMBRINGER: no enemy units at a battlefield — "
-                                "damage skipped");
-            return;
-        }
-        std::optional<LocationId> anchor =
-            ctx.state.getObject(enemy_at_bf.front()).location;
-        if (!anchor.has_value()) return;
-
-        // AoE: deal <dmg> to all enemy units at the anchor BF, collect-then-kill.
         std::vector<GameObjectId> hit;
         for (auto& [id, obj] : ctx.state.objects) {
             if (!obj.isUnit() || obj.controller != opp) continue;
-            if (obj.location != anchor) continue;
+            if (obj.battlefieldId() != std::optional<BattlefieldId>(dest)) continue;
             hit.push_back(id);
         }
-        for (auto id : hit) {
-            if (ctx.state.objectExists(id))
-                ctx.executor.dealDamage(id, dmg, ctx.source);
-        }
-        for (auto id : hit) {
-            if (ctx.state.objectExists(id) &&
-                ctx.state.getObject(id).hasLethalDamage()) {
+        for (auto id : hit) ctx.executor.dealDamage(id, dmg, ctx.source);
+        for (auto id : hit)
+            if (ctx.state.objectExists(id) && ctx.state.getObject(id).location.has_value() &&
+                ctx.state.getObject(id).hasLethalDamage())
                 ctx.executor.killObject(id);
-            }
-        }
         // Then move your unit there.
-        if (ctx.state.objectExists(mover) &&
-            std::holds_alternative<BattlefieldLocation>(*anchor)) {
-            ctx.executor.moveToBattlefield(
-                mover, std::get<BattlefieldLocation>(*anchor).id);
-        }
+        if (ctx.state.objectExists(mover) && ctx.state.getObject(mover).location.has_value())
+            ctx.executor.moveToBattlefield(mover, dest);
         ctx.events.logTrace("STORMBRINGER: dealt " + std::to_string(dmg) +
                             " to " + std::to_string(hit.size()) +
-                            " enemy units, then moved my unit there");
+                            " enemy units at BF#" + std::to_string(dest) +
+                            ", then moved my unit there");
     }
 private:
     const CardDef def_ = [] {

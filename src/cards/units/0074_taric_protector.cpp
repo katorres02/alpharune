@@ -1,5 +1,6 @@
 #include "cards/card.h"
 #include "cards/card_registry.h"
+#include "cards/card_helpers.h"
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
@@ -14,24 +15,19 @@ namespace {
 class TaricProtector : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    // "Other friendly units here have [Shield]." Static aura: for each on-board
-    //  instance of me, grant Shield to every OTHER friendly unit sharing my
-    //  location (base or battlefield). Mirrors Forecaster's keyword-grant aura.
+    // "Other friendly units here have [Shield]." Each instance of me grants
+    // [Shield] (with its +1 [M] while defending) to every OTHER friendly unit
+    // at my location.
     void applyPassiveAura(GameState& state, PlayerId controller) const override {
-        for (auto& [sid, self] : state.objects) {
-            if (self.card_def_id != cardDefId() || self.controller != controller) continue;
-            if (!self.location.has_value()) continue;
+        forEachSelfOnce(*this, state, controller, [&](GameObjectId sid, GameObject& self) {
+            if (!self.location.has_value()) return;
             for (auto& [uid, u] : state.objects) {
-                if (uid == sid) continue;             // "Other"
+                if (uid == sid) continue;             // "other"
                 if (!u.isUnit() || u.controller != controller) continue;
-                if (!u.location.has_value() || *u.location != *self.location) continue;  // "here"
-                GameObject::AuraEffect ae;
-                ae.source = sid;
-                ae.keyword = Keyword::Shield;
-                ae.keyword_value = 1;
-                u.aura_effects.push_back(ae);
+                if (!u.location.has_value() || *u.location != *self.location) continue;
+                auraKeyword(u, sid, Keyword::Shield);
             }
-        }
+        });
     }
 private:
     const CardDef def_ = [] {

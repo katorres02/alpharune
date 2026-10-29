@@ -72,6 +72,12 @@ public:
                           (ctx.state.chain.resuming->resume_point == 10 ||
                            ctx.state.chain.resuming->resume_point == 12);
         if (suspending) return;
+        // Where the revived unit goes (CR 355.2), chosen before anything moves.
+        LocationId where{BaseLocation{ctx.controller}};
+        if (revived != kInvalidId && ctx.state.objectExists(revived) &&
+            pickPlayLocation(ctx, revived, where, PlayerId::None,
+                             "Heedless Resurrection: play it where?") == -1)
+            return;   // waiting for the agent
         // Pay the additional cost: kill the chosen friendly unit.
         if (killed != kInvalidId && ctx.state.objectExists(killed)) {
             ctx.events.logTrace("HEEDLESS RESURRECTION: killing " +
@@ -83,7 +89,7 @@ public:
         auto& ps = ctx.state.player(ctx.controller);
         auto it = std::find(ps.trash.begin(), ps.trash.end(), revived);
         if (it != ps.trash.end()) ps.trash.erase(it);
-        ctx.executor.playIgnoringCost(ctx.controller, revived);
+        ctx.executor.playIgnoringCost(ctx.controller, revived, where);
         ctx.events.logTrace("HEEDLESS RESURRECTION: played a unit from trash, ignoring cost");
     }
 private:

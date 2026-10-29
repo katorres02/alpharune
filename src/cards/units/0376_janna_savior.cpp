@@ -24,7 +24,11 @@ public:
         auto here = ctx.state.getObject(ctx.source).battlefieldId();
         if (!here) return;  // not at a battlefield -> nothing happens
 
-        // Heal ALL friendly units here.
+        // Heal ALL friendly units here — once, not on each re-entry after a
+        // choice below.
+        const bool first_pass = !ctx.state.chain.resuming.has_value() ||
+                                ctx.state.chain.resuming->resume_point == 0;
+        if (first_pass)
         for (auto& [id, obj] : ctx.state.objects) {
             if (!obj.isUnit() || obj.controller != ctx.controller) continue;
             auto bf = obj.battlefieldId();
@@ -41,9 +45,13 @@ public:
             if (obj.untargetable_by_enemy) continue;
             enemies.push_back(id);
         }
+        // "up to one": moving none is a legal answer.
+        int go = confirmOptional(ctx, "Janna: move an enemy unit from here to its base?",
+                                 [&]() { return !enemies.empty(); });
+        if (go != 1) return;  // waiting, declined, or nobody to move
         GameObjectId enemy = pickTarget(ctx,
             "Janna: move up to one enemy unit from here to base", enemies);
-        if (enemy == kInvalidId) return;  // suspend, none, or declined
+        if (enemy == kInvalidId) return;  // suspend or none
         if (!ctx.state.objectExists(enemy)) return;
         ctx.executor.moveToBase(enemy);
         ctx.events.logTrace("JANNA SAVIOR: healed friendly units here + moved an "

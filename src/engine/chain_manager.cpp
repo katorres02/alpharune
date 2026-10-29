@@ -45,6 +45,7 @@ ChainItemId ChainManager::addSpell(GameObjectId spell_obj, PlayerId controller,
     // that trigger on them go above it (and resolve first).
     for (auto t : targets) {
         if (!state_.objectExists(t)) continue;
+        noteEnemyChoice(state_, controller, item.source, t);   // Prodigal Explorer
         const auto& tobj = state_.getObject(t);
         if (!tobj.isUnit() || !tobj.location.has_value()) continue;
         if (tobj.controller == controller)
@@ -132,6 +133,7 @@ ChainItemId ChainManager::addAbility(GameObjectId source, PlayerId controller,
     // that trigger on them go above it (and resolve first).
     for (auto t : targets) {
         if (!state_.objectExists(t)) continue;
+        noteEnemyChoice(state_, controller, item.source, t);   // Prodigal Explorer
         const auto& tobj = state_.getObject(t);
         if (!tobj.isUnit() || !tobj.location.has_value()) continue;
         if (tobj.controller == controller)
@@ -212,12 +214,21 @@ bool ChainManager::stepFinalize(
         item.status = ChainItemStatus::Finalized;
         finalized_any = true;
 
+        // [Show Off] on a played card (CR 832.1.c.2).
+        if (show_off_choice_ && !item.is_ability && (item.is_spell || item.is_permanent)) {
+            const ChainItemId sid = item.id;
+            show_off_choice_(item);
+            bool found = false;
+            for (size_t k = 0; k < state_.chain.items.size(); ++k)
+                if (state_.chain.items[k].id == sid) { i = k; found = true; break; }
+            if (!found) continue;
+        }
         // Choices made at finalization (targets; see setFinalizeChoices). The
         // callback may put triggered abilities on the chain, so re-take the
         // reference afterwards.
-        if (finalize_choices_ && !item.is_permanent) {
-            const ChainItemId fid = item.id;
-            finalize_choices_(item);
+        if (finalize_choices_ && !state_.chain.items[i].is_permanent) {
+            const ChainItemId fid = state_.chain.items[i].id;
+            finalize_choices_(state_.chain.items[i]);
             bool found = false;
             for (size_t k = 0; k < state_.chain.items.size(); ++k)
                 if (state_.chain.items[k].id == fid) { i = k; found = true; break; }
@@ -442,6 +453,18 @@ void ChainManager::stepResolve(
             state_.chain.resuming->finalize_checked = 0;
             if (state_.chain.resuming->is_spell || state_.chain.resuming->is_ability) {
                 resolve_spell(state_.chain.resuming.value());
+                // A repeat that asks for a choice resumes like the first run.
+                for (int g = 0; g < kMaxResumeIterations && executor_ &&
+                                executor_->hasPendingChoice(); ++g) {
+                    auto pending = executor_->consumePendingChoice();
+                    events_.logTrace(std::string("CHOICE-REQUEST (repeat): ") +
+                        (pending.label.empty() ? "MakeChoice" : pending.label) +
+                        " [" + std::to_string(pending.legal.size()) + " options] (" +
+                        toString(pending.player) + ")");
+                    Intent choice = query_agent(pending.player, pending.legal);
+                    executor_->recordChoice(std::move(choice));
+                    resolve_spell(state_.chain.resuming.value());
+                }
             }
         }
     }
@@ -508,7 +531,7 @@ std::vector<Intent> ChainManager::generateClosedStateActions(
     for (auto card_id : ps.hand) {
         auto& card = state_.getObject(card_id);
         if (!card.isSpell()) continue;
-        if (!card.keywords.has(Keyword::Reaction)) continue;
+        if (!card.keywords.has(Keyword::Reaction) && !ps.spells_have_reaction) continue;
 
         // Check affordability via injected callback from GameEngine
         if (can_afford_ && !can_afford_(player, card_id)) continue;

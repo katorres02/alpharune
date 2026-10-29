@@ -1,5 +1,6 @@
 #include "cards/card.h"
 #include "cards/card_registry.h"
+#include "cards/card_helpers.h"
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
@@ -15,12 +16,11 @@ class StandUnited : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
     // "Buff a friendly unit. Buffs give an additional +1 [M] to friendly units
-    //  this turn."
-    // ENGINE GAP: there is no buff-amplification hook (a per-player field that
-    // makes subsequent buffs grant +2 [M] this turn), so only the on-resolve
-    // buff is applied. The amplification rider is unmodeled.
+    //  this turn." The rider is PlayerState::buff_bonus_this_turn, which the
+    // aura pass adds per buff on each of the player's units for the turn.
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty())
+        ctx.state.player(ctx.controller).buff_bonus_this_turn += 1;
+        if (!targets.empty() && ctx.state.objectExists(targets[0]))
             ctx.executor.buffUnit(targets[0]);
     }
     TargetRequirements getTargetRequirements() const override {

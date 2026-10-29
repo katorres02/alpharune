@@ -27,9 +27,9 @@ namespace {
 class VoidBurrower : public LegendCard {
 public:
     const CardDef& def() const override { return def_; }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true};
-    }
+    // "you may exhaust me" is a "[cost] to [effect]" payment: decided and
+    // paid as the trigger is finalized (CR 383.3).
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     TriggerType triggerType() const override { return TriggerType::WhenIConquer; }
 
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
@@ -45,15 +45,19 @@ public:
                                    still_legal);
         if (conf == -1) return;  // waiting for agent
         if (conf == 0) return;   // declined or no longer legal
+        if (costDueNow(ctx) && ri.resume_data.size() < 4) {
+            if (!still_legal()) return;
+            ctx.executor.exhaustObject(ctx.source);   // the cost
+        }
+        if (finalizingChoices(ctx)) return;   // choices and costs end here (CR 383.3)
 
         // Ensure our private resume_data slots exist: [0]=confirm, [1]/[2]=
-        // the revealed ids, [3]=phase.
-        while (ri.resume_data.size() < 4) ri.resume_data.push_back(-1);
+        // the revealed ids, [3]=phase, [4]=the banished pick (phase 2).
+        while (ri.resume_data.size() < 5) ri.resume_data.push_back(-1);
         const int phase = ri.resume_data[3];
 
         if (phase < 0) {
-            // First pass after confirmation: exhaust me + reveal top 2.
-            ctx.executor.exhaustObject(ctx.source);
+            // First pass after confirmation (cost paid above): reveal top 2.
             auto& ps = ctx.state.player(ctx.controller);
             GameObjectId a = kInvalidId, b = kInvalidId;
             int n = static_cast<int>(ps.main_deck.size());
@@ -89,13 +93,25 @@ public:
             return;
         }
 
-        // phase == 1: consume the banish choice and finish.
+        // phase == 1: consume the banish choice; phase 2: where to play it.
         GameObjectId a = static_cast<GameObjectId>(ri.resume_data[1]);
         GameObjectId b = static_cast<GameObjectId>(ri.resume_data[2]);
-        GameObjectId banished = kInvalidId;
-        auto choice = ctx.executor.takeChoice();
-        if (choice && !choice->chosen_objects.empty())
-            banished = choice->chosen_objects[0];
+        if (phase == 1) {
+            GameObjectId pick = kInvalidId;
+            auto choice = ctx.executor.takeChoice();
+            if (choice && !choice->chosen_objects.empty())
+                pick = choice->chosen_objects[0];
+            ri.resume_data[4] = static_cast<int32_t>(pick);
+            ri.resume_data[3] = 2;
+        }
+        GameObjectId banished = static_cast<GameObjectId>(ri.resume_data[4]);
+        // A unit or gear goes where I choose (CR 355.2), chosen before anything
+        // moves (the trigger re-enters from the top while the agent decides).
+        LocationId where{BaseLocation{ctx.controller}};
+        if (banished != kInvalidId && ctx.state.objectExists(banished) &&
+            pickPlayLocation(ctx, banished, where, PlayerId::None,
+                             "Void Burrower: play it where?") == -1)
+            return;
 
         auto& ps = ctx.state.player(ctx.controller);
         // Remove the top-2 from the deck (those we revealed).
@@ -120,16 +136,15 @@ public:
             auto& bz = ctx.state.player(bobj.owner).banishment;
             bz.push_back(banished);
             ctx.events.logTrace("VOID BURROWER: banished " + bobj.name + " then play it");
-            // "then play it" — leave banishment and play ignoring its cost.
-            // playIgnoringCost does not remove the card from the banishment
-            // vector, so erase it here first. Per CR 355.2.a permanents land
-            // at base by default.
+            // "then play it" — leave banishment and play it to the chosen
+            // location. playPayingCost does not remove the card from the
+            // banishment vector, so erase it here first.
             // The text does not waive the cost (CR 356.1.b.2): pay it, or the
             // card simply stays banished.
             if (ctx.executor.canPlayPayingCost(ctx.controller, banished)) {
                 auto it = std::find(bz.begin(), bz.end(), banished);
                 if (it != bz.end()) bz.erase(it);
-                ctx.executor.playPayingCost(ctx.controller, banished);
+                ctx.executor.playPayingCost(ctx.controller, banished, where);
             }
         }
         if (!rest.empty()) {

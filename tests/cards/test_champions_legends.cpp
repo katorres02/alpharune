@@ -441,9 +441,10 @@ TEST_F(FireBelowMtnTest, ActivateAddsUniversalPower) {
     CardContext ctx{state, events, exec, P1, src};
     card_registry.get(kFireBelowMtn)->onActivate(ctx, {});
 
-    EXPECT_EQ(state.player(P1).rune_pool.universal_power, 1)
-        << "Fire Below the Mountain adds 1 universal power on activate";
-    EXPECT_EQ(state.player(P2).rune_pool.universal_power, 0)
+    EXPECT_EQ(state.player(P1).rune_pool.restrictedAmount(true, SpendPurpose::PlayGear | SpendPurpose::GearAbility), 1)
+        << "Fire Below the Mountain adds 1 gear-only [A] on activate";
+    EXPECT_EQ(state.player(P1).rune_pool.universal_power, 0);
+    EXPECT_TRUE(state.player(P2).rune_pool.restricted.empty())
         << "opponent's pool is untouched";
 }
 

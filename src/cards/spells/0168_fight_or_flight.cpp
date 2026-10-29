@@ -1,5 +1,6 @@
 #include "cards/card.h"
 #include "cards/card_registry.h"
+#include "cards/card_helpers.h"
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
@@ -14,12 +15,15 @@ namespace {
 class FightOrFlight : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
+    // "Move a unit from a battlefield to its base."
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty())
-            ctx.executor.moveToBase(targets[0]);
+        if (targets.empty() || !ctx.state.objectExists(targets[0])) return;
+        if (!ctx.state.getObject(targets[0]).isAtBattlefield()) return;  // no longer legal
+        ctx.executor.moveToBase(targets[0]);
     }
     TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true};
+        return TargetRequirements{.count = 1, .must_be_unit = true,
+                                  .must_be_at_battlefield = true};
     }
 private:
     const CardDef def_ = [] {

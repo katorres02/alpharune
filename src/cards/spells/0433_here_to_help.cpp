@@ -1,4 +1,5 @@
 #include "cards/card.h"
+#include "cards/card_helpers.h"
 #include "cards/card_registry.h"
 #include "core/game_state.h"
 #include "core/events.h"
@@ -21,49 +22,77 @@ namespace {
 class HereToHelp : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
+    // resume_point 1 = consume the unit pick (or "Don't"), 2 = consume the
+    // battlefield pick; resume_data[0] = the chosen unit.
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        if (!ctx.state.chain.resuming.has_value()) return;
         auto& ri = ctx.state.chain.resuming.value();
         auto& ps = ctx.state.player(ctx.controller);
-        auto unit_choices = [&]() {
-            std::vector<Intent> out;
+        const EffectExecutor::EffectPlayCost reduced{.energy_reduction = 3};
+        auto controlled_bfs = [&]() {
+            std::vector<int> out;
+            for (const auto& bf : ctx.state.battlefields)
+                if (bf.controller && *bf.controller == ctx.controller)
+                    out.push_back(1 + static_cast<int>(bf.id));
+            return out;
+        };
+        auto units = [&]() {
+            std::vector<GameObjectId> out;
             for (auto cid : ps.hand) {
-                if (!ctx.state.objectExists(cid)) continue;
-                if (!ctx.state.getObject(cid).isUnit()) continue;
-                Intent c; c.type = IntentType::MakeChoice; c.player = ctx.controller;
-                c.chosen_objects = {cid}; out.push_back(std::move(c));
+                if (!ctx.state.objectExists(cid) || !ctx.state.getObject(cid).isUnit()) continue;
+                if (!ctx.executor.canPlayPayingCost(ctx.controller, cid, reduced)) continue;
+                out.push_back(cid);
             }
             return out;
         };
+        auto play = [&](GameObjectId unit, int dest) {
+            auto it = std::find(ps.hand.begin(), ps.hand.end(), unit);
+            if (it == ps.hand.end()) return;
+            ps.hand.erase(it);
+            LocationId loc{BattlefieldLocation{static_cast<BattlefieldId>(dest - 1)}};
+            if (!ctx.executor.playPayingCost(ctx.controller, unit, loc, reduced)) {
+                ps.hand.push_back(unit);
+                return;
+            }
+            ctx.events.logTrace("HERE TO HELP: played a unit to a controlled battlefield (-[3])");
+        };
         switch (ri.resume_point) {
         case 0: {
-            auto choices = unit_choices();
-            if (choices.empty()) return;  // no unit to play — "you may" fizzles
-            ctx.executor.requestChoice(ctx.controller, std::move(choices),
-                                        "Here to Help: play a unit from hand");
+            // "to a battlefield you control": none controlled -> nothing to do.
+            if (controlled_bfs().empty()) return;
+            auto u = units();
+            if (u.empty()) return;
+            std::vector<Intent> opts;
+            for (auto id : u) opts.push_back(objChoice(ctx.controller, id));
+            opts.push_back(valChoice(ctx.controller, 0, "Don't play a unit"));
+            ctx.executor.requestChoice(ctx.controller, std::move(opts),
+                                       "Here to Help: you may play a unit from hand");
             ri.resume_point = 1;
             return;
         }
         case 1: {
-            auto choice = ctx.executor.takeChoice();
-            if (!choice || choice->chosen_objects.empty()) return;
-            GameObjectId unit = choice->chosen_objects[0];
-            if (!ctx.state.objectExists(unit)) return;
-            // Choose a battlefield you control (fallback: base).
-            LocationId dest{BaseLocation{ctx.controller}};
-            for (const auto& bf : ctx.state.battlefields) {
-                if (bf.controller && *bf.controller == ctx.controller) {
-                    dest = LocationId{BattlefieldLocation{bf.id}};
-                    break;
-                }
-            }
-            // Remove from hand before re-playing.
-            const EffectExecutor::EffectPlayCost reduced{.energy_reduction = 3};
-            if (!ctx.executor.canPlayPayingCost(ctx.controller, unit, reduced)) return;
-            auto it = std::find(ps.hand.begin(), ps.hand.end(), unit);
-            if (it != ps.hand.end()) ps.hand.erase(it);
-            ctx.executor.playPayingCost(ctx.controller, unit, dest, reduced);
-            ctx.events.logTrace("HERE TO HELP: played a unit from hand to a "
-                                "controlled battlefield (-[3] approximated as free)");
+            ri.resume_point = 3;
+            GameObjectId unit = takenObject(ctx);
+            auto u = units();
+            if (std::find(u.begin(), u.end(), unit) == u.end()) return;   // declined
+            auto bfs = controlled_bfs();
+            if (bfs.empty()) return;
+            if (bfs.size() == 1) { play(unit, bfs.front()); return; }
+            ri.resume_data = {static_cast<int32_t>(unit)};
+            std::vector<Intent> opts;
+            for (int d : bfs) opts.push_back(valChoice(ctx.controller, d, destLabel(d)));
+            ctx.executor.requestChoice(ctx.controller, std::move(opts),
+                                       "Here to Help: battlefield to play it to");
+            ri.resume_point = 2;
+            return;
+        }
+        case 2: {
+            ri.resume_point = 3;
+            auto bfs = controlled_bfs();
+            if (bfs.empty() || ri.resume_data.empty()) return;
+            int d = takenValue(ctx, bfs.front());
+            if (std::find(bfs.begin(), bfs.end(), d) == bfs.end()) d = bfs.front();
+            play(static_cast<GameObjectId>(ri.resume_data[0]), d);
             return;
         }
         }

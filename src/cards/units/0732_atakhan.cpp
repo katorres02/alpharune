@@ -18,39 +18,39 @@ public:
     //
     // "You may kill a friendly unit as an additional cost to play me. If you
     //  do, I cost [1] less for each Energy it costs and [Y] less for each Power
-    //  it costs."
-    // ENGINE GAP: this is an OPTIONAL non-resource additional cost (kill a
-    // friendly unit) whose payment REDUCES Atakhan's own play cost by the
-    // killed unit's printed Energy/Power. The only play-cost-reduction hook is
-    // selfCostReduction, which is const/read-only — it cannot make the
-    // play-time kill choice nor remove the chosen unit. There is no optional
-    // additional-cost path that both sacrifices a unit AND feeds its cost back
-    // as a reduction. Left unimplemented; would require engine support.
+    //  it costs." Decided by the engine before payment (an optional object
+    //  cost whose discount is the killed unit's printed cost).
+    OptionalAdditionalCost optionalAdditionalCost() const override {
+        OptionalAdditionalCost c;
+        c.valid = true;
+        c.object_cost = OptionalAdditionalCost::ObjectCost::KillFriendlyUnit;
+        c.reduce_by_object_cost = true;
+        return c;
+    }
     //
-    // "When I attack, the defender must kill one of their units here." This IS
-    // implemented below. The defender's forced choice is approximated as their
-    // rational pick (lowest-Might unit they control at my battlefield), per the
-    // King's Edict #237 convention.
+    // "When I attack, the defender must kill one of their units here." The
+    // defender chooses which (stepChooseObject publishes the choice to them).
     TriggerType triggerType() const override { return TriggerType::WhenIAttack; }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         if (!ctx.state.objectExists(ctx.source)) return;
         auto my_bf = ctx.state.getObject(ctx.source).battlefieldId();
         if (!my_bf) return;
         PlayerId defender = opponent(ctx.controller);
-        GameObjectId victim = kInvalidId;
-        int best_might = 0;
+        std::vector<GameObjectId> theirs;
         for (auto& [id, obj] : ctx.state.objects) {
             if (!obj.isUnit() || obj.controller != defender) continue;
             auto bf = obj.battlefieldId();
-            if (!bf || *bf != *my_bf) continue;  // "here"
-            if (victim == kInvalidId || obj.current_might < best_might) {
-                victim = id;
-                best_might = obj.current_might;
-            }
+            if (bf && *bf == *my_bf) theirs.push_back(id);   // "here"
         }
-        if (victim != kInvalidId) {
+        std::sort(theirs.begin(), theirs.end());
+        GameObjectId victim = kInvalidId;
+        if (!stepChooseObject(ctx, defender, theirs,
+                              "Atakhan: kill one of your units here", 20, 10, victim))
+            return;
+        if (victim != kInvalidId && ctx.state.objectExists(victim) &&
+            ctx.state.getObject(victim).location.has_value()) {
             ctx.executor.killObject(victim);
-            ctx.events.logTrace("ATAKHAN: attack -> defender kills a unit here (approx.)");
+            ctx.events.logTrace("ATAKHAN: the defender kills one of their units here");
         }
     }
 private:

@@ -45,7 +45,7 @@ private:
         d.collector_number = 41;
         d.card_type = CardType::Spell;
         d.super_type = SuperType::None;
-        d.domains = {};
+        d.domains = {Domain::Calm};
         d.tags = {};
         d.rarity = Rarity::Rare;
         d.ability_text = R"RB([Reaction] Counter a spell with Power cost [A][A] or more.)RB";

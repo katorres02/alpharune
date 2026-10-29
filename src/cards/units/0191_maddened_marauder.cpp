@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -14,13 +15,18 @@ namespace {
 class MaddenedMarauder : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty())
-            ctx.executor.moveToBase(targets[0]);
-    }
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true};
+    // "When you play me, move a unit from a battlefield to its base."
+    // Only units at a battlefield can be chosen (the move is mandatory).
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        auto legal = chooseableUnits(ctx.state, ctx.controller,
+                                     [](const GameObject& o) { return o.isAtBattlefield(); });
+        GameObjectId t = pickTarget(ctx, "Maddened Marauder (move a unit to its base)", legal);
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (t == kInvalidId && ctx.executor.hasPendingChoice()) return;  // suspended
+        if (t == kInvalidId || !ctx.state.objectExists(t)) return;
+        ctx.executor.moveToBase(t);
     }
 private:
     const CardDef def_ = [] {

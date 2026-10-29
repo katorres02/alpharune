@@ -15,17 +15,15 @@ class Scrapheap : public GearCard {
 public:
     const CardDef& def() const override { return def_; }
     // "When this is played, discarded, or killed, draw 1."
-    // Played -> WhenYouPlayThis; killed -> WhenIDie. The "discarded" branch
-    // cannot fire: the TriggerManager does not subscribe to CardsDiscardedEvent
-    // (no WhenYouDiscard dispatch), and a discard moves the card from hand
-    // directly to trash without an on-board trigger. Wiring that needs an
-    // engine edit (out of scope); the played/killed branches are implemented.
+    // Played -> WhenYouPlayThis; discarded -> WhenIAmDiscarded (fires from the
+    // trash); killed -> WhenIDie.
     std::vector<TriggerType> triggerTypes() const override {
-        return {TriggerType::WhenYouPlayThis, TriggerType::WhenIDie};
+        return {TriggerType::WhenYouPlayThis, TriggerType::WhenIAmDiscarded,
+                TriggerType::WhenIDie};
     }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>&) override {
         ctx.executor.drawCards(ctx.controller, 1);
-        ctx.events.logTrace("SCRAPHEAP: played/killed -> draw 1");
+        ctx.events.logTrace("SCRAPHEAP: played/discarded/killed -> draw 1");
     }
 private:
     const CardDef def_ = [] {

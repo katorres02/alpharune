@@ -16,13 +16,16 @@ public:
     const CardDef& def() const override { return def_; }
     // [Accelerate] / [Assault] are engine-handled keywords.
     // "As you play me, you may spend any number of buffs as an additional cost.
-    // Reduce my cost by [O] for each buff you spend."
-    // ENGINE LIMITATION: there is no per-card interactive additional-cost hook
-    // that lets the agent choose to spend a VARIABLE number of buffs at play
-    // time and translate that into a cost reduction. optionalAdditionalCost()
-    // only pays a fixed energy/power amount (no waiver/scaling), and
-    // selfCostReduction() has no agent decision point. The optional
-    // buff-spend cost reduction is left unimplemented (needs engine support).
+    // Reduce my cost by [O] for each buff you spend." An optional object cost
+    // (any number of buffed friendly units), 1 Body Power off per buff.
+    OptionalAdditionalCost optionalAdditionalCost() const override {
+        OptionalAdditionalCost c;
+        c.valid = true;
+        c.object_cost = OptionalAdditionalCost::ObjectCost::SpendBuff;
+        c.max_objects = -1;
+        c.reduce_power_each = 1;
+        return c;
+    }
 private:
     const CardDef def_ = [] {
         CardDef d;

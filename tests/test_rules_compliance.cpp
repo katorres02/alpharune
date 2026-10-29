@@ -49,6 +49,19 @@ protected:
         return id;
     }
 
+    /// A ready Order rune in `p`'s base (engine state).
+    GameObjectId addOrderRune(PlayerId p) {
+        auto id = s().createObject();
+        auto& r = s().getObject(id);
+        r.owner = r.controller = p;
+        r.card_type = CardType::Rune;
+        r.name = "Order Rune";
+        r.domains = {Domain::Order};
+        r.zone = ZoneType::Base;
+        r.location = BaseLocation{p};
+        return id;
+    }
+
     GameObjectId engineUnit(PlayerId p, int might, int at_bf = -1,
                             CardDefId def_id = kInvalidId) {
         auto id = s().createObject();
@@ -99,6 +112,13 @@ TEST_F(RulesComplianceTest, DeathReplacement_TheBoss_SavesABuffedUnit) {
     s().getObject(unit).buff_count = 1;
     s().getObject(unit).recomputeMight();
     s().getObject(unit).damage_marked = 5;      // lethal
+    // Errata: "you may pay [C]" — give P1 an Order rune and say yes.
+    addOrderRune(P1);
+    PickByPredicateAgent yes([](int, const std::vector<Intent>& l) {
+        for (auto& i : l) if (i.chosen_value.value_or(0) == 1) return i;
+        return l.front();
+    });
+    engine_->testHook_setAgents(&yes, &a2_);
 
     engine_->testHook_processLethalDamage();
 
@@ -117,6 +137,7 @@ TEST_F(RulesComplianceTest, DeathReplacement_AppliesToEffectKillsToo) {
     auto unit = engineUnit(P1, 2, 0);
     s().getObject(unit).buff_count = 1;
     s().getObject(unit).recomputeMight();
+    addOrderRune(P1);   // errata: The Boss's save costs [C]
 
     EffectExecutor exec(s(), events, card_db, &card_registry);
     exec.killObject(unit);
@@ -1233,13 +1254,13 @@ TEST_F(RulesComplianceTest, TriggerCondition_VanguardHelmOnlyForABuffedUnit) {
 TEST_F(CostPaymentRulesTest, UnitOnlyEnergy_PaysForAUnitButNothingElse) {
     makeEngine();
     setLegend(P1); setLegend(P2);
-    s().player(P1).rune_pool.unit_energy = 4;
+    s().player(P1).rune_pool.addRestricted(false, 4, SpendPurpose::PlayUnit | SpendPurpose::UnitAbility);
     auto unit = cardInHand(P1, 813);            // Field Musicians: [4]
     EXPECT_TRUE(engine_->testHook_canAfford(P1, unit));
     EXPECT_FALSE(engine_->testHook_canPayAdditionalCost(P1, 1, 0, Domain::Fury))
         << "an ordinary cost can't use it";
     ASSERT_TRUE(engine_->testHook_payCardCost(P1, unit));
-    EXPECT_EQ(s().player(P1).rune_pool.unit_energy, 0);
+    EXPECT_EQ(s().player(P1).rune_pool.restrictedAmount(false, SpendPurpose::PlayUnit | SpendPurpose::UnitAbility), 0);
 }
 
 TEST_F(CostPaymentRulesTest, UnitOnlyEnergy_PaysForAUnitsActivatedAbility) {
@@ -1249,13 +1270,13 @@ TEST_F(CostPaymentRulesTest, UnitOnlyEnergy_PaysForAUnitsActivatedAbility) {
     s().turn.ns_state = NeutralShowdownState::Neutral;
     s().turn.oc_state = OpenClosedState::Open;
     auto ren = engineUnit(P1, 3, -1, kRenektonBrute);
-    s().player(P1).rune_pool.unit_energy = 1;
+    s().player(P1).rune_pool.addRestricted(false, 1, SpendPurpose::PlayUnit | SpendPurpose::UnitAbility);
     Intent act;
     act.type = IntentType::ActivateActionAbility;
     act.player = P1;
     act.ability_source = ren;
     engine_->testHook_executeIntent(act);
-    EXPECT_EQ(s().player(P1).rune_pool.unit_energy, 0);
+    EXPECT_EQ(s().player(P1).rune_pool.restrictedAmount(false, SpendPurpose::PlayUnit | SpendPurpose::UnitAbility), 0);
     EXPECT_EQ(s().getObject(ren).temp_might_bonus, 1);
 }
 

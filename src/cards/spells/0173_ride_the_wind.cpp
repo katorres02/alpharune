@@ -20,16 +20,43 @@ public:
                                    .must_be_friendly = true};
     }
     bool needsPlayTimeTarget() const override { return true; }
-    void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        GameObjectId picked = kInvalidId;
-        if (!targets.empty()) {
-            picked = targets[0];
-        } else {
-            auto legal = enumerateLegalTargets(ctx.state, ctx.controller);
-            picked = pickTarget(ctx, "Ride the Wind", legal);
-        }
+    // "Move a friendly unit and ready it." The unit is chosen as the spell is
+    // played; where it moves (its base or another battlefield) as it resolves
+    // (resume points 20/21).
+    void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        auto legal = enumerateLegalTargets(ctx.state, ctx.controller);
+        GameObjectId picked = pickTarget(ctx, "Ride the Wind", legal);
+        auto& ri_opt = ctx.state.chain.resuming;
+        if (ri_opt.has_value() && ri_opt->resume_point < 8) return;   // waiting
         if (picked == kInvalidId || !ctx.state.objectExists(picked)) return;
-        ctx.executor.moveToBase(picked);
+        auto dests = moveDests(ctx.state, ctx.state.getObject(picked));
+        int dest = -1;
+        if (!ri_opt.has_value()) {
+            if (!dests.empty()) dest = dests.front();
+        } else {
+            auto& ri = *ri_opt;
+            if (ri.resume_point == 8) {
+                if (dests.empty()) { ri.resume_point = 21; }
+                else {
+                    std::vector<Intent> opts;
+                    for (int d : dests) opts.push_back(valChoice(ctx.controller, d, destLabel(d)));
+                    ctx.executor.requestChoice(ctx.controller, std::move(opts),
+                                               "Ride the Wind: move it where?");
+                    ri.resume_point = 20;
+                    return;
+                }
+            } else if (ri.resume_point == 20) {
+                ri.resume_point = 21;
+                if (!dests.empty()) {
+                    dest = takenValue(ctx, dests.front());
+                    if (std::find(dests.begin(), dests.end(), dest) == dests.end())
+                        dest = dests.front();
+                }
+            } else {
+                return;
+            }
+        }
+        if (dest >= 0) moveTo(ctx, picked, dest);
         ctx.executor.readyObject(picked);
         ctx.events.logTrace("RIDE THE WIND: moved + readied " +
                              ctx.state.getObject(picked).name);

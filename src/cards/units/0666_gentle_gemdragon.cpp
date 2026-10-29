@@ -14,25 +14,48 @@ namespace {
 class GentleGemdragon : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
+    // "When you play me or another Dragon, ready up to 2 runes."
     std::vector<TriggerType> triggerTypes() const override {
         return {TriggerType::WhenYouPlayMe, TriggerType::WhenYouPlayAUnit};
     }
+    // WhenYouPlayAUnit carries the played unit as its subject (it never fires
+    // for my own play — WhenYouPlayMe does): only another Dragon counts.
+    bool triggerCondition(const GameState& state, GameObjectId source, PlayerId,
+                          TriggerType trigger, GameObjectId subject) const override {
+        if (trigger != TriggerType::WhenYouPlayAUnit) return true;
+        if (subject == kInvalidId || subject == source || !state.objectExists(subject)) return false;
+        const auto& tags = state.getObject(subject).tags;
+        return std::find(tags.begin(), tags.end(), "Dragon") != tags.end();
+    }
+    static std::vector<GameObjectId> exhaustedRunes(const GameState& state, PlayerId controller) {
+        std::vector<GameObjectId> out;
+        for (auto& [id, obj] : state.objects)
+            if (obj.isRune() && obj.controller == controller && obj.is_exhausted &&
+                obj.location.has_value())
+                out.push_back(id);
+        return out;
+    }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>&) override {
-        // NOTE: WhenYouPlayAUnit doesn't surface the played unit's tags, so the
-        // "another Dragon" qualifier can't be checked precisely; we ready on any
-        // friendly unit play (documented approximation).
+        // The player picks which runes (up to 2: readying is never worse, so
+        // as many as there are, up to 2).
+        auto [a, b] = pickTargetPair(ctx, "Gentle Gemdragon: ready runes",
+            exhaustedRunes(ctx.state, ctx.controller),
+            [&](GameObjectId first) {
+                auto v = exhaustedRunes(ctx.state, ctx.controller);
+                v.erase(std::remove(v.begin(), v.end(), first), v.end());
+                return v;
+            });
+        auto& ri = ctx.state.chain.resuming;
+        if (ri.has_value() && ri->resume_point < 13) return;   // waiting for agent
         int readied = 0;
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (readied >= 2) break;
-            if (!obj.isRune() || obj.controller != ctx.controller) continue;
-            if (!obj.is_exhausted || !obj.location.has_value()) continue;
-            ctx.executor.readyObject(id);
+        for (auto r : {a, b}) {
+            if (r == kInvalidId || !ctx.state.objectExists(r)) continue;
+            if (!ctx.state.getObject(r).is_exhausted) continue;
+            ctx.executor.readyObject(r);
             ++readied;
         }
-        if (readied > 0) {
-            ctx.events.logTrace("GENTLE GEMDRAGON: readied " +
-                                std::to_string(readied) + " rune(s)");
-        }
+        if (readied > 0)
+            ctx.events.logTrace("GENTLE GEMDRAGON: readied " + std::to_string(readied) + " rune(s)");
     }
 private:
     const CardDef def_ = [] {

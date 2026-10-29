@@ -16,11 +16,14 @@ class MaduliTheGatekeeper : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
 
-    // "I can't be readied."
-    // ENGINE GAP: there is no GameObject "can't be readied" flag, and
-    // EffectExecutor::readyObject (plus the phase-readying paths) have no hook
-    // to suppress readying for a specific unit. Enforcing this requires engine
-    // support. Left unimplemented.
+    // "I can't be readied." GameObject::cant_be_readied (re-asserted each aura
+    // pass) is honored by the Awaken phase and EffectExecutor::readyObject.
+    void applyPassiveAura(GameState& state, PlayerId controller) const override {
+        for (auto& [id, obj] : state.objects)
+            if (obj.card_def_id == cardDefId() && obj.controller == controller &&
+                obj.location.has_value())
+                obj.cant_be_readied = true;
+    }
 
     // "[P]: Move me to an occupied enemy battlefield if my Might is greater
     //  than the total Might of enemy units there." ([P] = one Chaos Power.)

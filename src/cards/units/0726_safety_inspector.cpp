@@ -16,66 +16,57 @@ namespace {
 //  When you play me, each player must kill one of their units. If you paid my
 //  additional cost, you don't kill a unit this way."
 //
-// The optional 3-XP payment is offered at trigger time via confirmOptional.
-// The controller's own kill is the controller's choice (pickTarget). The
-// OPPONENT's forced kill is approximated as their rational pick — lowest-Might
-// unit they control (same convention as King's Edict #237).
+// The 3 XP is an optional additional cost decided as I'm played
+// (optionalAdditionalCost.spend_xp; the engine sets kPaidFlag). Each player
+// chooses which of their own units dies: the controller first, then the
+// opponent (stepChooseObject publishes the opponent's choice to them).
 
 class SafetyInspector : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
+    static constexpr const char* kPaidFlag = "__safety_inspector_xp_paid";
+    OptionalAdditionalCost optionalAdditionalCost() const override {
+        OptionalAdditionalCost c;
+        c.valid = true;
+        c.spend_xp = 3;
+        c.paid_flag = kPaidFlag;
+        return c;
+    }
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
-        auto& ps = ctx.state.player(ctx.controller);
-
-        // Optional additional cost: spend 3 XP (skips the controller's kill).
-        int paid = confirmOptional(ctx, "Safety Inspector: spend 3 XP to skip your kill?",
-            [&]() { return ctx.state.player(ctx.controller).xp >= 3; });
-        if (paid == -1) return;  // waiting on agent
-
-        bool skip_own_kill = false;
-        if (paid == 1 && ps.xp >= 3) {
-            ps.xp -= 3;
-            skip_own_kill = true;
-            ctx.events.logTrace("SAFETY INSPECTOR: paid 3 XP -> skip own kill");
+        bool paid = false;
+        if (ctx.state.objectExists(ctx.source)) {
+            auto& me = ctx.state.getObject(ctx.source);
+            auto it = me.card_counters.find(kPaidFlag);
+            paid = it != me.card_counters.end() && it->second != 0;
         }
-
-        // Controller's kill (agent-chosen) unless they paid.
-        if (!skip_own_kill) {
-            std::vector<GameObjectId> own;
-            for (auto& [id, obj] : ctx.state.objects) {
-                if (!obj.isUnit() || obj.controller != ctx.controller) continue;
-                if (!obj.location.has_value()) continue;
-                own.push_back(id);
-            }
-            if (!own.empty()) {
-                GameObjectId victim = pickTarget(ctx, "Safety Inspector: kill one of your units",
-                                                 own);
-                if (victim == kInvalidId && ctx.state.chain.resuming.has_value() &&
-                    ctx.state.chain.resuming->resume_point == 7) {
-                    return;  // suspended for agent decision
-                }
-                if (victim != kInvalidId && ctx.state.objectExists(victim))
-                    ctx.executor.killObject(victim);
-            }
-        }
-
-        // Opponent's forced kill — approximate their rational pick (lowest Might).
-        PlayerId opp = opponent(ctx.controller);
-        GameObjectId opp_victim = kInvalidId;
-        int best_might = 0;
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (!obj.isUnit() || obj.controller != opp) continue;
-            if (!obj.location.has_value()) continue;
-            if (opp_victim == kInvalidId || obj.current_might < best_might) {
-                opp_victim = id;
-                best_might = obj.current_might;
-            }
-        }
-        if (opp_victim != kInvalidId) {
-            ctx.executor.killObject(opp_victim);
-            ctx.events.logTrace("SAFETY INSPECTOR: opponent's chosen unit killed (approx.)");
-        }
+        auto own_units = [&](PlayerId p) {
+            std::vector<GameObjectId> out;
+            for (auto& [id, obj] : ctx.state.objects)
+                if (obj.isUnit() && obj.controller == p && obj.location.has_value())
+                    out.push_back(id);
+            std::sort(out.begin(), out.end());
+            return out;
+        };
+        GameObjectId mine = kInvalidId, theirs = kInvalidId;
+        if (!paid &&
+            !stepChooseObject(ctx, ctx.controller, own_units(ctx.controller),
+                              "Safety Inspector: kill one of your units", 20, 10, mine))
+            return;
+        const PlayerId opp = opponent(ctx.controller);
+        if (!stepChooseObject(ctx, opp, own_units(opp),
+                              "Safety Inspector: kill one of your units", 22, 11, theirs))
+            return;
+        if (mine != kInvalidId && ctx.state.objectExists(mine) &&
+            ctx.state.getObject(mine).location.has_value())
+            ctx.executor.killObject(mine);
+        if (theirs != kInvalidId && ctx.state.objectExists(theirs) &&
+            ctx.state.getObject(theirs).location.has_value())
+            ctx.executor.killObject(theirs);
+        if (ctx.state.objectExists(ctx.source))
+            ctx.state.getObject(ctx.source).card_counters.erase(kPaidFlag);
+        ctx.events.logTrace(std::string("SAFETY INSPECTOR: each player kills a unit") +
+                            (paid ? " (paid 3 XP: not the controller)" : ""));
     }
 private:
     const CardDef def_ = [] {

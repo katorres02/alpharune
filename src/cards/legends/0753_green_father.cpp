@@ -20,13 +20,16 @@ public:
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>&) override {
         if (!ctx.state.objectExists(ctx.source)) return;
 
+        // "that battlefield": the one just conquered / held. TriggerManager
+        // records the scored battlefield's card object as the trigger subject.
+        const GameObjectId scored = ctx.state.chain.resuming.has_value()
+            ? ctx.state.chain.resuming->triggering_subject : kInvalidId;
         auto find_target = [&]() -> BattlefieldId {
             for (auto& bf : ctx.state.battlefields) {
-                if (!bf.controller.has_value() ||
-                    *bf.controller != ctx.controller) continue;
+                if (bf.card_object_id != scored) continue;
                 if (ctx.state.objectExists(bf.card_object_id) &&
                     ctx.state.getObject(bf.card_object_id).name == "Brush")
-                    continue;
+                    continue;   // already a Brush
                 return bf.id;
             }
             return kInvalidId;

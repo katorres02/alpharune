@@ -33,9 +33,10 @@ public:
         GameObjectId tok = static_cast<GameObjectId>(self.card_counters["__guards_token"]);
         auto can_pay = [&]() {
             return ctx.state.objectExists(tok) &&
-                   ctx.state.getObject(tok).is_exhausted;
+                   ctx.state.getObject(tok).is_exhausted &&
+                   payableOnePower(ctx.state, ctx.controller, Domain::Order);
         };
-        int conf = confirmOptional(ctx, "Guards!: pay [Y] to ready the Sand Soldier?", can_pay);
+        int conf = confirmOptional(ctx, "Guards!: pay [C] to ready the Sand Soldier?", can_pay);
         if (conf == -1) return;  // waiting on agent
         if (conf == 0) return;   // declined / not legal
         if (!payOnePower(ctx, ctx.controller, Domain::Order)) return;

@@ -38,9 +38,7 @@ public:
     }
     void onActivate(CardContext& ctx, const std::vector<GameObjectId>&) override {
         if (!ctx.state.objectExists(ctx.source)) return;
-        auto& self = ctx.state.getObject(ctx.source);
-        if (self.buff_count <= 0) return;
-        self.buff_count -= 1;
+        if (!ctx.executor.spendBuff(ctx.source)) return;
         ctx.executor.giveTemporaryMight(ctx.source, 4);
         ctx.events.logTrace("SETT, BRAWLER: spent a buff for +4M this turn");
     }

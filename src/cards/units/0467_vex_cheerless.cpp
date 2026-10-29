@@ -15,21 +15,40 @@ namespace {
 class VexCheerless : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
+    // "While I'm in combat, friendly spells cost [1][A] less to a minimum of
+    // [1], and enemy spells cost [1][A] more." Re-asserted each aura pass
+    // (from_aura) while this Vex is an attacker or defender in a combat.
     void applyPassiveAura(GameState& state, PlayerId controller) const override {
-        PlayerState::CostModifier friendly_mod;
-        friendly_mod.energy_reduction = 1;
-        friendly_mod.min_cost = 1;            // "to a minimum of [1]"
-        friendly_mod.this_turn_only = false;
-        friendly_mod.combat_active_only = true;
-        friendly_mod.affects_friendly_only = true;
-        state.player(controller).cost_modifiers.push_back(friendly_mod);
+        forEachSelfOnce(*this, state, controller, [&](GameObjectId sid, GameObject& self) {
+            if (self.combat_designation == CombatDesignation::None) return;
+            const auto bf = self.battlefieldId();
+            if (!bf) return;
+            bool in_combat = false;
+            for (const auto& b : state.battlefields)
+                if (b.id == *bf && b.combat_in_progress) in_combat = true;
+            if (!in_combat) return;
 
-        PlayerState::CostModifier enemy_mod;
-        enemy_mod.energy_increase = 1;
-        enemy_mod.this_turn_only = false;
-        enemy_mod.combat_active_only = true;
-        enemy_mod.affects_enemy_only = true;
-        state.player(controller).cost_modifiers.push_back(enemy_mod);
+            PlayerState::CostModifier friendly_mod;
+            friendly_mod.source = sid;
+            friendly_mod.energy_reduction = 1;
+            friendly_mod.power_reduction = 1;
+            friendly_mod.min_cost = 1;            // "to a minimum of [1]" (Energy)
+            friendly_mod.spells_only = true;
+            friendly_mod.this_turn_only = false;
+            friendly_mod.from_aura = true;
+            friendly_mod.affects_friendly_only = true;
+            state.player(controller).cost_modifiers.push_back(friendly_mod);
+
+            PlayerState::CostModifier enemy_mod;
+            enemy_mod.source = sid;
+            enemy_mod.energy_increase = 1;
+            enemy_mod.power_increase = 1;
+            enemy_mod.spells_only = true;
+            enemy_mod.this_turn_only = false;
+            enemy_mod.from_aura = true;
+            enemy_mod.affects_enemy_only = true;
+            state.player(controller).cost_modifiers.push_back(enemy_mod);
+        });
     }
 private:
     const CardDef def_ = [] {

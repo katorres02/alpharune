@@ -20,8 +20,10 @@ public:
     bool isReactionAbility() const override { return true; }
     void onActivate(CardContext& ctx,
                     const std::vector<GameObjectId>& /*targets*/) override {
-        // "[Add] [A]. Use only to play spells." Add 1 universal power.
-        ctx.executor.addFloatingUniversalPower(ctx.controller, 1);
+        // "[Add] [A]. Use only to play spells." Spell-only [A]
+        // (RunePool::restricted), spent only when paying a spell's cost.
+        ctx.executor.addRestrictedResource(ctx.controller, /*power=*/true, 1,
+                                           SpendPurpose::PlaySpell);
         ctx.events.logTrace("DAUGHTER OF THE VOID: [E] -> [Add] [A]");
     }
 private:

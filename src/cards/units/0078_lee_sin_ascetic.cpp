@@ -19,6 +19,8 @@ public:
     }
     TriggerType triggerType() const override { return TriggerType::Activated; }
     bool hasActivatedAbility() const override { return true; }
+    // "I can have any number of buffs." (CR 427.1.b.2)
+    bool allowsMultipleBuffs() const override { return true; }
     ActivationCost getActivationCost() const override { return {.exhaust = true}; }
 private:
     const CardDef def_ = [] {

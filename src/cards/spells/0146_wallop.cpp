@@ -20,13 +20,15 @@ public:
             ctx.executor.readyObject(targets[0]);
     }
     // "As you play this, you may spend a buff as an additional cost. If you do,
-    // ignore this spell's cost."
-    // ENGINE LIMITATION: optionalAdditionalCost() only pays energy/power and
-    // does not grant a cost waiver, and selfCostReduction() has no agent
-    // decision point to model the optional "spend a buff" choice. A
-    // spend-a-buff-to-ignore-cost replacement requires engine support (out of
-    // scope). The optional discount is left unimplemented; the spell still
-    // costs its printed amount.
+    // ignore this spell's cost." An optional object cost that zeroes the base
+    // cost (CR 356.1.b), decided as the spell is played.
+    OptionalAdditionalCost optionalAdditionalCost() const override {
+        OptionalAdditionalCost c;
+        c.valid = true;
+        c.object_cost = OptionalAdditionalCost::ObjectCost::SpendBuff;
+        c.ignore_base_cost = true;
+        return c;
+    }
     TargetRequirements getTargetRequirements() const override {
         return TargetRequirements{.count = 1, .must_be_unit = true};
     }

@@ -1,4 +1,5 @@
 #include "cards/card.h"
+#include "cards/card_helpers.h"
 #include "cards/card_registry.h"
 #include "core/game_state.h"
 #include "core/events.h"
@@ -14,14 +15,18 @@ namespace {
 class GemJammer : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty())
-            ctx.executor.giveTemporaryKeyword(targets[0], Keyword::Ganking, 0);
+    // "When you play me, give a unit [Ganking] this turn." The unit is chosen
+    // as the ability is finalized (CR 383.3).
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        auto t = pickTarget(ctx, "Gem Jammer: give a unit [Ganking] this turn",
+                            chooseableUnits(ctx.state, ctx.controller,
+                                            [](const GameObject&) { return true; }));
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (t == kInvalidId || !ctx.state.objectExists(t)) return;
+        ctx.executor.giveTemporaryKeyword(t, Keyword::Ganking, 0);
     }
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true};
-    }
 private:
     const CardDef def_ = [] {
         CardDef d;
@@ -38,7 +43,6 @@ private:
         d.tags = {R"RB(Mech)RB", R"RB(Bandle City)RB"};
         d.energy_cost = 2;
         d.might = 2;
-        d.keywords.set(Keyword::Ganking);
         d.ability_text = R"RB(When you play me, give a unit [Ganking] this turn. (It can move from battlefield to battlefield.))RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/9f487e8a76e6e6b9f2e32de0c9c147be42f49e59-744x1039.png)RB";
         return d;

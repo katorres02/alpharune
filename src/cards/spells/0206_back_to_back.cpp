@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -14,12 +15,32 @@ namespace {
 class BackToBack : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty())
-            ctx.executor.giveTemporaryMight(targets[0], 2);
+    unsigned choicesAtFinalization() const override { return kFinalizeResolve; }
+    bool needsPlayTimeTargetPair() const override { return true; }
+    bool hasLegalTargets(const GameState& state, PlayerId controller) const override {
+        return !friendlyUnits(state, controller).empty();
     }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_friendly = true};
+    // "Give two friendly units each +2 [M] this turn."
+    void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        auto legal_a = friendlyUnits(ctx.state, ctx.controller);
+        auto [a, b] = pickTargetPair(ctx, "Back to Back: two friendly units", legal_a,
+            [&](GameObjectId first) {
+                auto v = friendlyUnits(ctx.state, ctx.controller);
+                v.erase(std::remove(v.begin(), v.end(), first), v.end());
+                return v;
+            });
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (ctx.executor.hasPendingChoice()) return;  // suspended
+        for (auto u : {a, b})
+            if (u != kInvalidId && ctx.state.objectExists(u))
+                ctx.executor.giveTemporaryMight(u, 2);
+    }
+    static std::vector<GameObjectId> friendlyUnits(const GameState& state, PlayerId p) {
+        std::vector<GameObjectId> out;
+        for (auto& [id, obj] : state.objects)
+            if (obj.isUnit() && obj.controller == p && obj.location.has_value())
+                out.push_back(id);
+        return out;
     }
 private:
     const CardDef def_ = [] {

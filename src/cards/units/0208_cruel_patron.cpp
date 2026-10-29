@@ -15,28 +15,15 @@ namespace {
 class CruelPatron : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
-    // "As an additional cost to play me, kill a friendly unit."
-    // NOTE: there is no engine hook for a "kill a unit" additional play cost,
-    // so this can't gate playability. Modeled as a WhenYouPlayMe effect that
-    // kills a friendly unit (agent-chosen) — the kill still happens.
-    TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
-        std::vector<GameObjectId> friendly;
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (id == ctx.source) continue;
-            if (obj.isUnit() && obj.controller == ctx.controller && obj.location.has_value())
-                friendly.push_back(id);
-        }
-        if (friendly.empty()) return;
-        GameObjectId picked = pickTarget(ctx, "Cruel Patron (kill a friendly unit)", friendly);
-        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
-        if (picked == kInvalidId && ctx.state.chain.resuming.has_value() &&
-            ctx.state.chain.resuming->resume_point == 7) {
-            return;  // suspended for agent decision
-        }
-        if (picked != kInvalidId && ctx.state.objectExists(picked))
-            ctx.executor.killObject(picked);
+    // "As an additional cost to play me, kill a friendly unit." A mandatory
+    // object cost: the player picks the unit as Patron is played, before its
+    // rune cost is paid; without a friendly unit Patron can't be played.
+    OptionalAdditionalCost optionalAdditionalCost() const override {
+        OptionalAdditionalCost c;
+        c.valid = true;
+        c.mandatory = true;
+        c.object_cost = OptionalAdditionalCost::ObjectCost::KillFriendlyUnit;
+        return c;
     }
 private:
     const CardDef def_ = [] {

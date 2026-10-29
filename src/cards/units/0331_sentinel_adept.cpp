@@ -9,69 +9,15 @@
 #include <vector>
 #include "cards/card_helpers.h"
 
+#include "cards/units/weaponmaster_base.h"
+
 namespace riftbound {
 namespace {
 
-class SentinelAdept : public UnitCard {
+class SentinelAdept : public WeaponmasterUnit {
 public:
     const CardDef& def() const override { return def_; }
-    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
-    TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
-        if (!ctx.state.objectExists(ctx.source)) return;
-
-        // Collect the controller's Equipment gear on board (attached or not).
-        std::vector<GameObjectId> equipment;
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (!obj.isGear() || obj.controller != ctx.controller) continue;
-            if (!obj.location.has_value()) continue;
-            bool is_equipment = false;
-            for (auto& tag : obj.tags) {
-                if (tag == "Equipment") { is_equipment = true; break; }
-            }
-            if (!is_equipment) continue;
-            equipment.push_back(id);
-        }
-        auto still_legal = [&equipment]() { return !equipment.empty(); };
-        if (!still_legal()) return;
-
-        // "you may" — optional.
-        int conf = confirmOptional(ctx, "Sentinel Adept: equip an Equipment to me?",
-                                    still_legal);
-        if (conf < 1) return;
-
-        GameObjectId gear_id = pickTarget(ctx, "Sentinel Adept: pick Equipment", equipment);
-        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
-        if (gear_id == kInvalidId || !ctx.state.objectExists(gear_id)) return;
-
-        auto& gear = ctx.state.getObject(gear_id);
-
-        // "even if it's already attached" — detach from current unit first.
-        if (gear.attached_to.has_value()) {
-            auto old_unit = *gear.attached_to;
-            if (ctx.state.objectExists(old_unit)) {
-                auto& old = ctx.state.getObject(old_unit);
-                old.attachment_might_bonus -= gear.might_bonus;
-                auto it = std::find(old.attachments.begin(), old.attachments.end(), gear_id);
-                if (it != old.attachments.end()) old.attachments.erase(it);
-                old.recomputeMight();
-            }
-            gear.attached_to = std::nullopt;
-        }
-
-        auto& self = ctx.state.getObject(ctx.source);
-        gear.attached_to = ctx.source;
-        self.attachments.push_back(gear_id);
-        gear.location = self.location;
-        gear.zone = self.zone;
-        self.attachment_might_bonus += gear.might_bonus;
-        self.recomputeMight();
-
-        ctx.events.emit(ObjectStateChangedEvent{gear_id, "attached"});
-        ctx.events.emit(ObjectStateChangedEvent{ctx.source, "equipped"});
-        ctx.events.logTrace("SENTINEL ADEPT: equipped " + gear.name +
-                            " (free / [A] less)");
-    }
+    // [Weaponmaster] comes from WeaponmasterUnit.
 private:
     const CardDef def_ = [] {
         CardDef d;

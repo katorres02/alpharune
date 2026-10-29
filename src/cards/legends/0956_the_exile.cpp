@@ -16,6 +16,18 @@ namespace {
 class TheExile : public LegendCard {
 public:
     const CardDef& def() const override { return def_; }
+    // "Units you play to battlefields you control enter ready."
+    bool grantsEnterReadyTo(const GameState& state, GameObjectId self,
+                            const GameObject& played) const override {
+        if (!played.isUnit() || !state.objectExists(self)) return false;
+        auto bfid = played.battlefieldId();
+        if (!bfid) return false;
+        const PlayerId me = state.getObject(self).controller;
+        if (played.controller != me) return false;
+        for (const auto& bf : state.battlefields)
+            if (bf.id == *bfid) return bf.controller.has_value() && *bf.controller == me;
+        return false;
+    }
 
 private:
     const CardDef def_ = [] {

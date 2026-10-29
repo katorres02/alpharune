@@ -45,7 +45,7 @@ private:
         d.card_type = CardType::Unit;
         d.super_type = SuperType::None;
         d.domains = {Domain::Chaos};
-        d.tags = {};
+        d.tags = {R"RB(Bilgewater)RB"};
         d.rarity = Rarity::Common;
         d.ability_text = R"RB([Disarm] (When I attack, give an enemy unit here -1 [M] this turn.) [Ganking])RB";
         d.energy_cost = 2;

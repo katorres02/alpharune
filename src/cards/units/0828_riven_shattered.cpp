@@ -28,10 +28,9 @@ public:
             if (state.objectExists(gid) && isEquipment(state.getObject(gid))) ++n;
         return n;
     }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         if (ctx.firing_trigger != TriggerType::WhenIAttack) {
-            if (finalizingChoices(ctx)) return;   // the base's choices stay at resolution
-            WeaponmasterUnit::onTrigger(ctx, targets);
+            weaponmaster(ctx);   // [Weaponmaster]: choices at finalization (base)
             return;
         }
         // "When I attack, choose an enemy unit here. Deal 2 to it for each

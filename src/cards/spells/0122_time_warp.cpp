@@ -22,9 +22,10 @@ public:
         ps.additional_turns.push_back(ctx.controller);
         ctx.events.logTrace("TIME WARP: queued extra turn for " +
                              std::string(toString(ctx.controller)));
-        // "Banish this" — route source to banishment instead of trash.
+        // "Banish this": the chain banishes it instead of trashing it as it
+        // leaves the chain (banishing it here would be overwritten).
         if (ctx.state.objectExists(ctx.source)) {
-            ctx.executor.banishObject(ctx.source);
+            ctx.state.getObject(ctx.source).banish_on_leave_chain = true;
         }
     }
 private:

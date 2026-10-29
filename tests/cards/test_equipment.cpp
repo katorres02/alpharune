@@ -678,11 +678,11 @@ TEST_F(LastRitesTest, FailsAtomicallyWhenNoChaosRune) {
 }
 
 // On-conquer/hold trigger: declared trigger type + the trigger plays a
-// unit from trash when one is available. Documents the current
-// implementation (auto-picks the most-recent unit) and the known
-// limitation (the played unit's cost is NOT yet paid — card text says
-// "(You still pay its costs.)" but the engine has no EffectExecutor
-// path into payCardCost from a chain-resolving card).
+// unit from trash when one is available, paying its cost
+// (EffectExecutor::playPayingCost; the filler unit here costs nothing).
+// The equip cost's two recycled cards are chosen by the player
+// (chooseObjectNow: the first offered without an agent), so the fillers
+// are put in the trash first.
 TEST_F(LastRitesTest, EquippedTriggerType) {
     Card* c = card_registry.get(kLastRites);
     ASSERT_NE(c, nullptr);
@@ -697,11 +697,6 @@ TEST_F(LastRitesTest, ConquerOrHoldTriggerPlaysUnitFromTrash) {
     giveRunesForEquip(P1, Domain::Chaos);
     // Trash with one unit (the candidate for the on-conquer play) +
     // two filler cards to satisfy the equip cost.
-    auto trash_unit = state.createObject();
-    state.getObject(trash_unit).owner = P1; state.getObject(trash_unit).controller = P1;
-    state.getObject(trash_unit).card_type = CardType::Unit;
-    state.getObject(trash_unit).zone = ZoneType::Trash;
-    state.player(P1).trash.push_back(trash_unit);
     auto t_filler1 = state.createObject();
     state.getObject(t_filler1).owner = P1; state.getObject(t_filler1).controller = P1;
     state.getObject(t_filler1).zone = ZoneType::Trash;
@@ -710,6 +705,11 @@ TEST_F(LastRitesTest, ConquerOrHoldTriggerPlaysUnitFromTrash) {
     state.getObject(t_filler2).owner = P1; state.getObject(t_filler2).controller = P1;
     state.getObject(t_filler2).zone = ZoneType::Trash;
     state.player(P1).trash.push_back(t_filler2);
+    auto trash_unit = state.createObject();
+    state.getObject(trash_unit).owner = P1; state.getObject(trash_unit).controller = P1;
+    state.getObject(trash_unit).card_type = CardType::Unit;
+    state.getObject(trash_unit).zone = ZoneType::Trash;
+    state.player(P1).trash.push_back(trash_unit);
 
     EffectExecutor exec(state, events, card_db);
     ASSERT_TRUE(runEquip(gear, unit, exec));

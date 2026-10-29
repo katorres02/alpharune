@@ -24,6 +24,7 @@ public:
                                          /*energy_cost=*/0, Domain::Chaos);
     }
 
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     TriggerType triggerType() const override {
         return TriggerType::WhenYouPlayThis;
     }
@@ -36,13 +37,19 @@ public:
         if (!self.isAtBattlefield()) return;
         if (!self.location.has_value()) return;
         const auto here = *self.location;
-        // Attach to a friendly unit "here" (same battlefield).
+        // "attach it to a unit you control (here)" — the controller picks which.
+        std::vector<GameObjectId> units;
         for (auto& [id, obj] : ctx.state.objects) {
             if (!obj.isUnit() || obj.controller != ctx.controller) continue;
             if (!obj.location.has_value() || *obj.location != here) continue;
-            attachFree(ctx, ctx.source, id);
-            return;
+            units.push_back(id);
         }
+        GameObjectId unit = pickTarget(ctx, "Edge of Night: attach to which unit here?", units);
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (unit == kInvalidId || !ctx.state.objectExists(unit)) return;
+        if (!ctx.state.objectExists(ctx.source)) return;
+        if (ctx.state.getObject(ctx.source).attached_to.has_value()) return;
+        attachFree(ctx, ctx.source, unit);
     }
 private:
     const CardDef def_ = [] {

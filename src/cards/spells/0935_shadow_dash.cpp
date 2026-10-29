@@ -57,44 +57,27 @@ public:
         const GameState& state, PlayerId controller) const override {
         return dashTargets(state, controller);
     }
+    // The enemy unit is the target chosen as the spell was played (the engine
+    // asks and charges Deflect then; pickTarget returns it, or nothing if it is
+    // no longer legal). The destination battlefield is chosen as it resolves.
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
-        if (!ctx.state.chain.resuming.has_value()) return;
-        auto& ri = *ctx.state.chain.resuming;
-        if (ri.resume_point == 0) {
-            auto legal = dashTargets(ctx.state, ctx.controller);
-            if (legal.empty()) { ri.resume_point = 3; return; }
-            std::vector<Intent> opts;
-            for (auto u : legal) opts.push_back(objChoice(ctx.controller, u));
-            ctx.executor.requestChoice(ctx.controller, std::move(opts),
-                                       "Shadow Dash: move an enemy unit");
-            ri.resume_point = 1;
+        GameObjectId u = pickTarget(ctx, "Shadow Dash: move an enemy unit",
+                                    dashTargets(ctx.state, ctx.controller));
+        if (u == kInvalidId && ctx.state.chain.resuming.has_value() &&
+            ctx.state.chain.resuming->resume_point == 7)
+            return;   // waiting on the agent
+        if (u == kInvalidId || !ctx.state.objectExists(u) ||
+            !ctx.state.getObject(u).location.has_value())
             return;
-        }
-        if (ri.resume_point == 1) {
-            GameObjectId u = takenObject(ctx);
-            auto legal = dashTargets(ctx.state, ctx.controller);
-            if (std::find(legal.begin(), legal.end(), u) == legal.end()) {
-                ri.resume_point = 3;
-                return;
-            }
-            ri.resume_data = {static_cast<int32_t>(u)};
-            std::vector<Intent> opts;
-            for (auto bf : dashDests(ctx.state, ctx.controller, ctx.state.getObject(u)))
-                opts.push_back(valChoice(ctx.controller, 1 + static_cast<int>(bf),
-                                         "Battlefield #" + std::to_string(bf)));
-            ctx.executor.requestChoice(ctx.controller, std::move(opts),
-                                       "Shadow Dash: to which battlefield?");
-            ri.resume_point = 2;
-            return;
-        }
-        if (ri.resume_point != 2) return;
-        ri.resume_point = 3;
-        if (ri.resume_data.empty()) return;
-        auto u = static_cast<GameObjectId>(ri.resume_data[0]);
-        if (!ctx.state.objectExists(u) || !ctx.state.getObject(u).location.has_value()) return;
         auto dests = dashDests(ctx.state, ctx.controller, ctx.state.getObject(u));
         if (dests.empty()) return;
-        int v = takenValue(ctx, 1 + static_cast<int>(dests.front()));
+        std::vector<std::pair<int, std::string>> opts;
+        for (auto bf : dests)
+            opts.push_back({1 + static_cast<int>(bf), "Battlefield #" + std::to_string(bf)});
+        int v = opts.front().first;
+        if (!stepChooseValue(ctx, ctx.controller, opts, "Shadow Dash: to which battlefield?",
+                             20, 10, v, v))
+            return;   // waiting on the agent
         auto bf = static_cast<BattlefieldId>(v - 1);
         if (v < 1 || std::find(dests.begin(), dests.end(), bf) == dests.end())
             bf = dests.front();

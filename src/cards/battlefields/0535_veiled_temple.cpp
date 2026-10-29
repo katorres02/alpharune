@@ -18,26 +18,67 @@ namespace {
 class VeiledTemple : public BattlefieldCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (targets.empty() || !ctx.state.objectExists(targets[0])) return;
-        ctx.executor.readyObject(targets[0]);
-        // If it's an Equipment, you may detach it.
-        auto& gear = ctx.state.getObject(targets[0]);
-        if (isEquipment(gear) && gear.attached_to.has_value()) {
-            int conf = confirmOptional(ctx, "Veiled Temple: detach the Equipment?",
-                                       [&]() {
-                if (!ctx.state.objectExists(targets[0])) return false;
-                return ctx.state.getObject(targets[0]).attached_to.has_value();
-            });
-            if (conf == 1) {
-                ctx.executor.unattachGear(targets[0]);
+    TriggerType triggerType() const override { return TriggerType::WhenYouConquerHere; }
+    // The "you may" and the gear are chosen when the trigger is finalized
+    // (CR 383.3); the detach "you may" depends on the gear and is asked as the
+    // ability resolves (resume_points 20/21, after pickTarget's 6..8).
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
+    static constexpr int kDetachAsked = 20;
+    static constexpr int kDetachDone = 21;
+
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        auto gears = [&]() {
+            std::vector<GameObjectId> out;
+            for (auto& [id, obj] : ctx.state.objects)
+                if (obj.isGear() && obj.location.has_value() && obj.controller == ctx.controller)
+                    out.push_back(id);
+            return out;
+        };
+        auto& ri = ctx.state.chain.resuming;
+        if (!ri.has_value() || ri->resume_point < kDetachAsked) {
+            int conf = confirmOptional(ctx, "Veiled Temple: ready a friendly gear?",
+                                       [&]() { return !gears().empty(); });
+            if (conf == -1) return;
+            if (conf == 0) return;
+        }
+        GameObjectId gear = kInvalidId;
+        if (!ri.has_value() || ri->resume_point < kDetachAsked) {
+            gear = pickTarget(ctx, "Veiled Temple: ready which gear?", gears());
+            if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+            if (gear == kInvalidId || !ctx.state.objectExists(gear)) return;
+            ctx.executor.readyObject(gear);
+            ctx.events.logTrace("VEILED TEMPLE: readied " + ctx.state.getObject(gear).name);
+        } else if (ri->resume_data.size() >= 3) {
+            gear = static_cast<GameObjectId>(ri->resume_data[2]);
+        }
+        if (gear == kInvalidId || !ctx.state.objectExists(gear)) return;
+        auto attachedEquipment = [&]() {
+            const auto& g = ctx.state.getObject(gear);
+            return isEquipment(g) && g.attached_to.has_value();
+        };
+        // "If it's an Equipment, you may detach it."
+        if (!ri.has_value()) {   // direct invocation (tests): yes
+            if (attachedEquipment()) ctx.executor.unattachGear(gear);
+            return;
+        }
+        if (ri->resume_point < kDetachAsked) {
+            if (!attachedEquipment()) return;
+            Intent no; no.type = IntentType::MakeChoice; no.player = ctx.controller;
+            no.chosen_value = 0; no.choice_label = "No — Veiled Temple: detach the Equipment";
+            Intent yes = no; yes.chosen_value = 1;
+            yes.choice_label = "Yes — Veiled Temple: detach the Equipment";
+            ctx.executor.requestChoice(ctx.controller, {no, yes}, "may: Veiled Temple: detach");
+            ri->resume_point = kDetachAsked;
+            return;
+        }
+        if (ri->resume_point == kDetachAsked) {
+            ri->resume_point = kDetachDone;
+            auto picked = ctx.executor.takeChoice();
+            if (picked && picked->chosen_value.value_or(0) == 1 && attachedEquipment()) {
+                ctx.executor.unattachGear(gear);
                 ctx.events.logTrace("VEILED TEMPLE: detached Equipment");
             }
         }
-    }
-    TriggerType triggerType() const override { return TriggerType::WhenYouConquerHere; }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_gear = true, .must_be_friendly = true};
     }
 private:
     const CardDef def_ = [] {

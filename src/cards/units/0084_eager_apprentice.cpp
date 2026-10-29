@@ -8,34 +8,30 @@
 #include <string>
 #include <vector>
 
+#include "cards/card_helpers.h"
+
 namespace riftbound {
 namespace {
 
 class EagerApprentice : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
+    // "While I'm at a battlefield, the Energy costs for spells you play is
+    // reduced by [1], to a minimum of [1]." Each instance at a battlefield
+    // re-asserts its own reduction every aura pass (from_aura).
     void applyPassiveAura(GameState& state, PlayerId controller) const override {
-        // Active only while an on-board instance is at a battlefield.
-        bool at_bf = false;
-        GameObjectId self_id = kInvalidId;
-        for (auto& [sid, self] : state.objects) {
-            if (self.card_def_id != cardDefId()) continue;
-            if (self.controller != controller) continue;
-            if (!self.isAtBattlefield()) continue;
-            at_bf = true;
-            self_id = sid;
-            break;
-        }
-        if (!at_bf) return;
-        PlayerState::CostModifier m;
-        m.source = self_id;
-        m.energy_reduction = 1;
-        m.min_cost = 1;
-        m.this_turn_only = false;
-        m.affects_friendly_only = true;
-        // NOTE: no spell-only filter exists on CostModifier; this reduces all
-        // friendly plays by [1], a superset of the printed "spells" scope.
-        state.player(controller).cost_modifiers.push_back(m);
+        forEachSelfOnce(*this, state, controller, [&](GameObjectId sid, GameObject& self) {
+            if (!self.isAtBattlefield()) return;
+            PlayerState::CostModifier m;
+            m.source = sid;
+            m.energy_reduction = 1;
+            m.min_cost = 1;
+            m.spells_only = true;
+            m.this_turn_only = false;
+            m.from_aura = true;
+            m.affects_friendly_only = true;
+            state.player(controller).cost_modifiers.push_back(m);
+        });
     }
 private:
     const CardDef def_ = [] {

@@ -17,7 +17,10 @@ public:
     const CardDef& def() const override { return def_; }
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
         if (!targets.empty() && ctx.state.objectExists(targets[0])) {
-            ctx.executor.giveTemporaryKeyword(targets[0], Keyword::Temporary, 0);
+            // A lasting grant (not "this turn"): the [Temporary] kill happens at
+            // the controller's next Beginning Phase, after this turn's
+            // expiration step would have revoked a temporary keyword.
+            ctx.state.getObject(targets[0]).keywords.set(Keyword::Temporary);
             ctx.events.logTrace("TURN TO DUST: gave gear [Temporary]");
         }
     }
@@ -38,7 +41,6 @@ private:
         d.card_type = CardType::Spell;
         d.domains = {Domain::Mind};
         d.energy_cost = 2;
-        d.keywords.set(Keyword::Temporary);
         d.ability_text = R"RB(Give a gear [Temporary]. (Kill it at the start of its controller's Beginning Phase, before scoring.))RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/4986c0c2fea96d9a88d736789d604374a64d03fb-744x1039.png)RB";
         return d;

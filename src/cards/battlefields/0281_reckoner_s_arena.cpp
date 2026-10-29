@@ -42,20 +42,6 @@ public:
     static bool isConquerTrigger(TriggerType t) {
         return t == TriggerType::WhenIConquer || t == TriggerType::WhenIConquerOrHold;
     }
-    // LeBlanc, Everywhere at Once: "your [Temporary] effects at my battlefield
-    // don't trigger" — the same gate TriggerManager::fireTrigger applies.
-    static bool suppressed(CardContext& ctx, GameObjectId uid, BattlefieldId bf) {
-        const auto& unit = ctx.state.getObject(uid);
-        if (!unit.hasKeyword(Keyword::Temporary)) return false;
-        for (const auto& [oid, other] : ctx.state.objects) {
-            if (oid == uid || other.controller != unit.controller) continue;
-            auto obf = other.battlefieldId();
-            if (!obf || *obf != bf) continue;
-            const Card* oc = ctx.registry->get(other.card_def_id);
-            if (oc && oc->suppressesTemporaryTriggersHere()) return true;
-        }
-        return false;
-    }
     static void queueConquerAbility(CardContext& ctx, GameObjectId uid, TriggerType fired) {
         auto& chain = ctx.state.chain;
         const bool was_empty = !chain.exists();
@@ -105,10 +91,8 @@ public:
                     if (!isConquerTrigger(t)) continue;
                     if (ctx.executor.canQueueTriggers())
                         ctx.executor.queueTriggeredAbility(uid, uctrl, t);
-                    else if (!suppressed(ctx, uid, *my_bf))
-                        queueConquerAbility(ctx, uid, t);
                     else
-                        continue;
+                        queueConquerAbility(ctx, uid, t);
                     ++activated;
                 }
             }

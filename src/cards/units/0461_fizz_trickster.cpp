@@ -22,31 +22,35 @@ public:
         auto& ps = ctx.state.player(ctx.controller);
         const auto& db = ctx.executor.cardDB();
 
-        auto find_spell = [&]() -> GameObjectId {
-            // Most-recent first.
+        // Energy is waived; "(You must still pay its Power cost.)" (CR 356.1.b.2).
+        const EffectExecutor::EffectPlayCost power_only{.ignore_energy = true};
+        // Spells in my trash with Energy cost <= 3 that I could play now,
+        // most recently trashed first.
+        auto eligible = [&]() {
+            std::vector<GameObjectId> out;
             for (int i = static_cast<int>(ps.trash.size()) - 1; i >= 0; --i) {
                 auto cid = ps.trash[i];
                 if (!ctx.state.objectExists(cid)) continue;
                 auto& obj = ctx.state.getObject(cid);
                 if (obj.card_type != CardType::Spell) continue;
                 if (obj.card_def_id == kInvalidId) continue;
-                // Energy cost gate: no more than 3.
                 if (db.get(obj.card_def_id).energy_cost > 3) continue;
-                return cid;
+                if (!ctx.executor.canPlayPayingCost(ctx.controller, cid, power_only)) continue;
+                out.push_back(cid);
             }
-            return kInvalidId;
+            return out;
         };
-        auto still_legal = [&]() { return find_spell() != kInvalidId; };
+        auto still_legal = [&]() { return !eligible().empty(); };
 
         int conf = confirmOptional(ctx,
             "Fizz: play a spell (cost <= 3) from trash for free?", still_legal);
         if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
         if (conf != 1) return;
 
-        GameObjectId chosen = find_spell();
-        if (chosen == kInvalidId) return;
-        // Energy is waived; "(You must still pay its Power cost.)" (CR 356.1.b.2).
-        const EffectExecutor::EffectPlayCost power_only{.ignore_energy = true};
+        // Which spell is the controller's choice, made as the ability resolves.
+        GameObjectId chosen = pickTarget(ctx, "Fizz: spell to play from trash", eligible());
+        if (chosen == kInvalidId || !ctx.state.objectExists(chosen)) return;
+        if (ctx.state.getObject(chosen).zone != ZoneType::Trash) return;
         if (!ctx.executor.canPlayPayingCost(ctx.controller, chosen, power_only)) return;
         // Remove from trash before playing.
         auto it = std::find(ps.trash.begin(), ps.trash.end(), chosen);

@@ -588,6 +588,11 @@ TEST_F(AuditFix6Test, BlastCone_ExhaustsToStunMovedEnemy) {
 
     EffectExecutor exec(state, events, card_db);
     fireTriggerAs(kBlastCone, P1, gear, TriggerType::WhenYouPlayThis, exec, {enemy});
+    // The stun is Blast Cone's separate "When you move an enemy unit" trigger
+    // (2026-10 audit), carrying the moved unit as its subject.
+    driveResumableTrigger(kBlastCone, P1, gear,
+        [](const std::vector<Intent>& legal) { return legal.back(); }, exec,
+        TriggerType::WhenYouMoveAnEnemyUnit, enemy);
 
     EXPECT_TRUE(state.getObject(gear).is_exhausted);
     EXPECT_TRUE(state.getObject(enemy).is_stunned);

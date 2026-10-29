@@ -19,14 +19,18 @@ class YetiBrawler : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
     TriggerType triggerType() const override { return TriggerType::WhenIConquer; }
+    // "if you assigned 3 or more excess damage" — an intervening condition,
+    // read from the combat at the battlefield Yeti conquered.
+    bool triggerCondition(const GameState& state, GameObjectId source, PlayerId controller,
+                          TriggerType, GameObjectId) const override {
+        if (!state.objectExists(source)) return false;
+        auto bf = state.getObject(source).battlefieldId();
+        return bf && excessCombatDamageAt(state, controller, *bf) >= 3;
+    }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
-        // Excess-damage assignment is not surfaced to triggers (same engine gap
-        // as Tryndamere / Piltover Enforcer); the "3+ excess" condition is
-        // treated as satisfied (documented approximation).
         createGoldExhausted(ctx);
         createGoldExhausted(ctx);
-        ctx.events.logTrace("YETI BRAWLER: conquer -> played two Gold tokens exhausted "
-                            "(excess-damage condition not engine-checked)");
+        ctx.events.logTrace("YETI BRAWLER: conquer with 3+ excess damage -> two Gold tokens");
     }
 private:
     const CardDef def_ = [] {
@@ -45,7 +49,6 @@ private:
         d.energy_cost = 6;
         d.might = 6;
         d.rarity = Rarity::Uncommon;
-        d.keywords.set(Keyword::Reaction);
         d.ability_text = R"RB(When I conquer, if you assigned 3 or more excess damage, play two Gold gear tokens exhausted. (They have "[Reaction][>] Kill this, [E]: [Add] [A]."))RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/38b59ae384ef6df8c94d5c51418101b2630b43a7-744x1039.png)RB";
         return d;

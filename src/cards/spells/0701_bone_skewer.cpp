@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -15,51 +16,75 @@ class BoneSkewer : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
 
+    static constexpr int kAwaitUnit = 20;
+    static constexpr int kDone = 21;
+
+    static void revealHand(CardContext& ctx, PlayerId opp) {
+        for (auto cid : ctx.state.player(opp).hand) {
+            if (!ctx.state.objectExists(cid)) continue;
+            const auto& c = ctx.state.getObject(cid);
+            ctx.events.emit(CardRevealedEvent{
+                /*card=*/cid,
+                /*card_def_id=*/c.card_def_id,
+                /*owner=*/c.owner,
+                /*revealed_to_all=*/true,
+                /*revealed_to=*/PlayerId::None,
+                /*source_zone=*/ZoneType::Hand,
+            });
+        }
+    }
+
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         PlayerId opp = opponent(ctx.controller);
 
-        // Reveal opponent's hand (public) up front.
-        if (!ctx.state.chain.resuming.has_value() ||
-            ctx.state.chain.resuming->resume_point < 9) {
-            for (auto cid : ctx.state.player(opp).hand) {
-                if (!ctx.state.objectExists(cid)) continue;
-                const auto& c = ctx.state.getObject(cid);
-                ctx.events.emit(CardRevealedEvent{
-                    /*card=*/cid,
-                    /*card_def_id=*/c.card_def_id,
-                    /*owner=*/c.owner,
-                    /*revealed_to_all=*/true,
-                    /*revealed_to=*/PlayerId::None,
-                    /*source_zone=*/ZoneType::Hand,
-                });
-            }
-        }
-
-        // Pair pick: (A) the battlefield (BF card object), (B) a unit from the
-        // opponent's hand. GAP: "You may choose a unit" optionality is lost —
-        // pickTargetPair forces a choice if any hand unit exists; if none exist
-        // the second pick fizzles and nothing is played.
+        // (A) "Choose a battlefield" (its card object, pickTarget).
         std::vector<GameObjectId> bf_cards;
         for (const auto& bf : ctx.state.battlefields) {
             if (ctx.state.objectExists(bf.card_object_id)) {
                 bf_cards.push_back(bf.card_object_id);
             }
         }
-        auto handUnits = [&ctx, opp](GameObjectId /*picked_bf*/) {
+        GameObjectId bf_card = pickTarget(ctx, "Bone Skewer: choose a battlefield", bf_cards);
+        if (bf_card == kInvalidId) return;  // suspended or no battlefields
+
+        auto handUnits = [&ctx, opp]() {
             std::vector<GameObjectId> out;
             for (auto cid : ctx.state.player(opp).hand) {
                 if (!ctx.state.objectExists(cid)) continue;
-                if (ctx.state.getObject(cid).card_type == CardType::Unit) {
-                    out.push_back(cid);
-                }
+                if (ctx.state.getObject(cid).card_type == CardType::Unit) out.push_back(cid);
             }
             return out;
         };
-        auto pair = pickTargetPair(ctx, "Bone Skewer: choose BF + enemy unit",
-                                   bf_cards, handUnits);
-        GameObjectId bf_card = pair.first;
-        GameObjectId chosen = pair.second;
-        if (bf_card == kInvalidId) return;  // suspended or no BFs
+        // (B) "An opponent reveals their hand. You may choose a unit from it."
+        GameObjectId chosen = kInvalidId;
+        auto& ri_opt = ctx.state.chain.resuming;
+        if (!ri_opt.has_value()) {
+            // Direct invocation: no agent to ask — the first unit.
+            revealHand(ctx, opp);
+            auto units = handUnits();
+            if (!units.empty()) chosen = units.front();
+        } else if (ri_opt->resume_point == kDone) {
+            return;
+        } else if (ri_opt->resume_point != kAwaitUnit) {
+            revealHand(ctx, opp);
+            auto units = handUnits();
+            if (units.empty()) { ri_opt->resume_point = kDone; return; }
+            std::vector<Intent> opts;
+            for (auto u : units) opts.push_back(objChoice(ctx.controller, u));
+            Intent none;                       // "You may": choose no unit
+            none.type = IntentType::MakeChoice;
+            none.player = ctx.controller;
+            opts.push_back(std::move(none));
+            ctx.executor.requestChoice(ctx.controller, std::move(opts),
+                                       "Bone Skewer: choose a unit from their hand (or none)");
+            ri_opt->resume_point = kAwaitUnit;
+            return;
+        } else {
+            chosen = takenObject(ctx);
+            auto units = handUnits();
+            if (std::find(units.begin(), units.end(), chosen) == units.end()) chosen = kInvalidId;
+            ri_opt->resume_point = kDone;
+        }
         if (chosen == kInvalidId || !ctx.state.objectExists(chosen)) return;
 
         // Resolve BattlefieldId from the chosen BF card object.

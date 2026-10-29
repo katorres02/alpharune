@@ -15,24 +15,29 @@ namespace {
 class AstralHeron : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    // "When you play your first card each turn, if I'm at a battlefield, your
-    //  next card costs [2][A][A] less."
-    // "First card each turn" is read at resolution as
-    // PlayerState::cards_played_this_turn == 1 (the triggering play itself).
-    // The [A][A] half is CostModifier::power_reduction, which the engine's
-    // cost path subtracts from the card's Power cost (clamped at 0).
+    // "When you play your first card each turn, if I'm at a battlefield, the
+    //  next card you play this turn costs [2][A][A] less." (errata 2026)
+    // "Your first card each turn" is read as the play happens (the trigger
+    // condition): a card played in response doesn't cancel it.
+    // GAP: a spell's play triggers fire as it resolves, so a first spell
+    // that resolves after a later card no longer reads as the first.
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayACard; }
+    bool triggerCondition(const GameState& state, GameObjectId source, PlayerId controller,
+                          TriggerType /*trigger*/, GameObjectId /*subject*/) const override {
+        if (!state.objectExists(source) || !state.getObject(source).isAtBattlefield())
+            return false;
+        return state.player(controller).cards_played_this_turn == 1;
+    }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         if (!ctx.state.objectExists(ctx.source)) return;
-        if (!ctx.state.getObject(ctx.source).isAtBattlefield()) return;
+        if (!ctx.state.getObject(ctx.source).isAtBattlefield()) return;   // "if I'm at a battlefield"
         auto& ps = ctx.state.player(ctx.controller);
-        if (ps.cards_played_this_turn != 1) return;
         PlayerState::CostModifier m;
         m.source = ctx.source;
         m.energy_reduction = 2;
         m.power_reduction = 2;
         m.next_card_only = true;
-        m.this_turn_only = false;   // "your next card", whenever it is played
+        m.this_turn_only = true;    // "the next card you play THIS TURN"
         m.affects_friendly_only = true;
         ps.cost_modifiers.push_back(m);
         ctx.events.logTrace("ASTRAL HERON: first card this turn -> next card costs [2][A][A] less");
@@ -54,7 +59,7 @@ private:
         d.energy_cost = 7;
         d.might = 7;
         d.rarity = Rarity::Epic;
-        d.ability_text = R"RB(When you play your first card each turn, if I'm at a battlefield, your next card costs [2][A][A] less.)RB";
+        d.ability_text = R"RB(When you play your first card each turn, if I'm at a battlefield, the next card you play this turn costs [2][A][A] less.)RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/b1ce87efc9a1a7e2438c53e034a7f92caaa67ed6-744x1039.png)RB";
         return d;
     }();

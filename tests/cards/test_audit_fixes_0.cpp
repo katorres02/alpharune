@@ -343,14 +343,16 @@ TEST_F(AuditFix0Test, ZeroDrive_EquipFailsWhenCantAfford) {
     EXPECT_EQ(state.getObject(unit).attachment_might_bonus, 0);
 }
 
+// 2026-10 audit: "[Deathknell] — Banish me" is a death trigger, not a
+// replacement — the bearer dies (to trash), then is banished and recorded.
 TEST_F(AuditFix0Test, ZeroDrive_DeathknellBanishesAndRecords) {
     Card* c = card_registry.get(kZeroDrive);
     ASSERT_NE(c, nullptr);
-    EXPECT_TRUE(c->hasReplacementEffect());
+    EXPECT_FALSE(c->hasReplacementEffect());
+    EXPECT_EQ(c->equippedTriggerType(), TriggerType::WhenIDie);
 
     auto unit = addUnit(P1, kInvalidId, /*might=*/4, /*at_bf=*/0);
     auto gear = addGear(P1, kZeroDrive, /*at_bf=*/0);
-    // Attach manually (so we test replacement, not equip).
     {
         auto& g = state.getObject(gear);
         auto& u = state.getObject(unit);
@@ -361,36 +363,15 @@ TEST_F(AuditFix0Test, ZeroDrive_DeathknellBanishesAndRecords) {
     }
 
     EffectExecutor exec(state, events, card_db);
+    exec.killObject(unit);
+    EXPECT_EQ(state.getObject(unit).zone, ZoneType::Trash) << "the bearer really dies";
     CardContext ctx{state, events, exec, P1, gear};
-    bool consumed = c->applyReplacement(ctx, unit);
+    c->onEquippedTrigger(ctx, unit, {});
 
-    EXPECT_TRUE(consumed) << "replacement consumes the death of the bearer";
-    EXPECT_EQ(state.getObject(unit).zone, ZoneType::Banishment)
-        << "bearer banished instead of trashed";
-    EXPECT_FALSE(state.getObject(gear).attached_to.has_value())
-        << "gear detaches and stays on board unattached";
+    EXPECT_EQ(state.getObject(unit).zone, ZoneType::Banishment) << "then it is banished";
     auto& tracked = state.getObject(gear).tracked_objects;
     EXPECT_NE(std::find(tracked.begin(), tracked.end(), unit), tracked.end())
         << "banished unit recorded for replay";
-}
-
-TEST_F(AuditFix0Test, ZeroDrive_ReplacementIgnoresOtherUnits) {
-    auto bearer = addUnit(P1, kInvalidId, /*might=*/4, /*at_bf=*/0);
-    auto other  = addUnit(P1, kInvalidId, /*might=*/4, /*at_bf=*/0);
-    auto gear   = addGear(P1, kZeroDrive, /*at_bf=*/0);
-    {
-        auto& g = state.getObject(gear);
-        g.attached_to = bearer;
-        state.getObject(bearer).attachments.push_back(gear);
-    }
-
-    Card* c = card_registry.get(kZeroDrive);
-    EffectExecutor exec(state, events, card_db);
-    CardContext ctx{state, events, exec, P1, gear};
-    bool consumed = c->applyReplacement(ctx, other);  // a DIFFERENT unit dies
-
-    EXPECT_FALSE(consumed) << "only intercepts the attached bearer's death";
-    EXPECT_NE(state.getObject(other).zone, ZoneType::Banishment);
 }
 
 TEST_F(AuditFix0Test, ZeroDrive_ReplayLegalityAndActivate) {
@@ -411,7 +392,7 @@ TEST_F(AuditFix0Test, ZeroDrive_ReplayLegalityAndActivate) {
         state.getObject(gear).tracked_objects.push_back(banished);
     }
 
-    EXPECT_TRUE(c->hasLegalTargets(state, P1))
+    EXPECT_TRUE(c->canActivateAbilityAt(state, P1, gear, 0))
         << "unattached + has recorded unit → replay legal";
 
     EffectExecutor exec(state, events, card_db);
@@ -435,14 +416,14 @@ TEST_F(AuditFix0Test, ZeroDrive_ReplayIllegalWhileAttached) {
         g.tracked_objects.push_back(addUnit(P1, kInvalidId, 1, -1));
     }
     Card* c = card_registry.get(kZeroDrive);
-    EXPECT_FALSE(c->hasLegalTargets(state, P1))
+    EXPECT_FALSE(c->canActivateAbilityAt(state, P1, gear, 0))
         << "(Use only if unattached.) — attached → illegal";
 }
 
 TEST_F(AuditFix0Test, ZeroDrive_ReplayIllegalWithNoRecord) {
-    addGear(P1, kZeroDrive, /*at_bf=*/0);  // unattached but nothing recorded
+    auto gear = addGear(P1, kZeroDrive, /*at_bf=*/0);  // unattached but nothing recorded
     Card* c = card_registry.get(kZeroDrive);
-    EXPECT_FALSE(c->hasLegalTargets(state, P1))
+    EXPECT_FALSE(c->canActivateAbilityAt(state, P1, gear, 0))
         << "nothing banished with this → nothing to replay";
 }
 
@@ -450,27 +431,41 @@ TEST_F(AuditFix0Test, ZeroDrive_ReplayIllegalWithNoRecord) {
 // [467] Vex, Cheerless — combat cost modifiers.
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Updated (2026-10 shared batch): the modifiers are pushed only while THIS Vex
+// is in combat, carry the [A] half, are limited to spells, and are re-asserted
+// each aura pass (from_aura) instead of piling up.
 TEST_F(AuditFix0Test, VexCheerless_PushesTwoCombatModifiers) {
     Card* c = card_registry.get(kVexCheerless);
     ASSERT_NE(c, nullptr);
+    auto vex = addUnit(P1, kVexCheerless, 0, /*at_bf=*/0);
 
     c->applyPassiveAura(state, P1);
     auto& mods = state.player(P1).cost_modifiers;
+    EXPECT_TRUE(mods.empty()) << "not in combat: no modifiers";
+
+    state.battlefields[0].combat_in_progress = true;
+    state.getObject(vex).combat_designation = CombatDesignation::Attacker;
+    state.getObject(vex).aura_effects.clear();   // a new aura pass
+    c->applyPassiveAura(state, P1);
     ASSERT_EQ(mods.size(), 2u);
 
-    // Friendly reduction: -1 energy, min 1, friendly-only, combat-active.
+    // Friendly reduction: -[1][A], min 1, friendly spells.
     const auto& fr = mods[0];
     EXPECT_EQ(fr.energy_reduction, 1);
+    EXPECT_EQ(fr.power_reduction, 1);
     EXPECT_EQ(fr.min_cost, 1) << "the gap fix: 'to a minimum of [1]' floor";
     EXPECT_TRUE(fr.affects_friendly_only);
-    EXPECT_TRUE(fr.combat_active_only);
+    EXPECT_TRUE(fr.spells_only);
+    EXPECT_TRUE(fr.from_aura);
     EXPECT_FALSE(fr.this_turn_only);
 
-    // Enemy increase: +1 energy, enemy-only, combat-active.
+    // Enemy increase: +[1][A], enemy spells.
     const auto& en = mods[1];
     EXPECT_EQ(en.energy_increase, 1);
+    EXPECT_EQ(en.power_increase, 1);
     EXPECT_TRUE(en.affects_enemy_only);
-    EXPECT_TRUE(en.combat_active_only);
+    EXPECT_TRUE(en.spells_only);
+    EXPECT_TRUE(en.from_aura);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

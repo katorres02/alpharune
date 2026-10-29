@@ -14,14 +14,31 @@ namespace {
 class BlueSentinel : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
+    // "Your hold effects for holding here trigger an additional time."
+    // (TriggerManager::onScore re-fires hold effects at my battlefield.)
+    int extraHoldTriggersHere() const override { return 1; }
+
+    // "When I hold, [Add] [A] at the start of your next Main Phase." Holding
+    // schedules a delayed ability (CR 389) that adds the [A] when the Main
+    // Phase starts (pools empty at the end of the Draw Phase, so an immediate
+    // add would be lost). The delayed fire resolves through onTrigger with
+    // firing_trigger == AtStartOfMain; AtStartOfMain is NOT declared as a
+    // static trigger (the per-object scan would fire it every turn).
     TriggerType triggerType() const override { return TriggerType::WhenIHold; }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>&) override {
-        // "When I hold, [Add] [A] ..." — approximated as immediate add (the
-        // "at the start of your next Main Phase" deferral has no scheduling
-        // primitive; see class comment).
-        ctx.executor.addFloatingUniversalPower(ctx.controller, 1);
-        ctx.events.logTrace("BLUE SENTINEL: hold -> [Add] [A] "
-                            "(deferral to next main phase approximated as now)");
+        if (ctx.firing_trigger == TriggerType::AtStartOfMain) {
+            ctx.executor.addFloatingUniversalPower(ctx.controller, 1);
+            ctx.events.logTrace("BLUE SENTINEL: start of Main Phase -> [Add] [A]");
+            return;
+        }
+        DelayedAbility da;
+        da.source = ctx.source;
+        da.card_def_id = cardDefId();
+        da.controller = ctx.controller;
+        da.trigger = TriggerType::AtStartOfMain;
+        da.expires_on_turn = -1;   // until it fires
+        ctx.state.delayed_abilities.push_back(da);
+        ctx.events.logTrace("BLUE SENTINEL: hold -> [Add] [A] at the start of the next Main Phase");
     }
 private:
     const CardDef def_ = [] {

@@ -17,56 +17,100 @@ public:
     const CardDef& def() const override { return def_; }
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
 
-    GameObjectId findFriendlyGear(CardContext& ctx) const {
+    std::vector<GameObjectId> friendlyGears(CardContext& ctx) const {
+        std::vector<GameObjectId> out;
         for (auto& [id, obj] : ctx.state.objects) {
-            if (id == ctx.source) continue;
             if (!obj.isGear() || obj.controller != ctx.controller) continue;
             if (!obj.location.has_value()) continue;
-            return id;
+            out.push_back(id);
         }
-        return kInvalidId;
+        return out;
     }
 
+    // Hand gear with Energy cost no more than [7] whose Power cost can be paid.
     std::vector<GameObjectId> eligibleHandGears(CardContext& ctx) const {
         std::vector<GameObjectId> out;
-        auto& ps = ctx.state.player(ctx.controller);
-        for (auto cid : ps.hand) {
+        for (auto cid : ctx.state.player(ctx.controller).hand) {
             if (!ctx.state.objectExists(cid)) continue;
-            auto& obj = ctx.state.getObject(cid);
+            const auto& obj = ctx.state.getObject(cid);
             if (!obj.isGear() || obj.card_def_id == kInvalidId) continue;
             if (ctx.executor.cardDB().get(obj.card_def_id).energy_cost > 7) continue;
+            if (!ctx.executor.canPlayPayingCost(ctx.controller, cid, {.ignore_energy = true}))
+                continue;
             out.push_back(cid);
         }
         return out;
     }
 
+    // "When you play me, you may kill a friendly gear. If you do, you may play
+    // a gear with Energy cost no more than [7] from hand this turn, ignoring
+    // its Energy cost. (You must still pay its Power cost.)"
+    // The "may" and the gear to kill are chosen at finalization; the kill
+    // happens once as the ability resolves; then the player may pick a hand
+    // gear (or "Don't") — resume_point 20 consumes that pick.
+    // GAP: the play is offered right away, not as a permission that lasts
+    // for the rest of the turn.
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
-        if (!ctx.state.objectExists(ctx.source)) return;
-        auto still_legal = [&]() { return findFriendlyGear(ctx) != kInvalidId; };
-        int conf = confirmOptional(ctx, "Jayce: kill a friendly gear?", still_legal);
-        if (conf == -1) return;  // waiting for agent
-        if (conf < 1) return;    // declined / nothing to kill
+        int conf = confirmOptional(ctx, "Jayce: kill a friendly gear?",
+                                   [&]() { return !friendlyGears(ctx).empty(); });
+        if (conf == -1) return;
+        if (conf == 0) { finalizingChoices(ctx); return; }
+        GameObjectId gear = pickTarget(ctx, "Jayce: kill a friendly gear", friendlyGears(ctx));
+        if (ctx.executor.hasPendingChoice()) return;
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
 
-        GameObjectId gear = findFriendlyGear(ctx);
-        if (gear == kInvalidId || !ctx.state.objectExists(gear)) return;
-        ctx.executor.killObject(gear);
-        ctx.events.logTrace("JAYCE: killed a friendly gear");
-
-        // "If you do, you may play a gear (cost <= 7) from hand ignoring its
-        // Energy cost." Pick a hand gear and play it free.
-        auto eligible = eligibleHandGears(ctx);
-        if (eligible.empty()) return;
-        GameObjectId picked = pickTarget(ctx, "Jayce: play a gear from hand", eligible);
-        if (picked == kInvalidId && ctx.state.chain.resuming.has_value() &&
-            ctx.state.chain.resuming->resume_point == 7) {
-            return;  // suspended for agent decision
+        if (!ctx.state.chain.resuming.has_value()) {   // direct invocation
+            if (gear == kInvalidId) return;
+            ctx.executor.killObject(gear);
+            auto e = eligibleHandGears(ctx);
+            if (e.empty()) return;
+            auto& ps = ctx.state.player(ctx.controller);
+            ps.hand.erase(std::find(ps.hand.begin(), ps.hand.end(), e.front()));
+            ctx.executor.playPayingCost(ctx.controller, e.front(), std::nullopt, {.ignore_energy = true});
+            return;
         }
-        if (picked == kInvalidId || !ctx.state.objectExists(picked)) return;
+        auto& ri = *ctx.state.chain.resuming;
+        if (ri.resume_point < 20) {
+            if (gear == kInvalidId || !ctx.state.objectExists(gear)) { ri.resume_point = 22; return; }
+            ctx.executor.killObject(gear);
+            ctx.events.logTrace("JAYCE: killed a friendly gear");
+            auto eligible = eligibleHandGears(ctx);
+            if (eligible.empty()) { ri.resume_point = 22; return; }
+            std::vector<Intent> opts;
+            for (auto id : eligible) opts.push_back(objChoice(ctx.controller, id));
+            opts.push_back(valChoice(ctx.controller, 0, "Don't play a gear"));
+            ctx.executor.requestChoice(ctx.controller, std::move(opts),
+                                       "Jayce: play a gear from hand ignoring its Energy cost");
+            ri.resume_point = 20;
+            return;
+        }
+        if (ri.resume_point == 20) {
+            ri.resume_point = 21;
+            GameObjectId picked = takenObject(ctx);
+            auto eligible = eligibleHandGears(ctx);
+            if (std::find(eligible.begin(), eligible.end(), picked) == eligible.end()) {
+                ri.resume_point = 22;
+                return;
+            }
+            while (ri.resume_data.size() < 7) ri.resume_data.push_back(0);
+            ri.resume_data[6] = static_cast<int32_t>(picked);
+        }
+        if (ri.resume_point != 21) return;
+        const auto picked = static_cast<GameObjectId>(ri.resume_data[6]);
+        // Base, or a battlefield for [Deploy] gear (CR 355.2, 830).
+        LocationId where;
+        const int r = pickPlayLocation(ctx, picked, where, PlayerId::None, "Jayce: play the gear where?");
+        if (r == -1) return;   // waiting for the agent
+        ri.resume_point = 22;
+        if (r == 0) return;
         auto& ps = ctx.state.player(ctx.controller);
-        auto it = std::find(ps.hand.begin(), ps.hand.end(), picked);
-        if (it != ps.hand.end()) ps.hand.erase(it);
-        ctx.executor.playIgnoringCost(ctx.controller, picked);
-        ctx.events.logTrace("JAYCE: played a gear from hand ignoring cost");
+        ps.hand.erase(std::find(ps.hand.begin(), ps.hand.end(), picked));
+        if (!ctx.executor.playPayingCost(ctx.controller, picked, where, {.ignore_energy = true})) {
+            ps.hand.push_back(picked);
+            return;
+        }
+        ctx.events.logTrace("JAYCE: played a gear from hand ignoring its Energy cost");
     }
 private:
     const CardDef def_ = [] {

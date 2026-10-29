@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -15,11 +16,14 @@ class ViktorLeader : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
     // "When another non-Recruit unit you control dies, play a 1 [M] Recruit
-    // unit token into your base."
-    // NOTE: the engine fires WhenAFriendlyUnitDies generically and does not
-    // surface the dead unit's tags at resolution time, so the "non-Recruit"
-    // filter can't be enforced here. Core effect (token into base) implemented.
+    // unit token into your base." The dead unit is the trigger's subject.
     TriggerType triggerType() const override { return TriggerType::WhenAFriendlyUnitDies; }
+    bool triggerCondition(const GameState& state, GameObjectId source, PlayerId /*controller*/,
+                          TriggerType /*trigger*/, GameObjectId subject) const override {
+        if (subject == kInvalidId || subject == source) return false;
+        if (!state.objectExists(subject)) return true;
+        return !hasTag(state.getObject(subject), "Recruit");
+    }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         LocationId loc{BaseLocation{ctx.controller}};
         ctx.executor.createToken(ctx.controller, CardType::Unit, "Recruit",

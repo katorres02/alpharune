@@ -15,20 +15,51 @@ class TheDreamingTree : public BattlefieldCard {
 public:
     const CardDef& def() const override { return def_; }
     // "When a player chooses a friendly unit here with a spell for the first
-    // time each turn, they draw 1." Handler wired on WhenAFriendlyUnitChosenHere
-    // (once-per-turn-per-player via a turn-stamped card_counter -> draw 1).
-    // APPROX/INERT: no engine site currently emits "a spell chose a friendly unit
-    // here", so this handler does not yet fire in play. It is the faithful card
-    // implementation, ready for that emit; this card is also tournament-BANNED.
+    // time each turn, they draw 1." Fires on WhenAFriendlyUnitChosenHere
+    // (emitted for choices by spells AND abilities); triggerCondition keeps
+    // only the choices a spell made, and only the player's first each turn
+    // (turn-stamped card_counter, set as the draw happens).
     TriggerType triggerType() const override {
         return TriggerType::WhenAFriendlyUnitChosenHere;
+    }
+    static std::string stampKey(PlayerId p) {
+        return "__dreaming_tree_drew_p" + std::to_string(static_cast<int>(p));
+    }
+    bool triggerCondition(const GameState& state, GameObjectId source, PlayerId controller,
+                          TriggerType, GameObjectId) const override {
+        if (!state.objectExists(source)) return false;
+        const auto& me = state.getObject(source);
+        auto it = me.card_counters.find(stampKey(controller));
+        if (it != me.card_counters.end() && it->second == state.turn.turn_number + 1)
+            return false;   // this player already drew this turn
+        BattlefieldId here = kInvalidId;
+        for (const auto& bf : state.battlefields)
+            if (bf.card_object_id == source) { here = bf.id; break; }
+        auto friendlyHere = [&](GameObjectId t) {
+            if (!state.objectExists(t)) return false;
+            const auto& o = state.getObject(t);
+            auto at = o.battlefieldId();
+            return o.isUnit() && o.controller == controller && at.has_value() && *at == here;
+        };
+        // Who is choosing: the item being finalized / resolving when the choice
+        // was recorded on it (Card::pickTarget), else the item just put on the
+        // chain with its targets (ChainManager::addSpell / addAbility).
+        const auto& r = state.chain.resuming;
+        if (r.has_value() && !r->chosen_objects.empty() &&
+            friendlyHere(r->chosen_objects.back()))
+            return r->is_spell;
+        if (state.chain.items.empty()) return false;
+        const auto& top = state.chain.items.back();
+        if (!top.is_spell) return false;
+        for (auto t : top.targets) if (friendlyHere(t)) return true;
+        for (auto t : top.chosen_objects) if (friendlyHere(t)) return true;
+        return false;
     }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>&) override {
         if (!ctx.state.objectExists(ctx.source)) return;
         auto& me = ctx.state.getObject(ctx.source);
         const int stamp = ctx.state.turn.turn_number + 1;  // +1 so default 0 = never
-        const std::string key = "__dreaming_tree_drew_p" +
-            std::to_string(static_cast<int>(ctx.controller));
+        const std::string key = stampKey(ctx.controller);
         if (me.card_counters[key] == stamp) return;  // already drew this turn
         me.card_counters[key] = stamp;
         ctx.executor.drawCards(ctx.controller, 1);

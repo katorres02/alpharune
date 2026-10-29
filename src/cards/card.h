@@ -16,6 +16,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -146,6 +147,29 @@ public:
     /// How many Empowered statuses this object may hold (Kayle, Justified: 3).
     virtual int maxEmpower() const { return 1; }
 
+    // ── Radiance keywords (CR 830-832) ──
+    // Modelled as Card properties rather than `Keyword` bits so the ML keyword
+    // vector keeps its size.
+    /// [Disarm X] printed on this card (CR 831). The engine sums it with
+    /// GameObject::aura_disarm_value and temp_disarm_value and, when the unit
+    /// attacks, puts ONE "give an enemy unit here -X [M] this turn" ability on
+    /// the chain (KeywordAbility::Disarm). Cards don't implement it themselves.
+    virtual int disarmValue() const { return 0; }
+    /// [Deploy] (CR 830): a gear that is played only to a battlefield, isn't
+    /// recalled in cleanups, and is killed when an opponent holds there.
+    /// Derive from DeployGear (gear/deploy_base.h) for the play location.
+    virtual bool hasDeploy() const { return false; }
+    /// [Show Off] (CR 832): as this card is played, its controller may reveal
+    /// a matching card from hand or pick a matching friendly object on the
+    /// board. hasShowOff() opts in; showOffMatches() says which objects
+    /// qualify. The engine asks while finalizing the chain item and records
+    /// the choice in GameObject::showed_off_object (read with shownOff()).
+    virtual bool hasShowOff() const { return false; }
+    virtual bool showOffMatches(const GameState& /*state*/, PlayerId /*player*/,
+                                const GameObject& /*candidate*/) const { return false; }
+    /// The object this card showed off as it was played, or kInvalidId.
+    static GameObjectId shownOff(const GameState& state, GameObjectId self);
+
     /// Per-ability, per-instance activation gate. Consulted by the action
     /// generator after canActivateAbility. The default implements the Empower
     /// rule ("Play only if not Empowered") and the disempower_self cost
@@ -170,6 +194,19 @@ public:
         bool any_domain = false;        // power is [A]
     };
     virtual FlowCost flowCost() const { return {}; }
+
+    // ── Play from the trash ──
+    /// "You may play me from your trash for <cost>" (Undying Legion: "[Legion]
+    /// [>] You may play me from your trash for [3][R]"). A standing permission
+    /// for any card type, rebuilt every aura pass while the card is in its
+    /// owner's trash (PlayerState::TrashReplayGrant{standing}); `.valid` false
+    /// (default) when there is none or its condition isn't met now. A unit /
+    /// gear is offered at its usual play locations, paying this cost instead
+    /// of its printed one; it stays on the board as usual (not banished).
+    using TrashPlayCost = FlowCost;
+    virtual TrashPlayCost trashPlayCost(const GameState& /*state*/, PlayerId /*owner*/) const {
+        return {};
+    }
 
     /// "This can't be countered." Counter effects leave such a spell on the chain.
     virtual bool cantBeCountered() const { return false; }
@@ -219,6 +256,11 @@ public:
         if (t == TriggerType::None) return {};
         return {t};
     }
+
+    /// "When you play a card ..., you may play me from your trash" (Meticulous
+    /// Restorationist): this card's WhenYouPlayACard trigger also fires while
+    /// it is in its owner's trash. Default false.
+    virtual bool triggersInTrash() const { return false; }
 
     /// Whether this card fires on the given trigger event.
     bool firesOn(TriggerType t) const {
@@ -417,6 +459,42 @@ public:
         const std::vector<GameObjectId>& legal_a,
         const std::function<std::vector<GameObjectId>(GameObjectId picked_a)>& legal_b_fn);
 
+    /// Play-location choice for a permanent an EFFECT plays (CR 355.2: the
+    /// player playing it chooses its location — base or a battlefield they
+    /// control, plus anything its own permissions allow; [Deploy] gear only
+    /// battlefields). Asks `chooser` (default: ctx.controller; pass the owner
+    /// for "its owner plays it") among EffectExecutor::playLocationsFor and
+    /// writes the answer to `out`, ready for playIgnoringCost / playPayingCost.
+    ///
+    /// Returns:
+    ///   -1 = waiting for the agent (caller MUST return immediately; the card
+    ///        is re-entered from the top, so call this before mutating state
+    ///        or make the earlier steps idempotent)
+    ///    0 = no legal location (the card can't be played)
+    ///    1 = `out` holds the chosen location
+    ///
+    /// A single legal location is taken without asking. Answers are kept on
+    /// the resolving chain item per played object (ChainItem::
+    /// play_location_picks), independent of the resume_point ranges, so this
+    /// composes with every other helper and can be called once per object
+    /// for effects that play several. Encoded as MakeChoice chosen_value
+    /// 0 = base, i+1 = battlefield index i (stable slots in the action vocab).
+    /// Outside a chain (direct test invocation) the first legal location is used.
+    ///
+    /// Trace tags: LOC_PROMPT, LOC_PICKED, LOC_FORCED, LOC_NONE.
+    /// `extra` adds locations the effect itself allows ("you may play it
+    /// here"). A spell has no location: it returns 1 at once (`out` = base,
+    /// ignored by playIgnoringCost).
+    int pickPlayLocation(CardContext& ctx, GameObjectId card, LocationId& out,
+                         PlayerId chooser = PlayerId::None,
+                         const std::string& label = "play location",
+                         const std::vector<LocationId>& extra = {});
+    /// Same, among an explicit list ("plays it to any battlefield").
+    int pickLocationAmong(CardContext& ctx, GameObjectId card,
+                          const std::vector<LocationId>& legal, LocationId& out,
+                          PlayerId chooser = PlayerId::None,
+                          const std::string& label = "play location");
+
     // ── Targeting ──
     /// Target requirements for legal action generation.
     virtual TargetRequirements getTargetRequirements() const { return {}; }
@@ -457,6 +535,16 @@ public:
                                   GameObjectId /*subject*/) const {
         return true;
     }
+    /// Same check, also given the card table, for conditions on the printed
+    /// data of the event's object ("When you play a card with Energy cost [7]
+    /// or more"): GameObjects don't carry their printed costs. Both must hold.
+    virtual bool triggerConditionOnDefs(const GameState& /*state*/, const CardDB& /*db*/,
+                                  GameObjectId /*source*/, PlayerId /*controller*/,
+                                  TriggerType /*trigger*/, GameObjectId /*subject*/) const {
+        return true;
+    }
+    /// Printed Energy cost of `obj`'s card, or -1 (token / unknown card).
+    static int printedEnergyCost(const GameState& state, const CardDB& db, GameObjectId obj);
 
     /// Universal legality gate for play / activate intents.
     ///
@@ -551,6 +639,12 @@ public:
     virtual bool applyReplacement(CardContext& ctx,
                                   GameObjectId dying_unit) { return false; }
 
+    /// A replacement effect on the dying unit itself ("if I would die, ...
+    /// instead" — Mordekaiser, Twice Slain). Asked of the unit's own card by
+    /// both kill paths (applyReplacement is only asked of OTHER objects).
+    /// Return true if the death was replaced (the unit does not die).
+    virtual bool replaceOwnDeath(CardContext& /*ctx*/) { return false; }
+
     // ── Equipment / Equip (CR 716-725, 818) ──
     /// Whether this gear has an equip ability.
     virtual bool hasEquipAbility() const { return false; }
@@ -610,8 +704,59 @@ public:
         const char* paid_flag = "";     // card_counters key set when paid
         int discard_cards = 0;          // discard N from hand as the additional cost (Brazen Buccaneer)
         int reduce_energy = 0;          // if paid, reduce this card's energy cost by N (applied before payment)
+        int spend_xp = 0;               // "you may spend N XP as an additional cost" (Poppy, Safety Inspector)
+        // ── Object costs decided and paid as the card is played ──
+        // (CR 356.2 / 357: before the card reaches the chain, before its rune
+        // cost is paid.) "Kill a friendly unit", "return a friendly unit to
+        // its owner's hand", "spend a buff". The engine asks the player, one
+        // object at a time, which object pays (or to stop), offering only the
+        // choices that leave the play payable. Candidates come from
+        // Card::objectCostCandidates (overridable for narrower filters).
+        //   Cruel Patron: KillFriendlyUnit, mandatory.
+        //   Commander Ledros: KillFriendlyUnit, any number, [Y] less each.
+        //   Atakhan: KillFriendlyUnit, optional, reduce_by_object_cost.
+        //   Wallop / Call to Glory: SpendBuff, optional, ignore_base_cost.
+        //   Kraken Hunter: SpendBuff, any number, [O] less each.
+        //   Ekko, Ingenious: ReturnFriendlyUnit, mandatory.
+        enum class ObjectCost : uint8_t { None, KillFriendlyUnit, ReturnFriendlyUnit, SpendBuff };
+        ObjectCost object_cost = ObjectCost::None;
+        // "As an additional cost" without "may" (CR 356.2.a): the card can't
+        // be played unless min_objects can be paid; declining isn't offered.
+        bool mandatory = false;
+        int min_objects = 1;            // objects needed for the cost to count as paid
+        int max_objects = 1;            // -1 = "any number"
+        int reduce_energy_each = 0;     // "I cost [N] less for each ..."
+        int reduce_power_each = 0;      // "Reduce my cost by [Y] for each ..."
+        // "I cost [1] less for each Energy it costs and [C] less for each
+        // Power it costs" (Atakhan): the paying object's printed cost.
+        bool reduce_by_object_cost = false;
+        // "If you do, ignore this spell's cost" (CR 356.1.b: its base costs
+        // become zero; further additional costs still apply).
+        bool ignore_base_cost = false;
+        // "You may return a friendly gear to its owner's hand as an additional
+        // cost to play me" (Radiance: Spirit of the Forge, Skystrike Squadron).
+        // The player picks the gear (or declines); the returned gear's Energy
+        // cost is stored in card_counters["__oac_gear_energy"]. Combined with
+        // reduce_energy it is offered before payment (and canAfford counts the
+        // discount when a friendly gear exists).
+        bool return_friendly_gear = false;
     };
     virtual OptionalAdditionalCost optionalAdditionalCost() const { return {}; }
+    /// State-aware variant the engine consults ("If you've played a spell this
+    /// turn, you may pay ..." — Crescent Guardian). Default: the static one.
+    virtual OptionalAdditionalCost optionalAdditionalCost(const GameState& /*state*/,
+                                                          PlayerId /*player*/) const {
+        return optionalAdditionalCost();
+    }
+    /// Objects that can pay this card's OptionalAdditionalCost::object_cost
+    /// (sorted). Default: friendly units on the board (kill / return), or
+    /// friendly units with a buff (spend a buff), never `self`. Stalking Wolf
+    /// narrows it to Birds/Cats/Dogs/Poros and, when Ambushed "to its
+    /// battlefield", to the ones there. `play_location` is the chosen play
+    /// location, or nullopt when only asking whether the card is playable.
+    virtual std::vector<GameObjectId> objectCostCandidates(
+        const GameState& state, PlayerId player, GameObjectId self,
+        const std::optional<LocationId>& play_location) const;
 
     // ── Alternative play cost ──
     /// "You may play me for <alt cost> [instead of my printed cost]" when a
@@ -630,9 +775,15 @@ public:
                                             PlayerId /*player*/) const { return {}; }
 
     /// LeBlanc, Everywhere at Once: "your [Temporary] effects at my battlefield
-    /// don't trigger." When true, TriggerManager suppresses triggers fired by a
-    /// friendly [Temporary] unit sharing this card's battlefield + controller.
+    /// don't trigger." When true, the [Temporary] kill (CR 816.1, a triggered
+    /// ability) of this card's controller's permanents at its battlefield does
+    /// not happen (GameEngine::beginningStep).
     virtual bool suppressesTemporaryTriggersHere() const { return false; }
+
+    /// Blue Sentinel: "Your hold effects for holding here trigger an
+    /// additional time." Number of additional firings this card adds for its
+    /// controller's hold effects at its battlefield (TriggerManager::onScore).
+    virtual int extraHoldTriggersHere() const { return 0; }
 
     // ── Condition gates ──
     /// Whether this card's effects require Legion (cards_played >= 2).
@@ -654,6 +805,16 @@ public:
 
     /// Power-side counterpart ("I cost [2][Y] less if ..." — Keeper of Law).
     /// Reduces this card's own POWER cost, clamped at 0.
+    /// Energy cost change that depends on what the spell chose as it was
+    /// played (CR 355: targets are chosen before the cost is paid). Positive =
+    /// costs more. Undying Loyalty: "This costs [2] less if you choose a Bird,
+    /// Cat, Dog, or Poro" (its selfCostReduction offers the discount; this
+    /// takes it back when the chosen unit doesn't qualify).
+    virtual int targetCostAdjustment(const GameState& /*state*/, PlayerId /*player*/,
+                                     const std::vector<GameObjectId>& /*targets*/) const {
+        return 0;
+    }
+
     virtual int selfPowerCostReduction(const GameState& /*state*/,
                                        PlayerId /*player*/) const { return 0; }
 
@@ -671,8 +832,24 @@ public:
     virtual bool replaceHostileEffect(CardContext& /*ctx*/, GameObjectId /*self*/,
                                       HostileEffect /*kind*/) { return false; }
 
+    /// "You may pay [N] to hide a card with [Hidden] instead of [A]." (Swift
+    /// Scout). A card its controller has on the board or as legend returning
+    /// N >= 0 offers that Energy cost as an alternative to the [A] hide cost.
+    virtual int hideEnergyCostInstead() const { return -1; }
+
+    /// "Your conquer effects for conquering here trigger an additional time."
+    /// (Red Brambleback): asked of each unit the conquering player has at the
+    /// conquered battlefield; TriggerManager::onScore fires that player's
+    /// conquer triggers this many extra times.
+    virtual int extraConquerTriggersHere() const { return 0; }
+
     /// "Ignore [Deflect] while paying this spell's cost." (Decree of Insight)
     virtual bool ignoresDeflect() const { return false; }
+
+    /// CR 427.1.b.2 — "I can have any number of buffs." (Lee Sin, Ascetic).
+    /// Without it, buffing a unit that already has a buff does nothing
+    /// (CR 427.1.b.1); see EffectExecutor::buffUnit.
+    virtual bool allowsMultipleBuffs() const { return false; }
 
     // ── Reaction-to-attack play (e.g., Rengar, Pouncing) ──
     /// Whether this card can be played as a [Reaction] to a battlefield
@@ -712,6 +889,14 @@ public:
     virtual bool grantsAccelerateTo(const GameState& /*state*/, GameObjectId /*self*/,
                                     const GameObject& /*played*/,
                                     bool /*played_from_hand*/) const {
+        return false;
+    }
+
+    /// A continuous effect that makes a unit its controller plays enter ready
+    /// ("Other friendly units enter ready"). Asked of each other card the
+    /// unit's controller has on the board (and their legend) as it resolves.
+    virtual bool grantsEnterReadyTo(const GameState& /*state*/, GameObjectId /*self*/,
+                                    const GameObject& /*played*/) const {
         return false;
     }
 

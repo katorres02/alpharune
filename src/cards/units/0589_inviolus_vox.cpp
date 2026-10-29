@@ -14,13 +14,19 @@ namespace {
 class InviolusVox : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty())
-            ctx.executor.giveTemporaryMight(targets[0], 8);
-    }
+    // "When I conquer, give a friendly unit +8 [M] this turn." The unit is
+    // chosen as the trigger is finalized (CR 383.3).
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     TriggerType triggerType() const override { return TriggerType::WhenIConquer; }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_friendly = true};
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        std::vector<GameObjectId> legal;
+        for (auto& [id, obj] : ctx.state.objects)
+            if (obj.isUnit() && obj.location.has_value() && obj.controller == ctx.controller)
+                legal.push_back(id);
+        GameObjectId picked = pickTarget(ctx, "Inviolus Vox: +8 [M] to a friendly unit", legal);
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (picked == kInvalidId || !ctx.state.objectExists(picked)) return;
+        ctx.executor.giveTemporaryMight(picked, 8);
     }
 private:
     const CardDef def_ = [] {

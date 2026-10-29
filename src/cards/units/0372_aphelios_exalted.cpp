@@ -12,7 +12,7 @@ namespace riftbound {
 namespace {
 
 // "When you attach an Equipment to me, choose one that hasn't been chosen this
-//  turn — Ready 2 runes. / Channel 1 rune exhausted. / Buff a friendly unit."
+//  turn — Ready 2 runes. / Channel 1 rune exhausted. / [Buff] a friendly unit." (RAD-179 reprint text)
 // Wired via WhenEquipmentAttachedToMe: attachGearToUnit/attachFree already emit
 // ObjectStateChangedEvent{"equipped"}; TriggerManager now dispatches that as
 // WhenEquipmentAttachedToMe on the equipped unit. The modal body tracks which
@@ -104,7 +104,7 @@ private:
         d.might = 4;
         d.rarity = Rarity::Rare;
         d.ability_text = R"RB(When you attach an Equipment to me, choose one that hasn't been chosen this turn —
-Ready 2 runes.Channel 1 rune exhausted.Buff a friendly unit.)RB";
+Ready 2 runes.Channel 1 rune exhausted.[Buff] a friendly unit.)RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/df9ccbba2501059e5781a44434745a1f0e33ecae-744x1039.png?accountingTag=RB)RB";
         return d;
     }();

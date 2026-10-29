@@ -14,12 +14,30 @@ namespace {
 class Scorchclaw : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (ctx.state.player(ctx.controller).xp < 3) return;
+    // [Hunt 2]: when I conquer or hold, gain 2 XP (no level gate).
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         ctx.state.player(ctx.controller).xp += 2;
-        ctx.executor.readyObject(ctx.source);
+        ctx.events.logTrace("SCORCHCLAW: [Hunt 2] +2 XP");
     }
     TriggerType triggerType() const override { return TriggerType::WhenIConquerOrHold; }
+    // [Level 3][>] I have +1 [M] and enter ready.
+    void applyPassiveAura(GameState& state, PlayerId controller) const override {
+        if (state.player(controller).xp < 3) return;
+        for (auto& [sid, self] : state.objects) {
+            if (self.card_def_id != cardDefId() || self.controller != controller) continue;
+            if (!self.isUnit() || !self.location.has_value()) continue;
+            bool already = false;
+            for (const auto& ae : self.aura_effects) if (ae.source == sid) already = true;
+            if (already) continue;
+            GameObject::AuraEffect ae;
+            ae.source = sid;
+            ae.might_bonus = 1;
+            self.aura_effects.push_back(ae);
+        }
+    }
+    bool entersReadyOnPlay(const GameState& state, PlayerId controller) const override {
+        return state.player(controller).xp >= 3;
+    }
     bool requiresLevel() const override { return true; }
     int levelThreshold() const override { return 3; }
 private:

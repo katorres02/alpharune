@@ -15,11 +15,18 @@ class LilliaProtectorOfDreams : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
 
-    // "Your token units have [Tank]." (Granted via aura.)
-    // NOTE: the companion clause "When you play a token unit, give me +1 [M]
-    // this turn" is an ENGINE GAP — tokens enter via EffectExecutor::createToken
-    // which emits only EnteredBoardEvent, not CardPlayedEvent, so there is no
-    // "play a token unit" trigger to subscribe to. Left unimplemented.
+    // "When you play a token unit, give me +1 [M] this turn."
+    // (TriggerManager::onTokenCreated -> WhenYouPlayATokenUnit.)
+    TriggerType triggerType() const override { return TriggerType::WhenYouPlayATokenUnit; }
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        if (!ctx.state.objectExists(ctx.source)) return;
+        if (!ctx.state.getObject(ctx.source).location.has_value()) return;
+        ctx.executor.giveTemporaryMight(ctx.source, 1);
+        ctx.events.logTrace("LILLIA: token unit played -> +1 [M] this turn");
+    }
+
+    // "Your token units have [Tank]." (Granted via aura; Lillia herself has
+    // no [Tank].)
     void applyPassiveAura(GameState& state, PlayerId controller) const override {
         for (auto& [id, obj] : state.objects) {
             if (!obj.isUnit() || obj.controller != controller) continue;
@@ -47,7 +54,6 @@ private:
         d.energy_cost = 5;
         d.might = 4;
         d.rarity = Rarity::Epic;
-        d.keywords.set(Keyword::Tank);
         d.ability_text = R"RB(When you play a token unit, give me +1 [M] this turn.
 Your token units have [Tank]. (They must be assigned combat damage first.))RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/daa5fe15e0a1c14c8dbb8f858d8a6d444ea6096e-744x1039.png)RB";

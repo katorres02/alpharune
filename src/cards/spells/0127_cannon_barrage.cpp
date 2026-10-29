@@ -22,6 +22,13 @@ public:
                 if (!obj.location.has_value()) continue;
                 if (!obj.isUnit()) continue;
                 if (obj.controller == ctx.controller) continue;
+                // "in combat": at a battlefield where a combat is happening.
+                auto bf = obj.battlefieldId();
+                if (!bf) continue;
+                bool in_combat = obj.combat_designation != CombatDesignation::None;
+                for (const auto& b : ctx.state.battlefields)
+                    if (b.id == *bf && b.combat_in_progress) in_combat = true;
+                if (!in_combat) continue;
                 to_damage.push_back(id);
             }
             for (auto id : to_damage)

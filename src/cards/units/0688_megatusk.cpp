@@ -15,21 +15,20 @@ namespace {
 class Megatusk : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
+    // "Spend 3 XP: Give your units here [Ganking] this turn." Spending the XP
+    // is the activation cost (paid by the engine as the ability is played).
     bool hasActivatedAbility() const override { return true; }
-    ActivationCost getActivationCost() const override { return {}; }
+    ActivationCost getActivationCost() const override { return {.xp_cost = 3}; }
     void onActivate(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         if (!ctx.state.objectExists(ctx.source)) return;
-        auto& ps = ctx.state.player(ctx.controller);
-        if (ps.xp < 3) return;
-        ps.xp -= 3;
-        auto bf_id = ctx.state.getObject(ctx.source).battlefieldId();
-        if (!bf_id) return;
+        auto here = ctx.state.getObject(ctx.source).location;
+        if (!here) return;
         for (auto& [id, obj] : ctx.state.objects) {
             if (!obj.isUnit() || obj.controller != ctx.controller) continue;
-            if (obj.battlefieldId() != bf_id) continue;
+            if (!obj.location.has_value() || *obj.location != *here) continue;
             ctx.executor.giveTemporaryKeyword(id, Keyword::Ganking, 0);
         }
-        ctx.events.logTrace("MEGATUSK: spent 3 XP; friendly units here get Ganking");
+        ctx.events.logTrace("MEGATUSK: spent 3 XP; friendly units here get Ganking this turn");
     }
 private:
     const CardDef def_ = [] {
@@ -47,7 +46,6 @@ private:
         d.tags = {R"RB(Bilgewater)RB"};
         d.energy_cost = 6;
         d.might = 6;
-        d.keywords.set(Keyword::Ganking);
         d.ability_text = R"RB(Spend 3 XP: Give your units here [Ganking] this turn. (We can move from battlefield to battlefield.))RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/d073247bc2437443d8a9901f089632a15d11e7a0-744x1039.png)RB";
         return d;

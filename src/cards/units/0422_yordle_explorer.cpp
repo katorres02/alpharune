@@ -20,16 +20,15 @@ public:
                 TriggerType::WhenYouPlayASpell,
                 TriggerType::WhenYouPlayAGear};
     }
+    // The played card is the trigger's subject (TriggerManager records it as
+    // the chain item's triggering_subject); its printed Power cost decides.
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
-        // Find the most-recently played card on the chain (skip the trigger
-        // ability items pushed on top of it).
-        CardDefId played = kInvalidId;
-        for (auto it = ctx.state.chain.items.rbegin(); it != ctx.state.chain.items.rend(); ++it) {
-            if (it->is_spell || it->is_permanent) { played = it->card_def_id; break; }
-        }
-        if (played == kInvalidId) return;
-        const auto& def = ctx.executor.cardDB().get(played);
-        if (def.power_cost < 2) return;
+        if (!ctx.state.chain.resuming.has_value()) return;
+        const GameObjectId played = ctx.state.chain.resuming->triggering_subject;
+        if (played == kInvalidId || !ctx.state.objectExists(played)) return;
+        const auto def_id = ctx.state.getObject(played).card_def_id;
+        if (def_id == kInvalidId) return;   // tokens have no Power cost
+        if (ctx.executor.cardDB().get(def_id).power_cost < 2) return;
         ctx.executor.drawCards(ctx.controller, 1);
         ctx.events.logTrace("YORDLE EXPLORER: played [A][A]+ card -> draw 1");
     }

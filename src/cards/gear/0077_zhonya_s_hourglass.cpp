@@ -20,6 +20,8 @@ public:
         if (!ctx.state.objectExists(dying_unit)) return false;
         const auto& self = ctx.state.getObject(ctx.source);
         const auto& victim = ctx.state.getObject(dying_unit);
+        // A facedown ([Hidden]) card has no abilities until it is played.
+        if (self.is_hidden || self.zone == ZoneType::FacedownZone) return false;
         // Only intercept a FRIENDLY unit's death.
         if (!victim.isUnit()) return false;
         if (victim.controller != self.controller) return false;

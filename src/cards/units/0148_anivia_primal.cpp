@@ -15,14 +15,17 @@ class AniviaPrimal : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        // AoE: deal 3 to all matching
+        // "deal 3 to all enemy units here" — here = my battlefield.
+        if (!ctx.state.objectExists(ctx.source)) return;
+        const auto here = ctx.state.getObject(ctx.source).battlefieldId();
+        if (!here) return;
         {
             std::vector<GameObjectId> to_damage;
             for (auto& [id, obj] : ctx.state.objects) {
                 if (!obj.location.has_value()) continue;
                 if (!obj.isUnit()) continue;
                 if (obj.controller == ctx.controller) continue;
-                if (!obj.isAtBattlefield()) continue;
+                if (obj.battlefieldId() != here) continue;
                 to_damage.push_back(id);
             }
             for (auto id : to_damage)

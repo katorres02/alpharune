@@ -17,6 +17,19 @@ public:
     const CardDef& def() const override { return def_; }
 
     // [Hidden] is engine-handled.
+    // "I have +1 [M] for each other unit you control here with my name."
+    void applyPassiveAura(GameState& state, PlayerId controller) const override {
+        forEachSelfOnce(*this, state, controller, [&](GameObjectId sid, GameObject& self) {
+            if (!self.location.has_value() || self.is_hidden) return;
+            int n = 0;
+            for (const auto& [id, o] : state.objects) {
+                if (id == sid || !o.isUnit() || o.controller != controller) continue;
+                if (o.name != self.name || !o.location.has_value() || o.is_hidden) continue;
+                if (*o.location == *self.location) ++n;
+            }
+            if (n > 0) auraMight(self, sid, n);
+        });
+    }
     // "Your deck can have any number of cards named Spiderling." is a
     // deck-construction rule: def_ sets CardDef::unlimited_copies, which the
     // deck validator's copy-count check honours. No in-game behaviour.

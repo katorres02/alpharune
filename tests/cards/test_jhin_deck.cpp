@@ -201,57 +201,10 @@ TEST_F(JhinDeckTest, ForgottenLibrary_SpellCostBelow4_NoPredict) {
     EXPECT_EQ(deckSize(P1), 1);
 }
 
-// ─── Curtain Call (modal) ──────────────────────────────────────────────────
-
-TEST_F(JhinDeckTest, CurtainCall_FirstInvocation_ChoosesDrawMode) {
-    // First invocation, no targets supplied → must pick the Draw mode
-    // (the only mode that doesn't need a target). Player draws 1.
-    auto src = addToHand(P1, 743);
-    addToDeck(P1, kInvalidId);
-    int hand_before = handSize(P1);
-
-    EffectExecutor exec(state, events, card_db);
-    invokeOnResolve(src, 743, P1, {}, exec);
-    EXPECT_EQ(handSize(P1), hand_before + 1);
-    // Mode 0 (Draw) recorded as used.
-    int used_mask = state.getObject(src).card_counters["curtain_call_used_mask"];
-    EXPECT_TRUE(used_mask & 0x1);
-}
-
-TEST_F(JhinDeckTest, CurtainCall_SecondInvocation_SkipsAlreadyUsedDrawMode) {
-    // Repeat: after Draw consumed mode 0, second invocation with a
-    // BF-target must select mode 1 (Deal 2 to BF unit). Confirm damage
-    // applied and mode 1 bit set in mask.
-    auto src = addToHand(P1, 743);
-    auto victim = addUnit(P2, kInvalidId, 5, /*at_bf=*/0);
-    addToDeck(P1, kInvalidId);
-
-    EffectExecutor exec(state, events, card_db);
-    // First call (no targets) consumes Draw.
-    invokeOnResolve(src, 743, P1, {}, exec);
-    int dmg_before = state.getObject(victim).damage_marked;
-
-    // Second call with the BF target.
-    invokeOnResolve(src, 743, P1, {victim}, exec);
-    EXPECT_EQ(state.getObject(victim).damage_marked, dmg_before + 2);
-    int used_mask = state.getObject(src).card_counters["curtain_call_used_mask"];
-    EXPECT_TRUE(used_mask & 0x1);  // Draw still flagged
-    EXPECT_TRUE(used_mask & 0x2);  // Deal-2-BF flagged
-}
-
-TEST_F(JhinDeckTest, CurtainCall_NoLegalModeRemaining_NoOp) {
-    // Exhaust all 4 modes (force used_mask=0xF), then ensure further
-    // invocations don't crash and don't damage anything.
-    auto src = addToHand(P1, 743);
-    state.getObject(src).card_counters["curtain_call_used_mask"] = 0xF;
-    auto victim = addUnit(P2, kInvalidId, 5, /*at_bf=*/0);
-    int dmg = state.getObject(victim).damage_marked;
-
-    EffectExecutor exec(state, events, card_db);
-    invokeOnResolve(src, 743, P1, {victim}, exec);
-
-    EXPECT_EQ(state.getObject(victim).damage_marked, dmg);
-}
+// Curtain Call's tests moved to tests/cards/test_audit_2026_10_cards5.cpp
+// (2026-10-28 audit): it now pays its own three [Repeat] costs and chooses
+// every mode and target as it is played, so the old "re-invoke onResolve per
+// repeat with a used-mode mask" tests no longer describe it.
 
 // ─── Damage spells ─────────────────────────────────────────────────────────
 
@@ -1002,49 +955,6 @@ TEST_F(JhinDeckTest, ConsultThePast_DoesNotTouchTrash) {
     // Both trash spells still there — Consult never touches them.
     EXPECT_TRUE(inTrash(P1, trash_spell_1));
     EXPECT_TRUE(inTrash(P1, trash_spell_2));
-}
-
-// ─── Curtain Call — mode count tied to repeats ─────────────────────────────
-
-TEST_F(JhinDeckTest, CurtainCall_NoRepeat_AtMostOneMode) {
-    auto src = addToHand(P1, 743);
-    addToDeck(P1, kInvalidId);
-    EffectExecutor exec(state, events, card_db);
-    invokeOnResolve(src, 743, P1, {}, exec);  // 1 invocation
-    // Only 1 mode used (mask has 1 bit set).
-    int mask = state.getObject(src).card_counters["curtain_call_used_mask"];
-    int set_bits = 0;
-    for (int b = 0; b < 4; ++b) if (mask & (1 << b)) set_bits++;
-    EXPECT_EQ(set_bits, 1);
-}
-
-TEST_F(JhinDeckTest, CurtainCall_OneRepeat_TwoModes) {
-    auto src = addToHand(P1, 743);
-    auto victim = addUnit(P2, kInvalidId, 5, /*at_bf=*/0);
-    addToDeck(P1, kInvalidId);
-    EffectExecutor exec(state, events, card_db);
-    invokeOnResolve(src, 743, P1, {}, exec);          // base: Draw
-    invokeOnResolve(src, 743, P1, {victim}, exec);    // Repeat: Damage-BF
-    int mask = state.getObject(src).card_counters["curtain_call_used_mask"];
-    int set_bits = 0;
-    for (int b = 0; b < 4; ++b) if (mask & (1 << b)) set_bits++;
-    EXPECT_EQ(set_bits, 2);
-}
-
-TEST_F(JhinDeckTest, CurtainCall_RepeatSkipsAlreadyChosenModes) {
-    // After mode 0 (Draw) used, a second invocation must skip mode 0 and
-    // pick the next legal mode. Verify mode 0 doesn't fire twice (no
-    // double-draw): hand growth = 1 from the first call, not 2.
-    auto src = addToHand(P1, 743);
-    auto victim = addUnit(P2, kInvalidId, 5, /*at_bf=*/0);
-    addToDeck(P1, kInvalidId);
-    addToDeck(P1, kInvalidId);
-    int hand_before = handSize(P1);
-    EffectExecutor exec(state, events, card_db);
-    invokeOnResolve(src, 743, P1, {}, exec);          // mode 0: Draw
-    invokeOnResolve(src, 743, P1, {victim}, exec);    // mode 1: Damage BF
-    // Hand grew by exactly 1 (the second invocation didn't re-Draw).
-    EXPECT_EQ(handSize(P1), hand_before + 1);
 }
 
 // ─── Deadly Flourish: token only if unit dies (CR-correct delayed trigger) ──

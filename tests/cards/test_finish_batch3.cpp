@@ -155,10 +155,10 @@ TEST_F(FinishBatch3, LeBlancHasBacklineAndTemporaryKeywords) {
     ASSERT_NE(c, nullptr);
     const auto& d = c->def();
     EXPECT_EQ(d.super_type, SuperType::Champion);
-    // Clause 1 ([Backline]) is engine-handled via the keyword; verify it (and
-    // the [Temporary] supertype the suppression clause references) are set.
+    // Clause 1 ([Backline]) is engine-handled via the keyword. LeBlanc has no
+    // printed [Temporary] (2026-10 audit): her text only references it.
     EXPECT_TRUE(d.keywords.has(Keyword::Backline));
-    EXPECT_TRUE(d.keywords.has(Keyword::Temporary));
+    EXPECT_FALSE(d.keywords.has(Keyword::Temporary));
     // The suppression clause (clause 2) is escalated -> no trigger declared.
     EXPECT_TRUE(c->triggerTypes().empty());
 }

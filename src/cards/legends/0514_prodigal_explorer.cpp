@@ -14,13 +14,19 @@ namespace {
 class ProdigalExplorer : public LegendCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onActivate(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
+    // "[E]: [Reaction] — Draw 1. Use only if you've chosen enemy units and/or
+    // gear twice this turn with spells or unit abilities."
+    // (PlayerState::enemy_choices_this_turn, one count per object chosen.)
+    void onActivate(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         ctx.executor.drawCards(ctx.controller, 1);
     }
     TriggerType triggerType() const override { return TriggerType::Activated; }
     bool hasActivatedAbility() const override { return true; }
     ActivationCost getActivationCost() const override { return {.exhaust = true}; }
-    bool isActionAbility() const override { return true; }
+    bool isReactionAbility() const override { return true; }
+    bool canActivateAbility(const GameState& state, PlayerId controller) const override {
+        return state.player(controller).enemy_choices_this_turn >= 2;
+    }
 private:
     const CardDef def_ = [] {
         CardDef d;

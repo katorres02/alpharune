@@ -43,15 +43,20 @@ public:
         int /*ability_index*/) const override {
         return {};
     }
-    // NOTE: [Level 6] gates ONLY ability 1. The engine does not consult
-    // requiresLevel()/levelThreshold() for activated-ability legality, so the
-    // 6+ XP gate is enforced inline in onActivate for ability 1.
+    // [Level 6] gates ONLY ability 1: "Use this ability only while you have
+    // 6+ XP" — it is not offered (nor its [E] paid) below 6 XP.
+    bool canActivateAbilityAt(const GameState& state, PlayerId controller,
+                              GameObjectId source, int ability_index) const override {
+        if (!Card::canActivateAbilityAt(state, controller, source, ability_index)) return false;
+        if (ability_index == 1) return state.player(controller).xp >= 6;
+        return true;
+    }
     void onActivate(CardContext& ctx, int ability_index,
                     const std::vector<GameObjectId>& /*targets*/) override {
         if (ability_index == 1) {
-            // [Level 6] gate: only with 6+ XP.
-            if (ctx.state.player(ctx.controller).xp < 6) return;
-            ctx.executor.addFloatingUniversalPower(ctx.controller, 2);  // [1][A]
+            // [Add] [1][A]: one Energy and one power of any domain.
+            ctx.executor.addFloatingEnergy(ctx.controller, 1);
+            ctx.executor.addFloatingUniversalPower(ctx.controller, 1);
             ctx.events.logTrace("HONEYFRUIT: [Add] [1][A]");
         } else {
             ctx.executor.addFloatingUniversalPower(ctx.controller, 1);  // [A]

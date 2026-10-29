@@ -1,4 +1,5 @@
 #include "cards/card.h"
+#include "cards/card_helpers.h"
 #include "cards/card_registry.h"
 #include "core/game_state.h"
 #include "core/events.h"
@@ -14,14 +15,38 @@ namespace {
 class AspiringEngineer : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty())
-            ctx.executor.bounceToHand(targets[0]);
+    // "When you play me, return a gear from your trash to your hand." The
+    // player picks the gear as the ability resolves (resume_point 20).
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        auto& ps = ctx.state.player(ctx.controller);
+        std::vector<GameObjectId> gears;
+        for (auto id : ps.trash)
+            if (ctx.state.objectExists(id) && ctx.state.getObject(id).isGear()) gears.push_back(id);
+        if (gears.empty()) return;
+        GameObjectId picked = gears.front();
+        if (ctx.state.chain.resuming.has_value()) {
+            auto& ri = *ctx.state.chain.resuming;
+            if (ri.resume_point < 20) {
+                std::vector<Intent> opts;
+                for (auto id : gears) opts.push_back(objChoice(ctx.controller, id));
+                ctx.executor.requestChoice(ctx.controller, std::move(opts),
+                                           "Aspiring Engineer: return a gear from trash to hand");
+                ri.resume_point = 20;
+                return;
+            }
+            if (ri.resume_point != 20) return;
+            ri.resume_point = 21;
+            auto t = takenObject(ctx);
+            if (std::find(gears.begin(), gears.end(), t) != gears.end()) picked = t;
+        }
+        ps.trash.erase(std::find(ps.trash.begin(), ps.trash.end(), picked));
+        auto& g = ctx.state.getObject(picked);
+        g.zone = ZoneType::Hand;
+        g.location = std::nullopt;
+        ps.hand.push_back(picked);
+        ctx.events.logTrace("ASPIRING ENGINEER: returned " + g.name + " from trash to hand");
     }
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_gear = true, .must_be_friendly = true};
-    }
 private:
     const CardDef def_ = [] {
         CardDef d;

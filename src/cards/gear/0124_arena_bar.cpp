@@ -1,5 +1,6 @@
 #include "cards/card.h"
 #include "cards/card_registry.h"
+#include "cards/card_helpers.h"
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
@@ -14,13 +15,23 @@ namespace {
 class ArenaBar : public GearCard {
 public:
     const CardDef& def() const override { return def_; }
+    // "[E]: Buff an exhausted friendly unit."
     void onActivate(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty())
-            ctx.executor.buffUnit(targets[0]);
+        if (targets.empty() || !ctx.state.objectExists(targets[0])) return;
+        if (!ctx.state.getObject(targets[0]).is_exhausted) return;  // no longer legal
+        ctx.executor.buffUnit(targets[0]);
     }
     TriggerType triggerType() const override { return TriggerType::Activated; }
     TargetRequirements getTargetRequirements() const override {
         return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_friendly = true};
+    }
+    std::vector<GameObjectId> enumerateLegalTargets(const GameState& state,
+                                                    PlayerId controller) const override {
+        auto out = Card::enumerateLegalTargets(state, controller);
+        out.erase(std::remove_if(out.begin(), out.end(), [&](GameObjectId id) {
+            return !state.getObject(id).is_exhausted;
+        }), out.end());
+        return out;
     }
     bool hasActivatedAbility() const override { return true; }
     ActivationCost getActivationCost() const override { return {.exhaust = true}; }

@@ -14,18 +14,34 @@ namespace {
 class CrescentStrike : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
+    // "Choose a battlefield and an enemy unit there. Deal 4 to that unit and
+    //  1 to each other enemy unit there." The chosen unit fixes the
+    //  battlefield. Damage is dealt to every unit first, then lethally
+    //  damaged ones are killed (no iterator invalidation).
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        // Choose target — targeting handled by getTargetRequirements()
-        if (!targets.empty()) {
-            ctx.executor.dealDamage(targets[0], 4, ctx.source);
-            if (ctx.state.objectExists(targets[0]) &&
-                ctx.state.getObject(targets[0]).hasLethalDamage()) {
-                ctx.executor.killObject(targets[0]);
-            }
+        if (targets.empty() || !ctx.state.objectExists(targets[0])) return;
+        const GameObjectId main = targets[0];
+        auto bf = ctx.state.getObject(main).battlefieldId();
+        if (!bf) return;
+        std::vector<GameObjectId> others;
+        for (auto& [id, obj] : ctx.state.objects) {
+            if (id == main || !obj.isUnit() || obj.controller == ctx.controller) continue;
+            auto obf = obj.battlefieldId();
+            if (obf && *obf == *bf) others.push_back(id);
         }
+        ctx.executor.dealDamage(main, 4, ctx.source);
+        for (auto id : others)
+            if (ctx.state.objectExists(id)) ctx.executor.dealDamage(id, 1, ctx.source);
+        std::vector<GameObjectId> all{main};
+        all.insert(all.end(), others.begin(), others.end());
+        for (auto id : all)
+            if (ctx.state.objectExists(id) && ctx.state.getObject(id).location.has_value() &&
+                ctx.state.getObject(id).hasLethalDamage())
+                ctx.executor.killObject(id);
     }
     TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_enemy = true};
+        return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_enemy = true,
+                                  .must_be_at_battlefield = true};
     }
 private:
     const CardDef def_ = [] {

@@ -18,38 +18,45 @@ class AltarOfMemories : public GearCard {
 public:
     const CardDef& def() const override { return def_; }
     TriggerType triggerType() const override { return TriggerType::WhenAFriendlyUnitDies; }
+    // "you may exhaust me to draw 1" is a [cost] to [effect] choice made when
+    // the trigger is finalized (CR 383.3); the exhaust is paid then.
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         if (!ctx.state.objectExists(ctx.source)) return;
-        // "you may exhaust me" — gate on Altar being ready (and on board).
         auto still_legal = [&]() {
             return ctx.state.objectExists(ctx.source) &&
+                   ctx.state.getObject(ctx.source).location.has_value() &&
                    !ctx.state.getObject(ctx.source).is_exhausted;
         };
         int conf = confirmOptional(ctx, "Altar of Memories: exhaust me to draw 1?", still_legal);
         if (conf == -1) return;  // waiting on agent
         if (conf == 0) return;   // declined / not legal
-
-        auto& self = ctx.state.getObject(ctx.source);
-        // Exhaust me + draw 1 (do this once, guarded by a counter so the later
-        // resume passes for hand-card / mode picks don't repeat it).
-        if (!self.card_counters.count("__altar_drew")) {
+        // The exhaust and the draw happen once: the later choices (pickMode =
+        // resume_points 3..5, pickTarget = 6..8) re-enter this callback with a
+        // higher resume_point.
+        auto& ri = ctx.state.chain.resuming;
+        const bool first_pass = !ri.has_value() || ri->resume_point < 3;
+        if (first_pass && costDueNow(ctx)) {
+            if (!still_legal()) return;
             ctx.executor.exhaustObject(ctx.source);
+        }
+        if (finalizingChoices(ctx)) return;   // choices and costs end here
+
+        if (first_pass) {
             ctx.executor.drawCards(ctx.controller, 1);
-            self.card_counters["__altar_drew"] = 1;
             ctx.events.logTrace("ALTAR OF MEMORIES: exhausted -> draw 1");
         }
         auto& ps = ctx.state.player(ctx.controller);
         if (ps.hand.empty()) return;
-        // Choose a hand card to put on top or bottom of the Main Deck.
+        int mode = pickMode(ctx, "Altar: top or bottom of deck?", 2, {"top", "bottom"});
+        if (mode < 0) return;   // suspend / no legal mode
         std::vector<GameObjectId> hand(ps.hand.begin(), ps.hand.end());
         GameObjectId card = pickTarget(ctx, "Altar: put which hand card onto deck?", hand);
         if (card == kInvalidId) return;  // suspend or empty
         if (!ctx.state.objectExists(card)) return;
-        int mode = pickMode(ctx, "Altar: top or bottom of deck?", 2, {"top", "bottom"});
-        if (mode == -1) return;   // suspend
-        if (mode == -2) return;   // no legal mode
         auto it = std::find(ps.hand.begin(), ps.hand.end(), card);
-        if (it != ps.hand.end()) ps.hand.erase(it);
+        if (it == ps.hand.end()) return;
+        ps.hand.erase(it);
         auto& c = ctx.state.getObject(card);
         c.zone = ZoneType::MainDeck;
         c.location = std::nullopt;

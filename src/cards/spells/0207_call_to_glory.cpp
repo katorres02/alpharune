@@ -20,8 +20,16 @@ public:
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
         if (targets.empty() || !ctx.state.objectExists(targets[0])) return;
         ctx.executor.giveTemporaryMight(targets[0], 3);
-        ctx.events.logTrace("CALL TO GLORY: +3 [M] this turn "
-                            "(buff-spend-for-free opt unmodeled)");
+        ctx.events.logTrace("CALL TO GLORY: +3 [M] this turn");
+    }
+    // "As you play this, you may spend a buff as an additional cost. If you do,
+    // ignore this spell's cost." (Same optional object cost as Wallop.)
+    OptionalAdditionalCost optionalAdditionalCost() const override {
+        OptionalAdditionalCost c;
+        c.valid = true;
+        c.object_cost = OptionalAdditionalCost::ObjectCost::SpendBuff;
+        c.ignore_base_cost = true;
+        return c;
     }
 private:
     const CardDef def_ = [] {

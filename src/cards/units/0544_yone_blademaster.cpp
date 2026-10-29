@@ -9,10 +9,13 @@
 #include <vector>
 #include "cards/card_helpers.h"
 
+#include "cards/card_helpers.h"
+#include "cards/units/weaponmaster_base.h"
+
 namespace riftbound {
 namespace {
 
-class YoneBlademaster : public UnitCard {
+class YoneBlademaster : public WeaponmasterUnit {
 public:
     const CardDef& def() const override { return def_; }
 
@@ -20,87 +23,43 @@ public:
         return {TriggerType::WhenYouPlayMe, TriggerType::WhenIConquer};
     }
 
+    // "When I conquer a battlefield that was uncontrolled" — an intervening
+    // condition, checked as the conquer happens.
+    bool triggerCondition(const GameState& state, GameObjectId source, PlayerId /*controller*/,
+                          TriggerType trigger, GameObjectId /*subject*/) const override {
+        if (trigger != TriggerType::WhenIConquer) return true;
+        if (!state.objectExists(source)) return false;
+        const auto bf = state.getObject(source).battlefieldId();
+        if (!bf) return false;
+        for (const auto& b : state.battlefields)
+            if (b.id == *bf) return b.conquered_from_uncontrolled;
+        return false;
+    }
+
     void onTrigger(CardContext& ctx,
                    const std::vector<GameObjectId>& /*targets*/) override {
-        if (ctx.firing_trigger == TriggerType::WhenYouPlayMe) {
-            doWeaponmasterEquip(ctx);
-        } else if (ctx.firing_trigger == TriggerType::WhenIConquer) {
-            doConquerDamage(ctx);
-        }
-    }
-
-private:
-    // Inlined Weaponmaster "When you play me, you may [Equip] one of your
-    // Equipment to me for [A] less, even if already attached." Mirrors
-    // weaponmaster_cards.cpp::WeaponmasterUnit::onTrigger (free attach).
-    void doWeaponmasterEquip(CardContext& ctx) {
-        GameObjectId best_gear = kInvalidId;
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (!obj.isGear() || obj.controller != ctx.controller) continue;
-            if (!obj.location.has_value()) continue;
-            bool is_equipment = false;
-            for (auto& tag : obj.tags) {
-                if (tag == "Equipment") { is_equipment = true; break; }
-            }
-            if (!is_equipment) continue;
-            best_gear = id;
-            break;
-        }
-        if (best_gear == kInvalidId) return;
-        if (!ctx.state.objectExists(ctx.source)) return;
-
-        auto& gear = ctx.state.getObject(best_gear);
-        if (gear.attached_to.has_value()) {
-            auto old_unit = *gear.attached_to;
-            if (ctx.state.objectExists(old_unit)) {
-                auto& old = ctx.state.getObject(old_unit);
-                old.attachment_might_bonus -= gear.might_bonus;
-                auto it = std::find(old.attachments.begin(),
-                                    old.attachments.end(), best_gear);
-                if (it != old.attachments.end()) old.attachments.erase(it);
-                old.recomputeMight();
-            }
-            gear.attached_to = std::nullopt;
-        }
-        auto& self = ctx.state.getObject(ctx.source);
-        gear.attached_to = ctx.source;
-        self.attachments.push_back(best_gear);
-        gear.location = self.location;
-        gear.zone = self.zone;
-        self.attachment_might_bonus += gear.might_bonus;
-        self.recomputeMight();
-        ctx.events.logTrace("WEAPONMASTER(Yone): equips " + gear.name +
-                             " (free, [A] less)");
-        ctx.events.emit(ObjectStateChangedEvent{best_gear, "attached"});
-        ctx.events.emit(ObjectStateChangedEvent{ctx.source, "equipped"});
-    }
-
-    void doConquerDamage(CardContext& ctx) {
-        // ENGINE GAP: printed condition is "When I conquer a battlefield THAT
-        // WAS UNCONTROLLED". By the time WhenIConquer resolves, the BF is
-        // already controlled by us and the prior-controller is not surfaced to
-        // the trigger (no captured "was uncontrolled" flag), so we cannot gate
-        // on it. Fires on any conquer (over-fires when conquering a BF that
-        // was enemy-controlled). Low severity; documented approximation.
-        if (!ctx.state.objectExists(ctx.source)) return;
-        const auto& self = ctx.state.getObject(ctx.source);
-        int my_might = self.current_might;
-        if (my_might <= 0) return;
-        PlayerId opp = opponent(ctx.controller);
-        // Target an enemy unit in a base.
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (!obj.isUnit() || obj.controller != opp) continue;
-            if (!obj.isAtBase()) continue;
-            ctx.executor.dealDamage(id, my_might, ctx.source);
-            if (ctx.state.objectExists(id) &&
-                ctx.state.getObject(id).hasLethalDamage()) {
-                ctx.executor.killObject(id);
-            }
-            ctx.events.logTrace("YONE: conquer -> deal " +
-                                 std::to_string(my_might) +
-                                 " to enemy unit in base");
+        if (ctx.firing_trigger != TriggerType::WhenIConquer) {
+            weaponmaster(ctx);   // [Weaponmaster] (WeaponmasterUnit)
             return;
         }
+        // "deal damage equal to my Might to an enemy unit in a base." The
+        // unit is chosen at finalization (CR 383.3); my Might is read as the
+        // ability resolves.
+        const PlayerId me = ctx.controller;
+        GameObjectId tgt = pickTarget(ctx, "Yone, Blademaster: an enemy unit in a base",
+            chooseableUnits(ctx.state, me, [me](const GameObject& o) {
+                return o.controller != me && o.isAtBase();
+            }));
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (tgt == kInvalidId || !ctx.state.objectExists(tgt)) return;
+        if (!ctx.state.objectExists(ctx.source)) return;
+        const int my_might = ctx.state.getObject(ctx.source).current_might;
+        if (my_might <= 0) return;
+        ctx.executor.dealDamage(tgt, my_might, ctx.source);
+        if (ctx.state.objectExists(tgt) && ctx.state.getObject(tgt).hasLethalDamage())
+            ctx.executor.killObject(tgt);
+        ctx.events.logTrace("YONE: conquer -> deal " + std::to_string(my_might) +
+                            " to an enemy unit in a base");
     }
 private:
     const CardDef def_ = [] {

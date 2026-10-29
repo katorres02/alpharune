@@ -19,9 +19,11 @@ public:
     // "[1][C], [E]: Kill a friendly unit. Look at the top 5 cards of your Main
     //  Deck. You may banish a unit from among them that has Might up to 1 more
     //  than the killed unit and play it, ignoring its cost. Then recycle the rest."
+    // [C] = one Order power (my Domain).
     bool hasActivatedAbility() const override { return true; }
     ActivationCost getActivationCost() const override {
-        return ActivationCost{.exhaust = true, .energy = 1, .recycle_self = true};
+        return ActivationCost{.exhaust = true, .energy = 1, .power = 1,
+                              .power_domain = Domain::Order};
     }
     // Target = the friendly unit to kill.
     TargetRequirements getTargetRequirements() const override {
@@ -29,14 +31,29 @@ public:
                                   .must_be_friendly = true};
     }
 
+    // Resumable: resume_data[8] = 1 once the unit is killed, resume_data[9] =
+    // its Might, so re-entry after the agent's choices doesn't kill again.
+    static constexpr size_t kKilled = 8, kMight = 9;
     void onActivate(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (targets.empty() || !ctx.state.objectExists(targets[0])) return;
-        GameObjectId victim = targets[0];
-        int killed_might = ctx.state.getObject(victim).current_might;
-        ctx.executor.killObject(victim);
+        auto& ps = ctx.state.player(ctx.controller);
+        int killed_might = 0;
+        if (ctx.state.chain.resuming.has_value()) {
+            auto& ri = *ctx.state.chain.resuming;
+            while (ri.resume_data.size() <= kMight) ri.resume_data.push_back(0);
+            if (ri.resume_data[kKilled] != 1) {
+                if (targets.empty() || !ctx.state.objectExists(targets[0])) return;
+                ri.resume_data[kMight] = ctx.state.getObject(targets[0]).current_might;
+                ri.resume_data[kKilled] = 1;
+                ctx.executor.killObject(targets[0]);
+            }
+            killed_might = ri.resume_data[kMight];
+        } else {
+            if (targets.empty() || !ctx.state.objectExists(targets[0])) return;
+            killed_might = ctx.state.getObject(targets[0]).current_might;
+            ctx.executor.killObject(targets[0]);
+        }
 
         // Look at the top 5 cards of the Main Deck (top = back).
-        auto& ps = ctx.state.player(ctx.controller);
         std::vector<GameObjectId> top5;
         for (auto it = ps.main_deck.rbegin();
              it != ps.main_deck.rend() && (int)top5.size() < 5; ++it) {
@@ -51,28 +68,36 @@ public:
             if (obj.base_might > killed_might + 1) continue;
             eligible.push_back(cid);
         }
-        if (!eligible.empty()) {
-            // "You may" — let the agent pick which to play (pickTarget over the
-            // eligible top-5 units). Picking is optional in spirit; the agent
-            // can decline by the engine offering all eligible — we always play
-            // the chosen one if any eligible exist.
-            GameObjectId picked = pickTarget(ctx, "Baited Hook (play a unit from top 5)",
-                                              eligible);
+        // "You may banish a unit ... and play it."
+        int conf = confirmOptional(ctx, "Baited Hook: banish and play a unit from the top 5?",
+                                   [&] { return !eligible.empty(); });
+        if (conf == -1) return;   // waiting for the agent
+        GameObjectId picked = kInvalidId;
+        if (conf == 1) {
+            picked = pickTarget(ctx, "Baited Hook (play a unit from top 5)", eligible);
             if (picked == kInvalidId && ctx.state.chain.resuming.has_value() &&
                 ctx.state.chain.resuming->resume_point == 7) {
                 return;  // suspended for agent decision
             }
-            if (picked != kInvalidId && ctx.state.objectExists(picked)) {
-                // Remove from main deck and play ignoring cost.
-                ps.main_deck.erase(
-                    std::remove(ps.main_deck.begin(), ps.main_deck.end(), picked),
-                    ps.main_deck.end());
-                ctx.executor.playIgnoringCost(ctx.controller, picked);
-            }
         }
-        // "Then recycle the rest" — the other looked-at cards go to the bottom
-        // of the Main Deck (recycle = put on bottom). Move remaining top5 cards
-        // (still in deck) to the bottom (front = bottom).
+        // Base or a battlefield I control (CR 355.2), chosen before anything moves.
+        LocationId where{BaseLocation{ctx.controller}};
+        if (picked != kInvalidId && ctx.state.objectExists(picked)) {
+            const int r = pickPlayLocation(ctx, picked, where, PlayerId::None,
+                                           "Baited Hook: play it where?");
+            if (r == -1) return;   // waiting for the agent
+            if (r == 0) picked = kInvalidId;
+        }
+        if (picked != kInvalidId && ctx.state.objectExists(picked)) {
+            ps.main_deck.erase(
+                std::remove(ps.main_deck.begin(), ps.main_deck.end(), picked),
+                ps.main_deck.end());
+            ctx.executor.banishObject(picked);
+            auto& bz = ctx.state.player(ctx.state.getObject(picked).owner).banishment;
+            bz.erase(std::remove(bz.begin(), bz.end(), picked), bz.end());
+            ctx.executor.playIgnoringCost(ctx.controller, picked, where);
+        }
+        // "Then recycle the rest."
         std::vector<GameObjectId> to_recycle;
         for (auto cid : top5) {
             auto pos = std::find(ps.main_deck.begin(), ps.main_deck.end(), cid);
@@ -81,8 +106,7 @@ public:
                 ps.main_deck.erase(pos);
             }
         }
-        // Insert recycled cards at the bottom (front).
-        ps.main_deck.insert(ps.main_deck.begin(), to_recycle.begin(), to_recycle.end());
+        if (!to_recycle.empty()) ctx.executor.recycleCards(ctx.controller, to_recycle);
         ctx.events.logTrace("BAITED HOOK: kill friendly, dig top 5, recycle rest");
     }
 private:

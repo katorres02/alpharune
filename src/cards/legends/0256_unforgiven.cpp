@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "cards/card_helpers.h"
 
 namespace riftbound {
 namespace {
@@ -14,9 +15,40 @@ namespace {
 class Unforgiven : public LegendCard {
 public:
     const CardDef& def() const override { return def_; }
+    // "[2], [E]: Move a friendly unit to or from its base." A unit at a
+    // battlefield goes to its base; a unit at its base goes to a battlefield
+    // the player chooses (resume_point 20 = destination published).
     void onActivate(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty())
-            ctx.executor.moveToBase(targets[0]);
+        if (targets.empty() || !ctx.state.objectExists(targets[0])) return;
+        const GameObjectId u = targets[0];
+        const auto& unit = ctx.state.getObject(u);
+        if (!unit.location.has_value()) return;
+        if (!unit.isAtBase()) {
+            ctx.executor.moveToBase(u);
+            ctx.events.logTrace("UNFORGIVEN: moved " + unit.name + " to its base");
+            return;
+        }
+        std::vector<int> dests;
+        for (int d : moveDests(ctx.state, unit)) if (d > 0) dests.push_back(d);
+        if (dests.empty()) return;
+        int d = dests.front();
+        if (ctx.state.chain.resuming.has_value()) {
+            auto& ri = *ctx.state.chain.resuming;
+            if (ri.resume_point < 20) {
+                std::vector<Intent> options;
+                for (int x : dests) options.push_back(valChoice(ctx.controller, x, destLabel(x)));
+                ctx.executor.requestChoice(ctx.controller, std::move(options),
+                                           "Unforgiven: move " + unit.name + " to which battlefield?");
+                ri.resume_point = 20;
+                return;
+            }
+            if (ri.resume_point != 20) return;
+            ri.resume_point = 21;
+            d = takenValue(ctx, d);
+            if (std::find(dests.begin(), dests.end(), d) == dests.end()) d = dests.front();
+        }
+        moveTo(ctx, u, d);
+        ctx.events.logTrace("UNFORGIVEN: moved a unit from its base to " + destLabel(d));
     }
     TriggerType triggerType() const override { return TriggerType::Activated; }
     TargetRequirements getTargetRequirements() const override {

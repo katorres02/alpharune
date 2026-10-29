@@ -14,45 +14,62 @@ namespace {
 
 // [Ambush] engine-handled.
 // "As an additional cost to play me, kill a Bird, Cat, Dog, or Poro you
-//  control. You may play me to its battlefield (even if you don't have other
-//  units there)."
+//  control. You may [Ambush] me to its battlefield, even if you don't have
+//  other units there." (Vendetta errata text.)
 //
-// The mandatory sacrifice is modeled as a WhenYouPlayMe forced kill of an
-// agent-chosen Bird/Cat/Dog/Poro. APPROXIMATIONS / ENGINE GAP:
-//  - Timing: the sacrifice fires as a play trigger (after Stalking Wolf is on
-//    the board), not strictly as a pre-play additional cost.
-//  - "play me to its battlefield": tying Stalking Wolf's landing zone to the
-//    sacrificed unit's battlefield is not modeled — getPlayLocations is
-//    consulted before the kill choice exists, so the location can't depend on
-//    it. Stalking Wolf lands per the normal play rules.
+// A mandatory object cost (OptionalAdditionalCost): the player picks the
+// victim as I'm played, before my rune cost is paid. Without a Bird/Cat/Dog/
+// Poro I can't be played. The Ambush clause needs no widening: the victim is
+// still at its battlefield when the play is generated, so the engine's Ambush
+// generator offers it. When I'm Ambushed to a battlefield I don't control
+// where my only units are such candidates, I'm there only thanks to "its
+// battlefield", so the victim must be one of them (objectCostCandidates).
 
 class StalkingWolf : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
-    TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
-        std::vector<GameObjectId> legal;
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (id == ctx.source) continue;
-            if (!obj.isUnit() || obj.controller != ctx.controller) continue;
+
+    static bool isPrey(const GameObject& obj) {
+        return hasTag(obj, "Bird") || hasTag(obj, "Cat") ||
+               hasTag(obj, "Dog") || hasTag(obj, "Poro");
+    }
+
+    OptionalAdditionalCost optionalAdditionalCost() const override {
+        OptionalAdditionalCost c;
+        c.valid = true;
+        c.mandatory = true;
+        c.object_cost = OptionalAdditionalCost::ObjectCost::KillFriendlyUnit;
+        return c;
+    }
+
+    std::vector<GameObjectId> objectCostCandidates(
+        const GameState& state, PlayerId player, GameObjectId self,
+        const std::optional<LocationId>& play_location) const override {
+        std::vector<GameObjectId> prey, here;
+        bool other_units_here = false;
+        std::optional<BattlefieldId> bf;
+        if (play_location && std::holds_alternative<BattlefieldLocation>(*play_location))
+            bf = std::get<BattlefieldLocation>(*play_location).id;
+        for (const auto& [id, obj] : state.objects) {
+            if (id == self || !obj.isUnit() || obj.controller != player) continue;
             if (!obj.location.has_value()) continue;
-            if (hasTag(obj, "Bird") || hasTag(obj, "Cat") ||
-                hasTag(obj, "Dog") || hasTag(obj, "Poro")) {
-                legal.push_back(id);
+            const auto at = obj.battlefieldId();
+            const bool is_here = bf && at && *at == *bf;
+            if (isPrey(obj)) {
+                prey.push_back(id);
+                if (is_here) here.push_back(id);
+            } else if (is_here) {
+                other_units_here = true;
             }
         }
-        if (legal.empty()) return;
-        GameObjectId victim = pickTarget(ctx, "Stalking Wolf: kill a Bird/Cat/Dog/Poro you control",
-                                         legal);
-        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
-        if (victim == kInvalidId && ctx.state.chain.resuming.has_value() &&
-            ctx.state.chain.resuming->resume_point == 7) {
-            return;  // suspended
+        if (bf && !here.empty() && !other_units_here) {
+            bool controlled = false;
+            for (const auto& b : state.battlefields)
+                if (b.id == *bf) controlled = b.controller.has_value() && *b.controller == player;
+            if (!controlled) prey = here;   // Ambushed here only thanks to "its battlefield"
         }
-        if (victim == kInvalidId || !ctx.state.objectExists(victim)) return;
-        ctx.executor.killObject(victim);
-        ctx.events.logTrace("STALKING WOLF: sacrificed a Bird/Cat/Dog/Poro (additional cost)");
+        std::sort(prey.begin(), prey.end());
+        return prey;
     }
 private:
     const CardDef def_ = [] {

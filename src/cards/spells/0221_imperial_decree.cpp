@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -14,20 +15,29 @@ namespace {
 class ImperialDecree : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
+    // "When any unit takes damage this turn, kill it." Creates a delayed
+    // triggered ability that lasts until the end of this turn and triggers for
+    // every instance of damage (TriggerManager: WhenAUnitTakesDamage, the
+    // damaged unit is the subject).
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
-        // Collect first (avoid iterator invalidation while killing).
-        std::vector<GameObjectId> to_kill;
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (!obj.isUnit() || !obj.location.has_value()) continue;
-            if (obj.damage_marked > 0) to_kill.push_back(id);
-        }
-        for (auto id : to_kill) {
-            if (ctx.state.objectExists(id)) ctx.executor.killObject(id);
-        }
-        ctx.events.logTrace("IMPERIAL DECREE: killed " +
-                            std::to_string(to_kill.size()) +
-                            " already-damaged units (future-damage-this-turn "
-                            "kill unmodeled — no engine turn flag)");
+        DelayedAbility da;
+        da.source = ctx.source;
+        da.card_def_id = cardDefId();
+        da.controller = ctx.controller;
+        da.trigger = TriggerType::WhenAUnitTakesDamage;
+        da.expires_on_turn = ctx.state.turn.turn_number;
+        da.repeats = true;
+        ctx.state.delayed_abilities.push_back(da);
+        ctx.events.logTrace("IMPERIAL DECREE: units that take damage this turn are killed");
+    }
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        if (!ctx.state.chain.resuming.has_value()) return;
+        GameObjectId u = ctx.state.chain.resuming->triggering_subject;
+        if (u == kInvalidId || !ctx.state.objectExists(u)) return;
+        const auto& obj = ctx.state.getObject(u);
+        if (!obj.isUnit() || !obj.location.has_value()) return;
+        ctx.executor.killObject(u);
+        ctx.events.logTrace("IMPERIAL DECREE: " + obj.name + " took damage -> killed");
     }
 private:
     const CardDef def_ = [] {

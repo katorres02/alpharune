@@ -85,6 +85,9 @@ public:
     /// paid then).
     using FinalizeChoices = std::function<void(ChainItem&)>;
     void setFinalizeChoices(FinalizeChoices fn) { finalize_choices_ = std::move(fn); }
+    /// [Show Off] (CR 832.1.c.2): decided while a played card (spell or
+    /// permanent) is finalized, before a permanent enters the board.
+    void setShowOffChoice(FinalizeChoices fn) { show_off_choice_ = std::move(fn); }
     using ActivateAbility = std::function<bool(const Intent&)>;
     void setActivateAbility(ActivateAbility fn) { activate_ability_ = std::move(fn); }
 
@@ -104,6 +107,7 @@ private:
     PayCost pay_cost_;
     ActivateAbility activate_ability_;
     FinalizeChoices finalize_choices_;
+    FinalizeChoices show_off_choice_;
     EffectExecutor* executor_ = nullptr;
 
     /// Step 1: Finalize all pending items in order.

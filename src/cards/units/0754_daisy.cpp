@@ -20,6 +20,9 @@ public:
         return scanFriendlyTags(state, player).count();
     }
     TriggerType triggerType() const override { return TriggerType::WhenIAttack; }
+    // "When I attack while your units have all 4 tags, [Stun] an enemy unit
+    // here." The controller chooses the unit as the ability goes on the chain.
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>&) override {
         auto pres = scanFriendlyTags(ctx.state, ctx.controller);
         if (!pres.allFour()) {
@@ -27,21 +30,24 @@ public:
                                  std::to_string(pres.count()) + "/4) — no stun");
             return;
         }
-        // Stun an enemy unit at my location.
         if (!ctx.state.objectExists(ctx.source)) return;
-        const auto& self = ctx.state.getObject(ctx.source);
-        if (!self.location.has_value()) return;
-        PlayerId opp = opponent(ctx.controller);
-        for (auto& [oid, obj] : ctx.state.objects) {
-            if (!obj.isUnit() || obj.controller != opp) continue;
-            if (!obj.location.has_value()) continue;
-            if (*obj.location != *self.location) continue;
-            if (obj.is_stunned) continue;
-            ctx.events.logTrace("DAISY: stunning " + obj.name + " (id=" +
-                                 std::to_string(oid) + ")");
-            ctx.executor.stunUnit(oid);
-            return;
+        const auto here = ctx.state.getObject(ctx.source).location;
+        const PlayerId mine = ctx.controller;
+        std::vector<GameObjectId> enemies;
+        if (here.has_value()) {
+            enemies = chooseableUnits(ctx.state, mine, [&](const GameObject& o) {
+                return o.controller != mine && o.location.has_value() && *o.location == *here;
+            });
+            std::sort(enemies.begin(), enemies.end());
         }
+        GameObjectId t = pickTarget(ctx, "Daisy!: stun an enemy unit here", enemies);
+        if (t == kInvalidId && ctx.state.chain.resuming.has_value() &&
+            ctx.state.chain.resuming->resume_point == 7)
+            return;   // waiting on the agent
+        if (finalizingChoices(ctx)) return;
+        if (t == kInvalidId || !ctx.state.objectExists(t)) return;
+        ctx.events.logTrace("DAISY: stunning " + ctx.state.getObject(t).name);
+        ctx.executor.stunUnitBy(t, ctx.source);
     }
 private:
     const CardDef def_ = [] {

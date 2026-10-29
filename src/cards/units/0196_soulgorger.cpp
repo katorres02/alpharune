@@ -47,10 +47,13 @@ public:
         // "ignoring its Energy cost. (You must still pay its Power cost.)"
         const EffectExecutor::EffectPlayCost power_only{.ignore_energy = true};
         if (!ctx.executor.canPlayPayingCost(ctx.controller, picked, power_only)) return;
+        LocationId where;   // base or a battlefield I control (CR 355.2)
+        if (pickPlayLocation(ctx, picked, where, PlayerId::None, "Soulgorger: play it where?") <= 0)
+            return;
         auto& ps = ctx.state.player(ctx.controller);
         auto it = std::find(ps.trash.begin(), ps.trash.end(), picked);
         if (it != ps.trash.end()) ps.trash.erase(it);
-        ctx.executor.playPayingCost(ctx.controller, picked, std::nullopt, power_only);
+        ctx.executor.playPayingCost(ctx.controller, picked, where, power_only);
         ctx.events.logTrace("SOULGORGER: played a unit from trash for free");
     }
 private:

@@ -14,12 +14,16 @@ namespace {
 class OnTheHunt : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty())
-            ctx.executor.readyObject(targets[0]);
-    }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_friendly = true};
+    // "Ready your units." Every unit you control on the board; no target.
+    void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        std::vector<GameObjectId> mine;
+        for (auto& [id, obj] : ctx.state.objects) {
+            if (!obj.isUnit() || !obj.location.has_value()) continue;
+            if (obj.controller != ctx.controller) continue;
+            mine.push_back(id);
+        }
+        for (auto id : mine) ctx.executor.readyObject(id);
+        ctx.events.logTrace("ON THE HUNT: readied " + std::to_string(mine.size()) + " unit(s)");
     }
 private:
     const CardDef def_ = [] {

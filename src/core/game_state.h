@@ -12,6 +12,8 @@
 #include "types.h"
 
 #include <algorithm>
+#include <bit>
+#include <cstdint>
 #include <cassert>
 #include <map>
 #include <optional>
@@ -23,21 +25,104 @@ namespace riftbound {
 
 // ─── Rune Pool ───────────────────────────────────────────────────────────────
 
+/// What a resource payment is for. "Spend this only to ..." restrictions on
+/// added Energy / Power are expressed as a mask of these (bit flags).
+enum class SpendPurpose : uint8_t {
+    None         = 0,        // a payment no restricted resource may cover
+    PlaySpell    = 1 << 0,
+    PlayUnit     = 1 << 1,
+    PlayGear     = 1 << 2,
+    UnitAbility  = 1 << 3,   // an activated ability of a unit
+    GearAbility  = 1 << 4,   // an activated ability of a gear (incl. [Equip])
+    OtherAbility = 1 << 5,   // legend / battlefield / rune abilities
+    Any          = 0x3F,
+};
+constexpr SpendPurpose operator|(SpendPurpose a, SpendPurpose b) {
+    return static_cast<SpendPurpose>(static_cast<uint8_t>(a) | static_cast<uint8_t>(b));
+}
+constexpr bool spendAllows(SpendPurpose uses, SpendPurpose purpose) {
+    return (static_cast<uint8_t>(uses) & static_cast<uint8_t>(purpose)) != 0;
+}
+
+/// Energy or [A] Power added with a spending restriction ("Use only to play
+/// spells", "Spend this Power only to play units or gear", "Spend this Energy
+/// only during showdowns", ...). Kept apart from the unrestricted pool; a
+/// payment spends the matching restricted resources before unrestricted ones.
+struct RestrictedResource {
+    bool power = false;             // [A] Power (any domain) vs Energy
+    int amount = 0;
+    SpendPurpose uses = SpendPurpose::Any;
+    bool showdown_only = false;     // spendable only while a showdown is in progress
+};
+
 struct RunePool {
     int energy = 0;
-    // Energy that may be spent "only to play units or activated abilities of
-    // units" (Butcher of the Sands). Counted and spent first when the engine
-    // pays for one of those; invisible to every other payment.
-    int unit_energy = 0;
     int power[static_cast<int>(Domain::Count)] = {};  // per-domain
     int universal_power = 0;  // [A] — any domain
+    // Restricted Energy / [A] (see RestrictedResource). Empty almost always.
+    std::vector<RestrictedResource> restricted;
 
     void clear() {
         energy = 0;
-        unit_energy = 0;
         universal_power = 0;
+        restricted.clear();
         for (int i = 0; i < static_cast<int>(Domain::Count); ++i)
             power[i] = 0;
+    }
+
+    /// Add `amount` restricted Energy (`power` false) or [A] (`power` true).
+    void addRestricted(bool power_res, int amount, SpendPurpose uses, bool showdown_only = false) {
+        if (amount <= 0) return;
+        for (auto& r : restricted)
+            if (r.power == power_res && r.uses == uses && r.showdown_only == showdown_only) {
+                r.amount += amount;
+                return;
+            }
+        restricted.push_back({power_res, amount, uses, showdown_only});
+    }
+    /// Restricted Energy / [A] usable for a payment for `purpose`.
+    int restrictedAvailable(bool power_res, SpendPurpose purpose, bool in_showdown) const {
+        int n = 0;
+        for (const auto& r : restricted)
+            if (r.power == power_res && spendAllows(r.uses, purpose) &&
+                (!r.showdown_only || in_showdown)) n += r.amount;
+        return n;
+    }
+    /// Spend up to `need` restricted Energy / [A] usable for `purpose`, the
+    /// narrowest restriction first. Returns the amount spent.
+    int spendRestricted(bool power_res, int need, SpendPurpose purpose, bool in_showdown) {
+        if (need <= 0 || restricted.empty()) return 0;
+        std::vector<size_t> order;
+        for (size_t i = 0; i < restricted.size(); ++i) {
+            const auto& r = restricted[i];
+            if (r.power == power_res && r.amount > 0 && spendAllows(r.uses, purpose) &&
+                (!r.showdown_only || in_showdown)) order.push_back(i);
+        }
+        auto width = [&](size_t i) {
+            return std::popcount(static_cast<unsigned>(restricted[i].uses)) +
+                   (restricted[i].showdown_only ? 0 : 8);
+        };
+        std::stable_sort(order.begin(), order.end(),
+                         [&](size_t a, size_t b) { return width(a) < width(b); });
+        int spent = 0;
+        for (size_t i : order) {
+            int n = std::min(restricted[i].amount, need - spent);
+            restricted[i].amount -= n;
+            spent += n;
+            if (spent >= need) break;
+        }
+        restricted.erase(std::remove_if(restricted.begin(), restricted.end(),
+                             [](const RestrictedResource& r) { return r.amount <= 0; }),
+                         restricted.end());
+        return spent;
+    }
+    /// Total restricted Energy / [A] carrying exactly `uses` (and `showdown_only`).
+    int restrictedAmount(bool power_res, SpendPurpose uses, bool showdown_only = false) const {
+        int n = 0;
+        for (const auto& r : restricted)
+            if (r.power == power_res && r.uses == uses && r.showdown_only == showdown_only)
+                n += r.amount;
+        return n;
     }
 
     int totalPower() const {
@@ -47,6 +132,22 @@ struct RunePool {
         return sum;
     }
 };
+
+/// The SpendPurpose of paying to play `card` / to use one of `source`'s abilities.
+/// (A card that is both a unit and a gear carries both bits.)
+inline SpendPurpose playSpendPurpose(const GameObject& card) {
+    SpendPurpose p = SpendPurpose::None;
+    if (card.isSpell()) p = p | SpendPurpose::PlaySpell;
+    if (card.isUnit()) p = p | SpendPurpose::PlayUnit;
+    if (card.isGear()) p = p | SpendPurpose::PlayGear;
+    return p;
+}
+inline SpendPurpose abilitySpendPurpose(const GameObject& source) {
+    SpendPurpose p = SpendPurpose::None;
+    if (source.isUnit()) p = p | SpendPurpose::UnitAbility;
+    if (source.isGear()) p = p | SpendPurpose::GearAbility;
+    return p == SpendPurpose::None ? SpendPurpose::OtherAbility : p;
+}
 
 // ─── Player State ────────────────────────────────────────────────────────────
 
@@ -101,16 +202,35 @@ struct PlayerState {
     // ── Wave B per-turn trackers (reset in resetTurnTracking) ──
     int power_spent_this_turn = 0;   // power (recycled runes) spent this turn (Sivir)
     int xp_gained_this_turn = 0;     // XP gained this turn (Wily Newtfish)
+    // XP last seen by GameEngine::recalculateAuras; an increase since then is
+    // added to xp_gained_this_turn (cards gain XP by writing `xp` directly).
+    // Not a per-turn tracker: never reset.
+    int xp_last_seen = 0;
     int hold_points_this_turn = 0;   // points scored via Hold this turn (Needlessly Large Yordle)
     int draws_this_turn = 0;         // cards drawn this turn (Frigid Jewel "2nd card")
     // A friendly unit died during THIS player's Beginning Phase this turn (Shadow Watcher).
     bool unit_died_in_beginning_this_turn = false;
+    // A unit this player controlled died this turn (Spoils of War: "if an enemy unit has died this turn").
+    bool unit_died_this_turn = false;
+    // A gear this player controlled died this turn (Lingering Animus: "if a
+    // friendly unit or gear died this turn").
+    bool gear_died_this_turn = false;
+    // Confront (129): "Units you play this turn enter ready."
+    bool units_enter_ready_this_turn = false;
+    // Last Caress: "The next unit you play this turn can be played to any
+    // battlefield." Cleared when a unit is played and at end of turn.
+    bool next_unit_any_battlefield = false;
+    // Stand United (053): "Buffs give an additional +1 [M] to friendly units this turn."
+    int buff_bonus_this_turn = 0;
     // Continuous-effect values (reset + recomputed during aura recompute; set by
     // cards' applyPassiveAura — default = no effect):
     bool cannot_gain_points = false; // Tianna Crownguard ("opponents can't gain points")
     int bonus_damage_dealt = 0;      // Annie, Fiery ("your spells/abilities deal +N")
+    int gear_ability_bonus_damage = 0; // Ziggs, Short-Fused ("abilities of friendly gear deal N Bonus Damage")
     bool grant_friendly_units_open_bf = false; // Miss Fortune, Buccaneer ("friendly units may be played to open battlefields")
+    bool grant_friendly_units_lone_enemy_bf = false; // Arachnoid Horror ("friendly units can be played to an occupied battlefield if an enemy unit is alone there")
     bool units_play_base_only = false;         // set on the RESTRICTED player — Mageseeker Warden ("opponents can only play units to their base")
+    bool units_enter_ready = false;            // Wuju Master [Level 11] ("your units enter ready"); aura-derived
     bool tokens_enter_ready = false;           // Renata Glasc, Industrialist ("your tokens enter ready")
     bool recall_all_on_attacker_tie = false;   // Symbol of the Solari (227): attacker-side combat tie recalls ALL units
     bool effects_cant_ready_my_units = false;  // set on the RESTRICTED player — Mageseeker Warden cl2 ("spells/abilities can't ready enemy units/gear")
@@ -120,6 +240,9 @@ struct PlayerState {
     int  repeat_cost_reduction = 0;            // Marai Spire (525): friendly [Repeat] costs cost N less
     bool has_reveal_peek = false;              // Void Hatchling (341): peek/recycle top before revealing
     bool zilean_present = false;               // Zilean, Time Mage (648): a Zilean is at one of my battlefields (aura)
+    bool spells_have_reaction = false;         // Kai'Sa, Rebel: "While I'm in a showdown, your spells have [Reaction]" (aura)
+    bool deploy_gear_have_action = false;      // Jarvan IV, Martial Paragon (Radiance): "Your gear with [Deploy] have [Action]"
+    int  channel_extra_exhausted = 0;          // Seraphic Wyvern (Radiance): channel N runes -> N plus this many exhausted
     // Turn-scoped riders (NOT aura-derived — reset in resetTurnTracking):
     int max_spell_spent_this_turn = 0;         // most-expensive single spell paid for this turn (Jhin, Meticulous Killer: "spent [4]+ to play a spell")
     int next_spell_bonus_damage = 0;           // Ravenborn Tome: "the next spell you play this turn deals N Bonus Damage" (consumed when that spell deals damage)
@@ -131,6 +254,7 @@ struct PlayerState {
     int transient_power_discount = 0;   // staged power discount for the card being played (Sandswept Tomb)
     bool transient_ignore_energy = false;
     bool transient_ignore_power = false;
+    bool transient_optional_cost_decided = false;    // executePlayCard decided a cost-reducing optional additional cost (Poppy, Atakhan): canAfford stops offering its discount
     int transient_play_discount = 0;           // Irelia, Graceful (462): energy discount staged just before paying a specific spell (set+consumed in executePlaySpell)
     // Phase 6q+ engine-audit follow-on: reset last_spell_energy_spent
     // at turn start. Pre-fix, a Virtuoso/Forgotten Library trigger that
@@ -174,6 +298,14 @@ struct PlayerState {
         bool gear_only = false;             // applies only to gear plays (Ornn's Forge)
         bool first_gear_per_turn = false;   // applies only to the FIRST gear played this
                                             // turn (consult gears_played_this_turn == 0)
+        int power_increase = 0;             // ADD to the Power cost (Vex: "[1][A] more")
+        bool spells_only = false;           // persistent type filters ("your spells",
+        bool units_only = false;            //  "your units")
+        std::string tag_filter;             // only cards with this tag ("Your Dragons")
+        // A continuous effect re-pushed by Card::applyPassiveAura: every one is
+        // dropped at the start of GameEngine::recalculateAuras, so it lasts
+        // exactly as long as its source keeps re-asserting it.
+        bool from_aura = false;
     };
     std::vector<CostModifier> cost_modifiers;
 
@@ -189,8 +321,19 @@ struct PlayerState {
         Domain power_domain = Domain::Fury;
         bool any_domain = false;          // [A] — power may be any single domain
         bool banish_after = false;        // granted [Flow]: banish the spell after it's played
+        // Rebuilt from the trash on every aura pass (GameEngine::refreshFlowGrants):
+        // [Flow] and a card's own Card::trashPlayCost ("You may play me from
+        // your trash for <cost>" — units and gear too, Undying Legion).
+        bool standing = false;
     };
     std::vector<TrashReplayGrant> trash_replay_grants;
+
+    // "Banish the top card of your Main Deck. Until your next Ending Phase, you
+    // may play that card. (You still pay its costs.)" (Runeblade Anvil, Akali,
+    // Brash): cards in banishment this player may play like cards in hand,
+    // paying their costs. Not a per-turn tracker: cleared when this player's
+    // next Ending Phase begins.
+    std::vector<GameObjectId> banished_playable;
 
     // Karthus, Eternal (and similar): "Your Deathknell effects trigger
     // an additional time." Counted from board via aura recalculation —
@@ -227,6 +370,7 @@ struct PlayerState {
     int cards_burned_this_turn = 0;       // cards this player Burned this turn (CR 441)
     int cards_banished_this_turn = 0;     // owned cards banished this turn
     bool chose_enemy_unit_this_turn = false;   // Hungry Wolf
+    int enemy_choices_this_turn = 0;   // enemy units/gear chosen by your spells or unit abilities (Prodigal Explorer)
 
     // This player's most recent combat this turn: where it was, whether they
     // attacked, and how much combat damage they assigned beyond what was
@@ -239,6 +383,9 @@ struct PlayerState {
     bool played_nontoken_gear_this_turn = false;
     bool played_spell_this_turn = false;
     int cards_played_not_from_hand_this_turn = 0;
+    // "You can hide cards ignoring costs this turn" (Guerilla Warfare): the
+    // turn number it applies to, -1 = never.
+    int hide_ignoring_costs_turn = -1;
     int spells_played_this_turn = 0;      // Crumbling Sands
     int gear_abilities_activated_this_turn = 0;   // Piltovan Forge ("first ... each turn")
     int abilities_activated_this_turn = 0;
@@ -256,11 +403,27 @@ struct PlayerState {
     int extra_minus_might = 0;            // Mel, Newly Awakened: your -[M] effects give extra
     std::vector<std::string> locked_spell_names;  // Fallen Feline: this player can't play these
     int first_gear_ability_discount = 0;  // Piltovan Forge: first friendly gear ability each turn costs [N] less
+    int gold_extra_energy = 0;            // Chem-Baroness: your Gold [Add] an additional [N]
+    int optional_cost_discount = 0;       // Ezreal, Prodigy: optional additional costs cost [1] or [A] less
+
+    // ── Radiance ─────────────────────────────────────────────────────────
+    // Played a unit or gear to a battlefield this turn (Hold 'Em). Reset per turn.
+    bool played_permanent_to_bf_this_turn = false;
+    // Number of cards in this player's most recent draw (set just before
+    // CardsDrawnEvent): "When you draw ... with 9 or more OTHER cards in your
+    // hand" (Zero Point Inflection).
+    int last_draw_count = 0;
+    // Number of friendly units exhausted together in this player's most recent
+    // simultaneous exhaust (a standard move), set just before the
+    // "exhausted_together" state event (Seraphine, Inspiring).
+    int last_exhaust_group_size = 0;
 
     void resetTurnTracking() {
+        played_permanent_to_bf_this_turn = false;
         cards_burned_this_turn = 0;
         cards_banished_this_turn = 0;
         chose_enemy_unit_this_turn = false;
+        enemy_choices_this_turn = 0;
         last_combat_bf = kInvalidId;
         last_combat_attacker = false;
         excess_combat_damage = 0;
@@ -289,6 +452,11 @@ struct PlayerState {
         hold_points_this_turn = 0;
         draws_this_turn = 0;
         unit_died_in_beginning_this_turn = false;
+        unit_died_this_turn = false;
+        gear_died_this_turn = false;
+        units_enter_ready_this_turn = false;
+        next_unit_any_battlefield = false;
+        buff_bonus_this_turn = 0;
         // (cannot_gain_points / extra_points_to_win are continuous-effect flags,
         //  recomputed during aura cleanup — not per-turn counters.)
         // Expire this-turn cost modifiers
@@ -308,16 +476,29 @@ struct BattlefieldState {
     GameObjectId card_object_id = kInvalidId;  // the battlefield card itself
 
     std::optional<PlayerId> controller;
+    // Whether the most recent conquer here was of an UNCONTROLLED battlefield
+    // (Yone, Blademaster: "When I conquer a battlefield that was uncontrolled").
+    // Stamped by GameEngine just before scoreConquer.
+    bool conquered_from_uncontrolled = false;
     // ── Vendetta battlefield continuous effects (recomputed each recalculateAuras) ──
     bool ignore_tank[2] = {false, false};   // Dune Surfer: this player ignores [Tank] assigning here
     bool ignore_deflect_here = false;       // Heisho: players ignore [Deflect] choosing something here
     int reaction_tax_power = 0;             // Mystic Vortex: [Reaction] cards cost [A] more in showdowns here
     int friendly_spell_discount_power = 0;  // Sandswept Tomb: spells choosing friendly units here cost [A] less
+    // "For each player, the first unit or gear they play here on their turn
+    // costs [N] less" (Hunters' Circle). Aura-derived; the per-player turn
+    // stamp of the play that used it persists.
+    int first_play_here_discount = 0;
+    int first_play_here_turn[2] = {-1, -1};
     // "Any player may pay [A]... as an additional cost to play a <tag>. If they
     // do, they play it to this battlefield." (Dragon Roost). 0 = no such offer.
     int paid_play_power = 0;
     std::string paid_play_tag;
     int empower_cost_reduction[2] = {0, 0}; // Risen Altar: per-player [Empower] discount for units here
+    // Gravity Field: "Opponents must pay [1][A] to move one or more units to
+    // this battlefield." Per moving player; paid once per standard move here.
+    int move_tax_energy[2] = {0, 0};
+    int move_tax_power[2] = {0, 0};
     bool is_contested = false;
     PlayerId contested_by = PlayerId::None;
     PlayerId contributed_by = PlayerId::None;  // who brought this BF to the game
@@ -378,7 +559,12 @@ struct BattlefieldState {
     // BF/unit cards' applyPassiveAura):
     bool surcharge_enemy_multi_move = false; // Mageseeker Investigator (725): enemy multi-unit moves here cost [A]/extra unit
     bool opp_hidden_unrevealable = false;    // Noxus Saboteur (018): opponent [Hidden] cards can't be revealed here
+    bool hidden_unrevealable_for[2] = {false, false};  // ... indexed by the RESTRICTED player (aura-derived)
     bool death_recall_for_pay = false;       // Altar of Blood (762): a unit dying here in combat may pay [A][A][A] to heal+exhaust+recall instead
+    // Detonation Amplifier: "Friendly [Deathknell] effects here trigger an
+    // additional time." Extra fires for a Deathknell of an object that died
+    // here, indexed by the dying object's controller (aura-derived).
+    int deathknell_extra[2] = {0, 0};
 
     /// Get all unit IDs at this battlefield belonging to a player.
     std::vector<GameObjectId> unitsControlledBy(
@@ -417,6 +603,10 @@ struct TurnState {
     // during their first or second turn, they draw 1 instead." Recomputed each
     // recalculateAuras.
     bool early_score_draws_instead = false;
+    // Firebrand Raider: "Other units enter ready." / "Units don't ready during
+    // the Awaken Phase." Recomputed each recalculateAuras.
+    bool all_units_enter_ready = false;
+    bool units_dont_awaken = false;
 
     // Per-turn decision counters (reset each turn)
     int turn_decisions_p1 = 0;
@@ -444,6 +634,16 @@ struct TurnState {
 // ─── Chain State ─────────────────────────────────────────────────────────────
 
 enum class ChainItemStatus : uint8_t { Pending, Finalized };
+
+/// A triggered ability that a KEYWORD grants (not printed card text), so the
+/// engine resolves it through an engine-owned ability object
+/// (engine/keyword_abilities.h) instead of the source's Card. Kept out of
+/// `Keyword` so the ML keyword vector does not change size.
+enum class KeywordAbility : uint8_t {
+    None,
+    Disarm,          // CR 831: "When I attack, give an enemy unit here -X [M] this turn."
+    DeployHoldKill,  // CR 830.1.b: "When an opponent holds here, kill this."
+};
 
 struct ChainItem {
     ChainItemId id = kInvalidId;
@@ -484,6 +684,11 @@ struct ChainItem {
     // (back-compat). Only meaningful when is_activated_ability is true.
     int ability_index = 0;
 
+    // A keyword's own triggered ability (Disarm, Deploy); None for card text.
+    // `keyword_value` carries its magnitude (the summed Disarm Value).
+    KeywordAbility keyword_ability = KeywordAbility::None;
+    int keyword_value = 0;
+
     // Aura-granted activated ability (Forge/Gardens/Heimerdinger): nonzero = this
     // ActivateAbility runs the GRANTED ability whose logic lives on card def
     // `granted_ability_def`, dispatched with `source` (the bearer) as the actor.
@@ -520,6 +725,12 @@ struct ChainItem {
     // Finalized targets are checked for legality once as the item resolves
     // (a target that is no longer legal is a mistarget). 1 = single, 2 = pair.
     uint8_t finalize_checked = 0;
+
+    // Card::pickPlayLocation — where an effect-played permanent goes (CR 355.2).
+    // Answers are keyed by the played object so one item can play several.
+    // Encoding: 0 = the chooser's base, i+1 = state.battlefields[i].
+    std::vector<std::pair<GameObjectId, int32_t>> play_location_picks;
+    GameObjectId play_location_pending = kInvalidId;   // waiting for the agent
 
     // ── Repeat (CR 820) — optional additional cost ──
     // `repeats_paid` is the number of times the Repeat cost was paid as
@@ -599,6 +810,15 @@ struct DelayedAbility {
     // subject (Deadly Flourish: "when IT dies"). kInvalidId = no filter,
     // fires on any matching trigger.
     GameObjectId target_filter = kInvalidId;
+
+    // Fires every time its event happens until it expires, instead of once
+    // (Imperial Decree: "When any unit takes damage this turn, kill it").
+    // ("When a friendly unit is played this turn, buff it" — Rally the Troops).
+    // The event's object is stamped on the chain item's triggering_subject.
+    bool repeats = false;
+    // How many times it fires before it is used up (Fanfare: "the next three
+    // times you play a unit this turn"). 1 = the usual one-shot.
+    int uses = 1;
 };
 
 // ─── Complete Game State ─────────────────────────────────────────────────────
@@ -740,5 +960,20 @@ struct GameState {
     /// Get the number of battlefields currently on the board.
     size_t totalBattlefields() const { return battlefields.size(); }
 };
+
+/// Count a choice of an enemy unit or gear on the board by `chooser`'s spell
+/// or unit ability `source` (PlayerState::enemy_choices_this_turn — Prodigal
+/// Explorer: "if you've chosen enemy units and/or gear twice this turn with
+/// spells or unit abilities"). One count per object chosen.
+inline void noteEnemyChoice(GameState& state, PlayerId chooser, GameObjectId source,
+                            GameObjectId target) {
+    if (!state.objectExists(source) || !state.objectExists(target)) return;
+    const auto& src = state.getObject(source);
+    if (!src.isSpell() && !src.isUnit()) return;
+    const auto& t = state.getObject(target);
+    if (!(t.isUnit() || t.isGear()) || !t.location.has_value()) return;
+    if (t.controller == chooser) return;
+    state.player(chooser).enemy_choices_this_turn++;
+}
 
 } // namespace riftbound

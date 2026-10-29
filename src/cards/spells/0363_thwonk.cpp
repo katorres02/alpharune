@@ -21,6 +21,16 @@ public:
     TargetRequirements getTargetRequirements() const override {
         return TargetRequirements{.count = 1, .must_be_unit = true};
     }
+    // "Stun an attacking unit."
+    std::vector<GameObjectId> enumerateLegalTargets(const GameState& state,
+                                                    PlayerId controller) const override {
+        auto all = Card::enumerateLegalTargets(state, controller);
+        std::vector<GameObjectId> out;
+        for (auto id : all)
+            if (state.getObject(id).combat_designation == CombatDesignation::Attacker)
+                out.push_back(id);
+        return out;
+    }
 private:
     const CardDef def_ = [] {
         CardDef d;

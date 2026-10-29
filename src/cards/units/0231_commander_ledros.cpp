@@ -14,14 +14,18 @@ namespace {
 class CommanderLedros : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    // ENGINE GAP: "As you play me, you may kill any number of friendly units as
-    // an additional cost. Reduce my cost by [Y] for each killed this way."
-    // This is an interactive sacrifice-for-cost-reduction additional cost.
-    // selfCostReduction() is state-based (not interactive), and
-    // OptionalAdditionalCost only models energy/power costs, not "kill N units".
-    // Implementing requires an engine-side interactive additional-cost hook that
-    // kills agent-chosen friendly units before paying and reduces the cost per
-    // kill. [Deflect] and [Ganking] are engine keywords and work.
+    // "As you play me, you may kill any number of friendly units as an
+    // additional cost. Reduce my cost by [Y] for each killed this way."
+    // An optional object cost (any number), [Y] = 1 Order Power off per kill.
+    // [Deflect] and [Ganking] are engine keywords.
+    OptionalAdditionalCost optionalAdditionalCost() const override {
+        OptionalAdditionalCost c;
+        c.valid = true;
+        c.object_cost = OptionalAdditionalCost::ObjectCost::KillFriendlyUnit;
+        c.max_objects = -1;
+        c.reduce_power_each = 1;
+        return c;
+    }
 private:
     const CardDef def_ = [] {
         CardDef d;

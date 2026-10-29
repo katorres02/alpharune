@@ -14,10 +14,46 @@ namespace {
 class ArachnoidHorror : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
+    // [Hunt 2]
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         ctx.state.player(ctx.controller).xp += 2;
     }
     TriggerType triggerType() const override { return TriggerType::WhenIConquerOrHold; }
+
+    // "Friendly units can be played to an occupied battlefield if an enemy
+    //  unit is alone there." While on the board (engine play generator).
+    void applyPassiveAura(GameState& state, PlayerId controller) const override {
+        for (auto& [id, obj] : state.objects) {
+            if (obj.card_def_id != cardDefId() || obj.controller != controller) continue;
+            if (!obj.location.has_value()) continue;
+            state.player(controller).grant_friendly_units_lone_enemy_bf = true;
+            return;
+        }
+    }
+
+    // "I can be played to an occupied battlefield if an enemy unit is alone
+    //  there." From hand: my play locations are the usual ones (base,
+    //  battlefields I control, any the board-wide grants open) plus every
+    //  enemy-controlled battlefield with exactly one enemy unit.
+    bool restrictsPlayLocations() const override { return true; }
+    std::vector<LocationId> getPlayLocations(const GameState& state, PlayerId player) const override {
+        const auto& ps = state.player(player);
+        std::vector<LocationId> out{BaseLocation{player}};
+        if (ps.units_play_base_only) return out;
+        for (const auto& bf : state.battlefields) {
+            if (bf.blocks_unit_play) continue;
+            const bool controlled = bf.controller.has_value() && *bf.controller == player;
+            const bool open = !bf.controller.has_value();
+            int enemies = 0;
+            for (const auto& [oid, o] : state.objects)
+                if (o.isUnit() && o.controller != player && o.battlefieldId() == bf.id) ++enemies;
+            const bool enemy_held = bf.controller.has_value() && *bf.controller != player;
+            if (controlled || (open && ps.grant_friendly_units_open_bf) ||
+                (enemy_held && enemies == 1))
+                out.push_back(BattlefieldLocation{bf.id});
+        }
+        return out;
+    }
 private:
     const CardDef def_ = [] {
         CardDef d;

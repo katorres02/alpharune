@@ -27,8 +27,14 @@ public:
         auto cands = chooseableUnits(ctx.state, mine, [&](const GameObject& o) {
             auto bf = o.battlefieldId();
             return o.controller != mine && bf && count[*bf] >= 4; });
-        if (cands.empty()) return;
+        // "you may return an enemy unit there": decline is offered first.
+        int go = confirmOptional(ctx, "Bedeviling Stranger: return an enemy unit to hand",
+                                 [&]() { return !cands.empty(); });
+        if (go <= 0) return;   // waiting (-1) or declined / nothing to return (0)
         GameObjectId t = pickTarget(ctx, "Bedeviling Stranger: return an enemy unit", cands);
+        if (t == kInvalidId && ctx.state.chain.resuming.has_value() &&
+            ctx.state.chain.resuming->resume_point == 7)
+            return;   // waiting on the agent
         if (finalizingChoices(ctx)) return;
         if (t == kInvalidId || !ctx.state.objectExists(t)) return;
         ctx.executor.bounceToHand(t);
@@ -47,7 +53,7 @@ private:
         d.card_type = CardType::Unit;
         d.super_type = SuperType::None;
         d.domains = {Domain::Chaos};
-        d.tags = {};
+        d.tags = {R"RB(Shadow Isles)RB", R"RB(Demon)RB"};
         d.rarity = Rarity::Rare;
         d.ability_text = R"RB([Hidden] When you play me, choose a battlefield. If there are 4 or more units there, you may return an enemy unit there to its owner's hand.)RB";
         d.energy_cost = 2;

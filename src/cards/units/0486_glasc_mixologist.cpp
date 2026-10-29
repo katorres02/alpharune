@@ -18,7 +18,8 @@ public:
     unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     TriggerType triggerType() const override { return TriggerType::WhenIDie; }
 
-    // Eligible units in trash: card_type Unit with printed energy cost <= 3.
+    // Eligible units in trash: printed cost no more than [3] and no more than [A]
+    // (energy <= 3, power <= 1).
     std::vector<GameObjectId> eligibleTrashUnits(CardContext& ctx) const {
         std::vector<GameObjectId> out;
         auto& ps = ctx.state.player(ctx.controller);
@@ -27,8 +28,9 @@ public:
             auto& obj = ctx.state.getObject(cid);
             if (!obj.isUnit()) continue;
             if (obj.card_def_id == kInvalidId) continue;
-            int cost = ctx.executor.cardDB().get(obj.card_def_id).energy_cost;
-            if (cost > 3) continue;
+            const auto& cd = ctx.executor.cardDB().get(obj.card_def_id);
+            if (cd.energy_cost > 3) continue;   // "no more than [3]"
+            if (cd.power_cost > 1) continue;    // "and no more than [A]"
             out.push_back(cid);
         }
         return out;
@@ -54,12 +56,14 @@ public:
             return;
         }
         if (picked == kInvalidId || !ctx.state.objectExists(picked)) return;
+        LocationId where;   // base or a battlefield I control (CR 355.2)
+        if (pickPlayLocation(ctx, picked, where, PlayerId::None, "Glasc Mixologist: play it where?") <= 0) return;
 
         // Remove from trash, then play ignoring cost.
         auto& ps = ctx.state.player(ctx.controller);
         auto it = std::find(ps.trash.begin(), ps.trash.end(), picked);
         if (it != ps.trash.end()) ps.trash.erase(it);
-        ctx.executor.playIgnoringCost(ctx.controller, picked);
+        ctx.executor.playIgnoringCost(ctx.controller, picked, where);
         ctx.events.logTrace("GLASC MIXOLOGIST: played a unit from trash for free");
     }
 private:

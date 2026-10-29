@@ -18,29 +18,32 @@ public:
     const CardDef& def() const override { return def_; }
     bool hasEquipAbility() const override { return true; }
     KeywordSet equippedKeywords() const override { KeywordSet k; k.set(Keyword::Ganking); return k; }
-    // [Equip] — [A] or exhaust a friendly unit. Heuristic choice (no agent prompt):
-    // exhaust a ready friendly unit with a "when I become exhausted" trigger if any,
-    // else pay [A], else exhaust any other ready friendly unit.
+    // [Equip] — [A] or exhaust a friendly unit. The player picks how to pay
+    // (EffectExecutor::chooseObjectNow — equip resolves without a chain item):
+    // choosing this gear means "pay [A]", choosing a ready friendly unit (the
+    // one being equipped included) means "exhaust it". Nothing payable, no equip.
     bool onEquip(CardContext& ctx, GameObjectId unit) override {
         auto& state = ctx.state; auto player = ctx.controller;
-        GameObjectId synergy = kInvalidId, other = kInvalidId;
-        for (auto& [id, o] : state.objects) {
-            if (!o.isUnit() || o.controller != player || o.is_exhausted || !o.location.has_value()) continue;
-            if (id == unit) continue;
-            if (o.card_def_id == 957 || o.card_def_id == 961) { if (synergy == kInvalidId) synergy = id; }
-            else if (other == kInvalidId) other = id;
+        if (!state.objectExists(unit) || !state.objectExists(ctx.source)) return false;
+        std::vector<GameObjectId> options;
+        if (payableOnePower(state, player, std::nullopt)) options.push_back(ctx.source);
+        std::vector<GameObjectId> units;
+        for (auto& [id, o] : state.objects)
+            if (o.isUnit() && o.controller == player && !o.is_exhausted && o.location.has_value())
+                units.push_back(id);
+        std::sort(units.begin(), units.end());
+        options.insert(options.end(), units.begin(), units.end());
+        if (options.empty()) return false;   // can't pay either cost
+        const GameObjectId how = ctx.executor.chooseObjectNow(player, options);
+        if (how == ctx.source) {
+            if (!payOnePower(ctx, player, std::nullopt)) return false;
+            ctx.events.logTrace("  EQUIP_COST: paid [A]");
+        } else {
+            if (how == kInvalidId || !state.objectExists(how)) return false;
+            ctx.events.logTrace("  EQUIP_COST: exhausted " + state.getObject(how).name);
+            ctx.executor.exhaustObject(how);
         }
-        GameObjectId pay_unit = synergy;
-        if (pay_unit == kInvalidId) {
-            if (payableOnePower(state, player, std::nullopt)) {
-                if (!payOnePower(ctx, player, std::nullopt)) return false;
-            } else pay_unit = other;
-            if (pay_unit == kInvalidId && !state.objectExists(ctx.source)) return false;
-        }
-        if (pay_unit != kInvalidId) {
-            ctx.events.logTrace("  EQUIP_COST: exhausted " + state.getObject(pay_unit).name);
-            ctx.executor.exhaustObject(pay_unit);
-        }
+        if (!state.objectExists(unit) || !state.getObject(unit).location.has_value()) return false;
         attachFree(ctx, ctx.source, unit);
         return true;
     }

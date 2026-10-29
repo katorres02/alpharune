@@ -21,7 +21,7 @@ public:
                             const std::vector<GameObjectId>& targets) override {
         auto loc = ctx.state.getObject(unit).location.value_or(BaseLocation{ctx.controller});
         ctx.executor.createToken(ctx.controller, CardType::Unit, "Recruit", 1,
-                                  {"Recruit"}, {}, loc, true);
+                                  {"Recruit"}, {}, loc, /*enter_ready=*/false);
     }
 private:
     const CardDef def_ = [] {

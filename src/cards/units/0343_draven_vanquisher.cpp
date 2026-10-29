@@ -18,8 +18,8 @@ public:
     unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
 
     // "When I win a combat, play a Gold gear token exhausted.
-    //  When I attack or defend, you may pay [R]. If you do, give me +2 [M]
-    //  this turn."
+    //  When I attack or defend, you may pay [C] to give me +2 [M] this turn."
+    //  (Vendetta errata text.)
     std::vector<TriggerType> triggerTypes() const override {
         return {TriggerType::WhenIWinCombat, TriggerType::WhenIAttackOrDefend};
     }
@@ -32,26 +32,19 @@ public:
         }
         if (ctx.firing_trigger == TriggerType::WhenIAttackOrDefend) {
             if (!ctx.state.objectExists(ctx.source)) return;
-            // "you may pay [R]" — gate on a [R] (Fury) power being available
-            // (a ready Fury rune at base, recyclable for power via payOnePower).
-            auto base_loc = LocationId{BaseLocation{ctx.controller}};
+            // "you may pay [C]" ([C] = one Fury power): floating power, or a
+            // Fury rune at base (ready or exhausted) recycled for it.
             auto has_fury_power = [&]() -> bool {
-                for (auto& [id, obj] : ctx.state.objects) {
-                    if (!obj.isRune() || obj.controller != ctx.controller) continue;
-                    if (obj.is_exhausted || !obj.location.has_value()) continue;
-                    if (*obj.location != base_loc) continue;
-                    for (auto d : obj.domains) if (d == Domain::Fury) return true;
-                }
-                return false;
+                return payableOnePower(ctx.state, ctx.controller, Domain::Fury);
             };
-            int conf = confirmOptional(ctx, "Draven: pay [R] for +2 [M]?",
+            int conf = confirmOptional(ctx, "Draven: pay [C] for +2 [M]?",
                                        has_fury_power);
             if (conf == -1) return;  // waiting for agent
             if (conf == 0) return;   // declined / can't pay
             if (costDueNow(ctx) && !payOnePower(ctx, ctx.controller, Domain::Fury)) return;
             if (finalizingChoices(ctx)) return;   // choices and costs end here (CR 383.3)
             ctx.executor.giveTemporaryMight(ctx.source, 2);
-            ctx.events.logTrace("DRAVEN: paid [R] -> +2 [M] this turn");
+            ctx.events.logTrace("DRAVEN: paid [C] -> +2 [M] this turn");
             return;
         }
     }
@@ -74,7 +67,7 @@ private:
         d.might = 4;
         d.rarity = Rarity::Rare;
         d.ability_text = R"RB(When I win a combat, play a Gold gear token exhausted.
-When I attack or defend, you may pay [R] to give me +2 [M] this turn.)RB";
+When I attack or defend, you may pay [C] to give me +2 [M] this turn.)RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/8e49e0b83df68f37a15bf704b83475144fd9ef92-744x1039.png)RB";
         d.banned = true;  // tournament ban (formerly cards/ban-list.csv)
         return d;

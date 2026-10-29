@@ -1,5 +1,6 @@
 #include "cards/card.h"
 #include "cards/card_registry.h"
+#include "cards/card_helpers.h"
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
@@ -17,24 +18,49 @@ public:
     // "Gain control of a spell. You may make new choices for it."
     // [Reaction] — only playable with a spell on the chain to take.
     bool hasLegalTargets(const GameState& state, PlayerId /*controller*/) const override {
-        for (auto it = state.chain.items.rbegin(); it != state.chain.items.rend(); ++it)
-            if (it->is_spell) return true;
+        for (const auto& it : state.chain.items)
+            if (it.is_spell) return true;
         return false;
     }
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
-        if (ctx.state.chain.items.empty()) return;
-        auto& top = ctx.state.chain.items.back();
-        if (!top.is_spell) return;
-        // Gain control: re-point both the chain item and the underlying spell
-        // object to me. The spell will now resolve under my control.
-        // NOTE: "you may make new choices for it" (re-targeting) is not
-        // supported by the executor — the original targets are retained
-        // (documented engine gap).
-        top.controller = ctx.controller;
-        if (ctx.state.objectExists(top.source))
-            ctx.state.getObject(top.source).controller = ctx.controller;
-        ctx.events.logTrace("MYSTIC REVERSAL: gained control of the spell on the "
-                            "chain (re-target unsupported)");
+        std::vector<GameObjectId> legal;   // spell objects, top of the chain first
+        for (auto it = ctx.state.chain.items.rbegin(); it != ctx.state.chain.items.rend(); ++it)
+            if (it->is_spell) legal.push_back(it->source);
+        GameObjectId pick = pickTarget(ctx, "Mystic Reversal: gain control of", legal);
+        auto find_item = [&]() -> ChainItem* {
+            for (auto& ci : ctx.state.chain.items)
+                if (ci.is_spell && ci.source == pick) return &ci;
+            return nullptr;
+        };
+        auto steal = [&](ChainItem& item) {
+            item.controller = ctx.controller;
+            if (ctx.state.objectExists(item.source))
+                ctx.state.getObject(item.source).controller = ctx.controller;
+            ctx.events.logTrace("MYSTIC REVERSAL: gained control of a spell");
+        };
+        auto& ri_opt = ctx.state.chain.resuming;
+        if (!ri_opt.has_value()) {   // direct invocation: steal, keep choices
+            if (pick == kInvalidId) return;
+            if (auto* item = find_item()) steal(*item);
+            return;
+        }
+        auto& ri = *ri_opt;
+        if (ri.resume_point < 8) return;          // waiting for the pick
+        if (ri.resume_point == 8) {
+            ChainItem* item = pick == kInvalidId ? nullptr : find_item();
+            if (!item) { ri.resume_point = 21; return; }
+            steal(*item);
+            std::vector<Intent> opts = {valChoice(ctx.controller, 0, "Keep its choices"),
+                                        valChoice(ctx.controller, 1, "Make new choices")};
+            ctx.executor.requestChoice(ctx.controller, std::move(opts),
+                                       "Mystic Reversal: make new choices for it?");
+            ri.resume_point = 20;
+            return;
+        }
+        if (ri.resume_point != 20) return;
+        ri.resume_point = 21;
+        if (takenValue(ctx, 0) != 1) return;
+        if (auto* item = find_item()) ctx.executor.makeNewChoices(item->id);
     }
 private:
     const CardDef def_ = [] {

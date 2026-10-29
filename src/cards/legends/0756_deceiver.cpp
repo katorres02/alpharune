@@ -16,6 +16,7 @@ class Deceiver : public LegendCard {
 public:
     const CardDef& def() const override { return def_; }
     TriggerType triggerType() const override { return TriggerType::WhenIConquerOrHold; }
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
 
     // "there" is the battlefield that was conquered or held: the trigger's
     // subject is that battlefield's card object.
@@ -30,6 +31,7 @@ public:
     // it copies. resume_data[3] = the token, [4] = its battlefield + 1 (0 =
     // none); [2] belongs to pickTarget.
     static constexpr int kAwaitDiscard = 3;
+    static constexpr int kPaid = 4;
     static constexpr int kCopy = 5;
     static constexpr int kFinished = 30;
 
@@ -45,36 +47,41 @@ public:
                    !ctx.state.getObject(ctx.source).is_exhausted && !ps.hand.empty();
         };
 
-        if (ri.resume_point <= 2) {
-            // "you may discard 1 and exhaust me": optional (CR 383.3.a).
+        if (ri.resume_point <= 2 || ri.resume_point == kAwaitDiscard ||
+            ri.resume_point == kPaid) {
+            // "you may discard 1 and exhaust me": optional (CR 383.3.a). The
+            // answer and the cost are settled as the trigger is finalized.
             const int go = confirmOptional(
                 ctx, "Deceiver: discard 1 and exhaust me to play a Reflection", can_pay);
             if (go != 1) return;            // waiting, declined, or can't pay
-            std::vector<Intent> choices;
-            for (auto card_id : ps.hand) {
-                Intent c;
-                c.type = IntentType::MakeChoice;
-                c.player = ctx.controller;
-                c.chosen_objects = {card_id};
-                choices.push_back(c);
+            if (costDueNow(ctx) && ri.resume_point != kPaid) {
+                if (ri.resume_point != kAwaitDiscard) {
+                    std::vector<Intent> choices;
+                    for (auto card_id : ps.hand) {
+                        Intent c;
+                        c.type = IntentType::MakeChoice;
+                        c.player = ctx.controller;
+                        c.chosen_objects = {card_id};
+                        choices.push_back(c);
+                    }
+                    ctx.executor.requestChoice(ctx.controller, std::move(choices),
+                                               "discard 1 (Deceiver)");
+                    ri.resume_point = kAwaitDiscard;
+                    return;
+                }
+                auto choice = ctx.executor.takeChoice();
+                if (!can_pay()) { ri.resume_point = kFinished; return; }
+                GameObjectId discard = ps.hand.front();
+                if (choice && !choice->chosen_objects.empty() &&
+                    std::find(ps.hand.begin(), ps.hand.end(), choice->chosen_objects[0]) !=
+                        ps.hand.end())
+                    discard = choice->chosen_objects[0];
+                // Pay the cost: exhaust me, discard the chosen card.
+                ctx.executor.exhaustObject(ctx.source);
+                ctx.executor.applyDiscard(ctx.controller, discard);
+                ri.resume_point = kPaid;
             }
-            ctx.executor.requestChoice(ctx.controller, std::move(choices),
-                                       "discard 1 (Deceiver)");
-            ri.resume_point = kAwaitDiscard;
-            return;
-        }
-
-        if (ri.resume_point == kAwaitDiscard) {
-            auto choice = ctx.executor.takeChoice();
-            if (!can_pay()) { ri.resume_point = kFinished; return; }
-            GameObjectId discard = ps.hand.front();
-            if (choice && !choice->chosen_objects.empty() &&
-                std::find(ps.hand.begin(), ps.hand.end(), choice->chosen_objects[0]) !=
-                    ps.hand.end())
-                discard = choice->chosen_objects[0];
-            // Pay the cost: exhaust me, discard the chosen card.
-            ctx.executor.exhaustObject(ctx.source);
-            ctx.executor.applyDiscard(ctx.controller, discard);
+            if (finalizingChoices(ctx)) return;   // choices and costs end here (CR 383.3)
 
             auto bf = scoredBattlefield(ctx.state, ctx.controller);
             LocationId loc = bf.has_value()
@@ -144,7 +151,6 @@ private:
         d.domains = {Domain::Mind, Domain::Order};
         d.tags = {R"RB(LeBlanc)RB"};
         d.rarity = Rarity::Rare;
-        d.keywords.set(Keyword::Temporary);
         d.ability_text = R"RB(When you conquer or hold, you may discard 1 and exhaust me to play a ready Reflection unit token there. Then do this: It becomes a copy of another unit there. Give it [Temporary].)RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/c17d29602d61d6702372fec4db44c6fb2a29e8a2-744x1039.png?accountingTag=RB)RB";
         return d;

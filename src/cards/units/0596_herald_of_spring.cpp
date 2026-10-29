@@ -15,8 +15,17 @@ namespace {
 class HeraldOfSpring : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
+    // [Hunt] (when I conquer or hold, gain 1 XP) + "When you play me, gain 2 XP."
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
+    std::vector<TriggerType> triggerTypes() const override {
+        return {TriggerType::WhenYouPlayMe, TriggerType::WhenIConquerOrHold};
+    }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        if (ctx.firing_trigger == TriggerType::WhenIConquerOrHold) {
+            ctx.state.player(ctx.controller).xp += 1;
+            ctx.events.logTrace("HERALD OF SPRING: [Hunt] +1 XP");
+            return;
+        }
         ctx.state.player(ctx.controller).xp += 2;
         ctx.events.logTrace("HERALD OF SPRING: +2 XP on play");
     }

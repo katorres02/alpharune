@@ -17,6 +17,8 @@ public:
     const CardDef& def() const override { return def_; }
     // "Choose a battlefield you control and a unit you control at a different
     //  location. Move that unit to that battlefield and give it +2 [M] this turn."
+    // (Vendetta errata text; the errata prints the Might symbol with its old
+    // shorthand [S], CR 135.2.e.3.)
     static bool controls(const BattlefieldState& bf, PlayerId p) {
         return bf.controller.has_value() && *bf.controller == p;
     }
@@ -86,7 +88,7 @@ private:
         d.keywords.set(Keyword::Hidden);
         d.keywords.set(Keyword::Reaction);
         d.ability_text = R"RB([Hidden] (Hide now for [A] to react with later for [0].)
-[Reaction] (Play on your turn or in showdowns.)
+[Reaction] (Play any time, even before spells and abilities resolve.)
 Choose a battlefield you control and a unit you control at a different location. Move that unit to that battlefield and give it +2 [M] this turn.)RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/1a625de128019d65d41dd0af4f8d189d5de530a5-744x1039.png)RB";
         return d;

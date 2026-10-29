@@ -17,6 +17,8 @@ public:
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
         if (!targets.empty())
             ctx.executor.giveTemporaryMight(targets[0], -4);
+        // "[Predict]": look at the top card of your Main Deck; you may recycle it.
+        ctx.executor.predict(ctx.controller, 1);
     }
     TargetRequirements getTargetRequirements() const override {
         return TargetRequirements{.count = 1, .must_be_unit = true};

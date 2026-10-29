@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -15,33 +16,75 @@ class GuerillaWarfare : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
 
+    // "Return up to two cards with [Hidden] from your trash to your hand. You
+    // can hide cards ignoring costs this turn." The player picks the cards one
+    // at a time (or stops). Resume points 20/21/22; resume_data[15] = count,
+    // [16..17] = picks.
+    static constexpr size_t kCount = 15;
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         auto& ps = ctx.state.player(ctx.controller);
         const CardDB& db = ctx.executor.cardDB();
-
-        // Collect up to two [Hidden] cards from trash and return them. We
-        // return the first matching cards (deterministic); modeled as "up to
-        // two" by stopping at two.
-        int returned = 0;
-        for (int i = static_cast<int>(ps.trash.size()) - 1;
-             i >= 0 && returned < 2; --i) {
-            auto cid = ps.trash[i];
-            if (!ctx.state.objectExists(cid)) continue;
+        std::vector<GameObjectId> picks;
+        auto candidates = [&]() {
+            std::vector<GameObjectId> out;
+            for (auto cid : ps.trash) {
+                if (!ctx.state.objectExists(cid)) continue;
+                const auto& obj = ctx.state.getObject(cid);
+                if (obj.card_def_id == kInvalidId) continue;
+                if (!db.get(obj.card_def_id).keywords.has(Keyword::Hidden)) continue;
+                if (std::find(picks.begin(), picks.end(), cid) != picks.end()) continue;
+                out.push_back(cid);
+            }
+            return out;
+        };
+        if (!ctx.state.chain.resuming.has_value()) {
+            // Direct invocation (test path): the two most recently trashed.
+            auto c = candidates();
+            for (auto it = c.rbegin(); it != c.rend() && picks.size() < 2; ++it) picks.push_back(*it);
+        } else {
+            auto& ri = *ctx.state.chain.resuming;
+            if (ri.resume_data.size() < kCount + 3) ri.resume_data.resize(kCount + 3, 0);
+            if (ri.resume_point < 20) { ri.resume_point = 20; ri.resume_data[kCount] = 0; }
+            for (int i = 0; i < ri.resume_data[kCount]; ++i)
+                picks.push_back(static_cast<GameObjectId>(ri.resume_data[kCount + 1 + i]));
+            if (ri.resume_point == 21) {
+                GameObjectId got = takenObject(ctx);
+                auto c = candidates();
+                if (got == kInvalidId || std::find(c.begin(), c.end(), got) == c.end()) {
+                    ri.resume_point = 22;
+                } else {
+                    ri.resume_data[kCount + 1 + picks.size()] = static_cast<int32_t>(got);
+                    picks.push_back(got);
+                    ri.resume_data[kCount] = static_cast<int32_t>(picks.size());
+                    ri.resume_point = picks.size() >= 2 ? 22 : 20;
+                }
+            }
+            if (ri.resume_point == 20) {
+                auto c = candidates();
+                if (!c.empty()) {
+                    std::vector<Intent> opts;
+                    opts.push_back(valChoice(ctx.controller, 0, "Done returning cards"));
+                    for (auto cid : c) opts.push_back(objChoice(ctx.controller, cid));
+                    ctx.executor.requestChoice(ctx.controller, std::move(opts),
+                        "Guerilla Warfare: return a [Hidden] card from your trash");
+                    ri.resume_point = 21;
+                    return;
+                }
+                ri.resume_point = 22;
+            }
+        }
+        for (auto cid : picks) {
+            auto it = std::find(ps.trash.begin(), ps.trash.end(), cid);
+            if (it == ps.trash.end()) continue;
+            ps.trash.erase(it);
             auto& obj = ctx.state.getObject(cid);
-            if (obj.card_def_id == kInvalidId) continue;
-            if (!db.get(obj.card_def_id).keywords.has(Keyword::Hidden)) continue;
-            // Move trash -> hand.
-            ps.trash.erase(ps.trash.begin() + i);
             obj.zone = ZoneType::Hand;
             obj.location = std::nullopt;
             ps.hand.push_back(cid);
-            ++returned;
             ctx.events.logTrace("GUERILLA WARFARE: returned " + obj.name +
                                  " from trash to hand");
         }
-        // TODO: "You can hide cards ignoring costs this turn." — the engine
-        // has no per-player "hide ignoring costs" flag, so this clause is not
-        // implemented (engine gap).
+        ps.hide_ignoring_costs_turn = ctx.state.turn.turn_number;
     }
 private:
     const CardDef def_ = [] {

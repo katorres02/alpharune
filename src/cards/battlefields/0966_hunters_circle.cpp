@@ -16,7 +16,19 @@ namespace {
 class HuntersCircle : public BattlefieldCard {
 public:
     const CardDef& def() const override { return def_; }
-    // NOTE: "first unit or gear played here costs [1] less" is not modeled.
+    // "For each player, the first unit or gear they play here on their turn
+    // costs [1] less." BattlefieldState::first_play_here_discount; the engine
+    // takes it off the first such play per player per turn (stamped in
+    // first_play_here_turn) as it is paid.
+    // GAP: the action generator's affordability check doesn't know where the
+    // card goes, so a card payable only with this discount isn't offered.
+    void applyPassiveAura(GameState& state, PlayerId /*controller*/) const override {
+        for (auto& bf : state.battlefields) {
+            if (!state.objectExists(bf.card_object_id)) continue;
+            if (state.getObject(bf.card_object_id).card_def_id != cardDefId()) continue;
+            bf.first_play_here_discount = 1;
+        }
+    }
 private:
     const CardDef def_ = [] {
         CardDef d;

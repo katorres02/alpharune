@@ -348,7 +348,7 @@ TEST_F(AuditFix5Test, FireBelowMtn_AbilityMetadata) {
     EXPECT_TRUE(card->getActivationCost().exhaust);
 }
 
-// onActivate adds one floating [A] (universal power) to the controller's pool.
+// onActivate adds one gear-only [A] to the controller's pool.
 TEST_F(AuditFix5Test, FireBelowMtn_ActivateAddsUniversalPower) {
     EffectExecutor exec(state, events, card_db);
     auto src = addUnit(P1, kInvalidId, 1);  // stand-in source for the legend
@@ -358,9 +358,9 @@ TEST_F(AuditFix5Test, FireBelowMtn_ActivateAddsUniversalPower) {
     CardContext ctx{state, events, exec, P1, src};
     card->onActivate(ctx, {});
 
-    EXPECT_EQ(state.player(P1).rune_pool.universal_power, before + 1);
-    // NOTE: the "use only to play gear / use gear abilities" earmark is NOT
-    // engine-enforced (documented limitation) — the [A] is spendable anywhere.
+    EXPECT_EQ(state.player(P1).rune_pool.universal_power, before);
+    EXPECT_EQ(state.player(P1).rune_pool.restrictedAmount(true, SpendPurpose::PlayGear | SpendPurpose::GearAbility), 1)
+        << "the [A] is usable only to play gear or use gear abilities";
 }
 
 // ─── [544] Yone, Blademaster ─────────────────────────────────────────────────
@@ -444,8 +444,13 @@ TEST_F(AuditFix5Test, IvernNurturer_DraftsUnitOnPlay) {
     auto unit_card = addToDeck(P1, kYone);    // unit -> drafted (this is back/top)
 
     int hand_before = handSize(P1);
-    driveResumableTrigger(kIvernNurturer, P1, ivern, &AuditFix5Test::pickYes, exec,
-                          TriggerType::WhenYouPlayMe);
+    // The player chooses which unit to reveal (2026-10 audit): pick Yone.
+    driveResumableTrigger(kIvernNurturer, P1, ivern,
+        [unit_card](const std::vector<Intent>& legal) -> Intent {
+            for (auto& i : legal)
+                if (!i.chosen_objects.empty() && i.chosen_objects.front() == unit_card) return i;
+            return legal.empty() ? Intent{} : legal.back();
+        }, exec, TriggerType::WhenYouPlayMe);
 
     EXPECT_TRUE(inHand(P1, unit_card)) << "the unit should be drafted to hand";
     EXPECT_EQ(handSize(P1), hand_before + 1);
@@ -505,12 +510,13 @@ TEST_F(AuditFix5Test, IvernNurturer_EmptyDeckNoop) {
 
 // ─── [644] Lillia, Fae Fawn ──────────────────────────────────────────────────
 
-// WhenIMove: creates a 3-Might Sprite token with [Temporary] at the unit's
-// current (post-move) location.
+// WhenIMove: creates a 3-Might Sprite token with [Temporary] at the location
+// she moved FROM (2026-10 audit; TriggerManager stamps __moved_from_bf).
 TEST_F(AuditFix5Test, Lillia_MoveCreatesSpriteToken) {
     EffectExecutor exec(state, events, card_db);
     BattlefieldId bf = 1;
-    auto lillia = addUnit(P1, kLillia, 3, /*at_bf=*/static_cast<int>(bf));
+    auto lillia = addUnit(P1, kLillia, 3, /*at_bf=*/0);   // moved 1 -> 0
+    state.getObject(lillia).card_counters["__moved_from_bf"] = static_cast<int>(bf);
 
     fireTriggerAs(kLillia, P1, lillia, TriggerType::WhenIMove, exec);
 
@@ -519,14 +525,14 @@ TEST_F(AuditFix5Test, Lillia_MoveCreatesSpriteToken) {
     auto& t = state.getObject(token);
     EXPECT_EQ(t.base_might, 3);
     EXPECT_TRUE(t.hasKeyword(Keyword::Temporary));
-    // Token spawns "there" — same battlefield Lillia is now at.
+    // Token spawns "there" — the battlefield Lillia moved from.
     ASSERT_TRUE(t.location.has_value());
     EXPECT_TRUE(std::holds_alternative<BattlefieldLocation>(*t.location));
     EXPECT_EQ(std::get<BattlefieldLocation>(*t.location).id, bf);
 }
 
-// Fallback: if the source has no location, the token spawns at the
-// controller's base.
+// Moved from her base (no __moved_from_bf battlefield): the token is played
+// to the controller's base.
 TEST_F(AuditFix5Test, Lillia_NoLocationFallsBackToBase) {
     EffectExecutor exec(state, events, card_db);
     auto lillia = addUnit(P1, kLillia, 3);  // at base

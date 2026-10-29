@@ -7,6 +7,22 @@
 
 namespace riftbound {
 
+std::vector<GameObjectId> Card::objectCostCandidates(
+    const GameState& state, PlayerId player, GameObjectId self,
+    const std::optional<LocationId>& /*play_location*/) const {
+    std::vector<GameObjectId> out;
+    const auto kind = optionalAdditionalCost(state, player).object_cost;
+    if (kind == OptionalAdditionalCost::ObjectCost::None) return out;
+    for (const auto& [id, obj] : state.objects) {
+        if (id == self || !obj.isUnit() || obj.controller != player) continue;
+        if (!obj.location.has_value()) continue;
+        if (kind == OptionalAdditionalCost::ObjectCost::SpendBuff && obj.buff_count <= 0) continue;
+        out.push_back(id);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
 // finalize_checked bit 4: a cost payment was started during the finalize pass.
 // It counts as paid only once the card reaches its end-of-choices marker, so a
 // payment that fails (the card returns early) is still owed at resolution.
@@ -327,6 +343,7 @@ void commitChoice(CardContext& ctx, const Card& card, GameObjectId t) {
     }
     if (ctx.state.chain.resuming.has_value())
         ctx.state.chain.resuming->chosen_objects.push_back(t);
+    noteEnemyChoice(ctx.state, ctx.controller, ctx.source, t);   // Prodigal Explorer
     // "If you've chosen an enemy unit this turn" (Hungry Wolf).
     const auto& tobj = ctx.state.getObject(t);
     if (tobj.isUnit() && tobj.controller != ctx.controller)
@@ -624,6 +641,131 @@ std::pair<GameObjectId, GameObjectId> Card::pickTargetPair(
     }
     return {static_cast<GameObjectId>(ri.resume_data[3]),
             static_cast<GameObjectId>(ri.resume_data[4])};
+}
+
+namespace {
+int32_t encodePlayLocation(const GameState& state, const LocationId& loc) {
+    if (const auto* b = std::get_if<BattlefieldLocation>(&loc)) {
+        for (size_t i = 0; i < state.battlefields.size(); ++i)
+            if (state.battlefields[i].id == b->id) return static_cast<int32_t>(i + 1);
+    }
+    return 0;
+}
+std::string playLocationName(const GameState& state, const LocationId& loc) {
+    if (const auto* b = std::get_if<BattlefieldLocation>(&loc)) {
+        for (const auto& bf : state.battlefields)
+            if (bf.id == b->id)
+                return state.objectExists(bf.card_object_id)
+                    ? state.getObject(bf.card_object_id).name
+                    : "BF#" + std::to_string(bf.id);
+    }
+    return "base";
+}
+}  // namespace
+
+int Card::pickPlayLocation(CardContext& ctx, GameObjectId card, LocationId& out,
+                           PlayerId chooser, const std::string& label,
+                           const std::vector<LocationId>& extra) {
+    if (chooser == PlayerId::None) chooser = ctx.controller;
+    if (ctx.state.objectExists(card)) {
+        const auto& o = ctx.state.getObject(card);
+        if (!o.isUnit() && !o.isGear()) { out = BaseLocation{chooser}; return 1; }
+    }
+    auto legal = ctx.executor.playLocationsFor(chooser, card);
+    for (const auto& l : extra)
+        if (std::find(legal.begin(), legal.end(), l) == legal.end()) legal.push_back(l);
+    // Keep the encoding order (base, then battlefields in board order).
+    std::stable_sort(legal.begin(), legal.end(), [&](const LocationId& a, const LocationId& b) {
+        return encodePlayLocation(ctx.state, a) < encodePlayLocation(ctx.state, b);
+    });
+    return pickLocationAmong(ctx, card, legal, out, chooser, label);
+}
+
+int Card::pickLocationAmong(CardContext& ctx, GameObjectId card,
+                            const std::vector<LocationId>& legal, LocationId& out,
+                            PlayerId chooser, const std::string& label) {
+    if (chooser == PlayerId::None) chooser = ctx.controller;
+    auto& ri_opt = ctx.state.chain.resuming;
+
+    // Already answered for this object (re-entry): return the stored pick.
+    if (ri_opt.has_value()) {
+        for (const auto& [obj, code] : ri_opt->play_location_picks) {
+            if (obj != card) continue;
+            if (code <= 0 || code > static_cast<int32_t>(ctx.state.battlefields.size()))
+                out = BaseLocation{chooser};
+            else
+                out = BattlefieldLocation{ctx.state.battlefields[code - 1].id};
+            return 1;
+        }
+    }
+
+    if (ri_opt.has_value() && ri_opt->play_location_pending == card) {
+        auto& ri = *ri_opt;
+        ri.play_location_pending = kInvalidId;
+        auto picked = ctx.executor.takeChoice();
+        int32_t code = legal.empty() ? 0 : encodePlayLocation(ctx.state, legal.front());
+        if (picked.has_value() && picked->chosen_value.has_value()) {
+            const int32_t v = *picked->chosen_value;
+            for (const auto& l : legal)
+                if (encodePlayLocation(ctx.state, l) == v) { code = v; break; }
+        }
+        ri.play_location_picks.emplace_back(card, code);
+        out = code == 0 ? LocationId{BaseLocation{chooser}}
+                        : LocationId{BattlefieldLocation{ctx.state.battlefields[code - 1].id}};
+        ctx.events.logTrace("LOC_PICKED: " + label + " = " + playLocationName(ctx.state, out));
+        return 1;
+    }
+
+    if (legal.empty()) {
+        ctx.events.logTrace("LOC_NONE: " + label + " (no legal play location)");
+        return 0;
+    }
+    if (legal.size() == 1 || !ri_opt.has_value()) {
+        out = legal.front();
+        if (ri_opt.has_value())
+            ri_opt->play_location_picks.emplace_back(card, encodePlayLocation(ctx.state, out));
+        ctx.events.logTrace("LOC_FORCED: " + label + " = " + playLocationName(ctx.state, out));
+        return 1;
+    }
+
+    std::vector<Intent> options;
+    std::string summary;
+    for (const auto& l : legal) {
+        Intent i;
+        i.type = IntentType::MakeChoice;
+        i.player = chooser;
+        i.chosen_value = encodePlayLocation(ctx.state, l);
+        i.choice_label = label + ": " + playLocationName(ctx.state, l);
+        options.push_back(std::move(i));
+        if (!summary.empty()) summary += "/";
+        summary += playLocationName(ctx.state, l);
+    }
+    ctx.events.logTrace("LOC_PROMPT: " + label + " [" + summary + "] (P=" +
+                        std::string(toString(chooser)) + ", agent decides)");
+    ctx.executor.requestChoice(chooser, std::move(options), "location: " + label);
+    auto& ri = *ri_opt;
+    ri.play_location_pending = card;
+    // A card that decides its choices at finalization but is resolving
+    // without that pass (it was put on the chain mid-resolution) has made its
+    // choices and paid its costs in this pass already (this is called after
+    // its finalizingChoices marker). Record that, so the re-entry after this
+    // answer doesn't pay the costs again.
+    if (choicesAtFinalization() != 0 && !ri.finalizing && !ri.choices_finalized) {
+        ri.choices_finalized = true;
+        ri.finalize_costs_paid = true;
+    }
+    return -1;
+}
+
+int Card::printedEnergyCost(const GameState& state, const CardDB& db, GameObjectId obj) {
+    if (!state.objectExists(obj)) return -1;
+    const CardDefId id = state.getObject(obj).card_def_id;
+    if (id == kInvalidId || !db.all().count(id)) return -1;
+    return db.get(id).energy_cost;
+}
+
+GameObjectId Card::shownOff(const GameState& state, GameObjectId self) {
+    return state.objectExists(self) ? state.getObject(self).showed_off_object : kInvalidId;
 }
 
 std::vector<GameObjectId> Card::enumerateLegalTargets(

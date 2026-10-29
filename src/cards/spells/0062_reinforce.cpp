@@ -18,9 +18,8 @@ public:
     // "Look at the top 5 cards of your Main Deck. You may banish a unit from
     //  among them, then play it, reducing its cost by [5]. Recycle the
     //  remaining cards."
-    // NOTE: there is no partial cost-reduction play path in the executor;
-    // playIgnoringCost ignores ALL cost. The chosen unit is played for free
-    // (documented approximation of "-[5]"; most reachable units cost <= 5).
+    // The reduced cost is paid through the engine's cost path
+    // (EffectExecutor::playPayingCost); the unit goes where I choose.
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         auto& ri = ctx.state.chain.resuming.value();
         auto& ps = ctx.state.player(ctx.controller);
@@ -56,6 +55,12 @@ public:
             // can't be a no-targets fizzle) — yield to the agent.
             if (chosen == kInvalidId) return;
         }
+        // Base or a battlefield I control (CR 355.2), chosen before anything
+        // moves (the card re-enters from the top while the agent decides).
+        LocationId where{BaseLocation{ctx.controller}};
+        if (chosen != kInvalidId &&
+            pickPlayLocation(ctx, chosen, where, PlayerId::None, "Reinforce: play it where?") == -1)
+            return;
 
         // Recycle the remaining peeked cards (everything except the chosen),
         // detaching all peeked cards from the deck first.
@@ -79,7 +84,7 @@ public:
             if (ctx.executor.canPlayPayingCost(ctx.controller, chosen, reduced)) {
                 auto& bz = ctx.state.player(ctx.state.getObject(chosen).owner).banishment;
                 bz.erase(std::remove(bz.begin(), bz.end(), chosen), bz.end());
-                ctx.executor.playPayingCost(ctx.controller, chosen, std::nullopt, reduced);
+                ctx.executor.playPayingCost(ctx.controller, chosen, where, reduced);
             }
             ctx.events.logTrace("REINFORCE: banished + played " +
                                 ctx.state.getObject(chosen).name + " (cost reduced)");

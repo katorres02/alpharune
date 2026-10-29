@@ -209,9 +209,10 @@ TEST_F(AuditFix2Test, OvertOperation_DeclineStillBuffsAll) {
     auto spell = pushSpellOnChain(P1, kOvertOperation);
     driveResumable(kOvertOperation, P1, spell, pickValue(0), exec);
 
-    // Declined the spend -> still exhausted; but mass-buff still applies (+1).
+    // Declined the spend -> still exhausted. The mass buff skips it: a unit
+    // that already has a buff doesn't get another (CR 427.1.b.1).
     EXPECT_TRUE(state.getObject(u).is_exhausted);
-    EXPECT_EQ(state.getObject(u).buff_count, 2) << "1 existing + 1 mass-buff";
+    EXPECT_EQ(state.getObject(u).buff_count, 1) << "already buffed: no second buff";
 }
 
 TEST_F(AuditFix2Test, OvertOperation_NoBuffsStillMassBuffs) {

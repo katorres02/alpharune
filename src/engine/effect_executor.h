@@ -37,6 +37,17 @@ struct EffectPlayCost {
 int deflectCostFor(const GameState& state, PlayerId chooser, GameObjectId target);
 /// Power of any Domain `player` could pay right now.
 int payableAnyPower(const GameState& state, PlayerId player);
+/// Where `player` may put `card` (a unit or gear) as they play it (CR 355.2):
+/// their base or a battlefield they control, widened by the unit's own
+/// permissions ("play me to an open battlefield", ...) and standing grants
+/// (CR 355.2.b), or replaced by the card's own list when it restricts its play
+/// locations ([Deploy] gear, CR 830). Gear goes to base (CR 149.2). With
+/// `include_ambush`, a unit with [Ambush] also offers battlefields where
+/// `player` controls units (CR 822.1.c) — the play-from-hand generator offers
+/// those with Reaction timing instead. Empty for spells / nothing legal.
+std::vector<LocationId> legalPlayLocations(const GameState& state, const CardDB& db,
+                                           const CardRegistry* registry, PlayerId player,
+                                           GameObjectId card, bool include_ambush);
 
 class EffectExecutor {
 public:
@@ -68,6 +79,10 @@ public:
     /// attaching). Returns the first object when there is no agent to ask, and
     /// kInvalidId when `objects` is empty.
     GameObjectId chooseObjectNow(PlayerId player, const std::vector<GameObjectId>& objects);
+    /// Ask `player` a yes/no question right now, for an effect that is not
+    /// resolving from the chain and so cannot suspend (a "you may pay" death
+    /// replacement). Options are [no, yes]; returns `fallback` with no agent.
+    bool confirmNow(PlayerId player, const std::string& label, bool fallback = true);
 
     /// "You may make new choices for it" (CR 750-755): the item's controller
     /// re-chooses its targets. Costs already paid are unaffected (755.1).
@@ -85,7 +100,15 @@ public:
     void bounceToHand(GameObjectId target);
     void giveTemporaryMight(GameObjectId target, int amount, int minimum = 0);
     void giveTemporaryKeyword(GameObjectId target, Keyword kw, int value);
-    void buffUnit(GameObjectId target);
+    /// [Buff] (CR 427.1.b): place a buff counter on `target` unless it already
+    /// has one (and its card doesn't allow any number of buffs). Returns
+    /// whether a buff was placed.
+    bool buffUnit(GameObjectId target);
+    /// Spend a buff (CR 427.1.b): remove one buff counter from `unit` (its
+    /// +1 [M] goes with it) and emit ObjectStateChangedEvent "buff_spent"
+    /// (-> WhenYouSpendABuff for the unit's controller). Returns false, doing
+    /// nothing, if the unit has no buff. Every "spend a buff" goes through here.
+    bool spendBuff(GameObjectId unit);
     void readyObject(GameObjectId target);
     void moveToBase(GameObjectId target);
     /// Unattach a single gear from the unit it's equipped to. Removes it from
@@ -135,6 +158,9 @@ public:
     void healObject(GameObjectId target);
     void exhaustObject(GameObjectId target);
     void channelRunes(PlayerId player, int count, bool enter_exhausted = false);
+    /// Channel without applying "if you would channel" replacements (Seraphic
+    /// Wyvern's extra rune) — used for the replacement's own extra runes.
+    void channelRunesNoReplacement(PlayerId player, int count, bool enter_exhausted = false);
 
     // Phase 6q+ — Add abilities (CR 429). Add floating energy / power to
     // a player's rune pool. Floating resources are spent before runes,
@@ -151,6 +177,15 @@ public:
     // These helpers are called directly from Card::onTrigger / onActivate
     // bodies; no chain bookkeeping required.
     void addFloatingEnergy(PlayerId player, int amount);
+    /// Energy (`power` false) or [A] (`power` true) that may only be spent on
+    /// payments whose SpendPurpose overlaps `uses` ("Use only to play spells",
+    /// "Spend this Power only to play units or gear") and, with
+    /// `showdown_only`, only while a showdown is in progress
+    /// (RunePool::restricted).
+    void addRestrictedResource(PlayerId player, bool power, int amount, SpendPurpose uses,
+                               bool showdown_only = false);
+    /// Energy usable only to play spells (Lux, Crownguard).
+    void addSpellOnlyEnergy(PlayerId player, int amount);
     /// Energy that can only pay for units and activated abilities of units.
     void addUnitOnlyEnergy(PlayerId player, int amount);
     void addFloatingPower(PlayerId player, Domain domain, int amount);
@@ -249,6 +284,13 @@ public:
     /// agent and pass the result here (see Dazzling Aurora).
     void playIgnoringCost(PlayerId player, GameObjectId card,
                            std::optional<LocationId> location = std::nullopt);
+
+    /// Locations `player` may choose when an effect has them play `card`
+    /// (legalPlayLocations with Ambush). Card::pickPlayLocation asks the agent.
+    std::vector<LocationId> playLocationsFor(PlayerId player, GameObjectId card) const {
+        return legalPlayLocations(state_, card_db_, card_registry_, player, card,
+                                  /*include_ambush=*/true);
+    }
 
     using EffectPlayCost = ::riftbound::EffectPlayCost;
     /// Whether `player` could pay for `card` under `cost` right now.

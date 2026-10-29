@@ -1,5 +1,6 @@
 #include "cards/card.h"
 #include "cards/card_registry.h"
+#include "cards/card_helpers.h"
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
@@ -18,14 +19,37 @@ public:
         return TargetRequirements{.count = 1, .must_be_unit = true,
                                   .must_be_enemy = true};
     }
+    // "Choose an enemy unit. Deal 6 to it unless its controller has you draw 2."
+    // The unit's controller decides (resume points 20/21).
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
         if (targets.empty() || !ctx.state.objectExists(targets[0])) return;
-        // Default branch: opponent declines to feed cards, so deal 6.
-        // (Opponent "have you draw 2 instead" opt-out is an unmodeled partial —
-        // see header comment: no opponent-side resumable choice hook here.)
-        ctx.executor.dealDamage(targets[0], 6, ctx.source);
-        ctx.events.logTrace("SHAKEDOWN: deal 6 to chosen enemy unit "
-                            "(opponent draw-2 opt-out unmodeled)");
+        const GameObjectId t = targets[0];
+        const PlayerId them = ctx.state.getObject(t).controller;
+        auto& ri_opt = ctx.state.chain.resuming;
+        int answer = 0;
+        if (ri_opt.has_value()) {
+            auto& ri = *ri_opt;
+            if (ri.resume_point < 20) {
+                std::vector<Intent> opts = {valChoice(them, 0, "Take 6 damage"),
+                                            valChoice(them, 1, "Have them draw 2")};
+                ctx.executor.requestChoice(them, std::move(opts),
+                                           "Shakedown: take 6 or let them draw 2?");
+                ri.resume_point = 20;
+                return;
+            }
+            if (ri.resume_point != 20) return;
+            ri.resume_point = 21;
+            answer = takenValue(ctx, 0);
+        }
+        if (answer == 1) {
+            ctx.executor.drawCards(ctx.controller, 2);
+            ctx.events.logTrace("SHAKEDOWN: opponent let the caster draw 2");
+            return;
+        }
+        ctx.executor.dealDamage(t, 6, ctx.source);
+        if (ctx.state.objectExists(t) && ctx.state.getObject(t).hasLethalDamage())
+            ctx.executor.killObject(t);
+        ctx.events.logTrace("SHAKEDOWN: deal 6");
     }
 private:
     const CardDef def_ = [] {

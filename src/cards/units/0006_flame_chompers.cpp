@@ -30,9 +30,11 @@ public:
         if (costDueNow(ctx) && !payOnePower(ctx, ctx.controller, Domain::Fury)) return;
         if (finalizingChoices(ctx)) return;   // choices and costs end here (CR 383.3)
         if (!in_trash()) return;              // left the trash in response
+        LocationId where;   // base or a battlefield I control (CR 355.2)
+        if (pickPlayLocation(ctx, ctx.source, where, PlayerId::None, "Flame Chompers: play me where?") <= 0) return;
         auto& trash = ctx.state.player(ctx.state.getObject(ctx.source).owner).trash;
         trash.erase(std::remove(trash.begin(), trash.end(), ctx.source), trash.end());
-        ctx.executor.playIgnoringCost(ctx.controller, ctx.source);
+        ctx.executor.playIgnoringCost(ctx.controller, ctx.source, where);
         ctx.events.logTrace("FLAME CHOMPERS: paid [R] -> play from trash");
     }
 private:

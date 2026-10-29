@@ -15,58 +15,61 @@ namespace {
 class BlastCone : public GearCard {
 public:
     const CardDef& def() const override { return def_; }
-    TriggerType triggerType() const override { return TriggerType::WhenYouPlayThis; }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true,
-                                   .must_be_enemy = true, .optional = true};
+    // "When you play this, you may move an enemy unit."
+    // "When you move an enemy unit, you may exhaust this to [Stun] it."
+    // The second is a standing trigger (TriggerManager fires
+    // WhenYouMoveAnEnemyUnit, subject = the moved unit), so it also follows
+    // the first. Choices (and the exhaust cost) are made at finalization.
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
+    std::vector<TriggerType> triggerTypes() const override {
+        return {TriggerType::WhenYouPlayThis, TriggerType::WhenYouMoveAnEnemyUnit};
     }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!ctx.state.objectExists(ctx.source)) return;
-        auto find_enemy = [&]() -> GameObjectId {
-            for (auto& [id, obj] : ctx.state.objects) {
-                if (!obj.isUnit() || obj.controller == ctx.controller) continue;
-                if (!obj.location.has_value()) continue;
-                if (obj.untargetable_by_enemy) continue;
-                return id;
-            }
-            return kInvalidId;
-        };
-        auto move_legal = [&]() {
-            if (!targets.empty())
-                return ctx.state.objectExists(targets[0]) &&
-                       ctx.state.getObject(targets[0]).location.has_value();
-            return find_enemy() != kInvalidId;
-        };
-        if (!move_legal()) return;
-        int conf = confirmOptional(ctx, "Blast Cone: move an enemy unit?", move_legal);
-        if (conf != 1) return;
-
-        GameObjectId moved = kInvalidId;
-        if (!targets.empty() && ctx.state.objectExists(targets[0]) &&
-            ctx.state.getObject(targets[0]).controller != ctx.controller) {
-            moved = targets[0];
-        } else {
-            moved = find_enemy();
+    static std::vector<GameObjectId> movableEnemies(const GameState& state, PlayerId controller) {
+        std::vector<GameObjectId> out;
+        for (auto& [id, obj] : state.objects) {
+            if (!obj.isUnit() || obj.controller == controller) continue;
+            if (!obj.location.has_value() || obj.isAtBase()) continue;  // somewhere to move from
+            if (obj.untargetable_by_enemy || obj.cant_be_moved_by_enemy) continue;
+            out.push_back(id);
         }
-        if (moved == kInvalidId) return;
-        ctx.executor.moveToBase(moved);
-        ctx.events.logTrace("BLAST CONE: moved enemy on play");
+        return out;
+    }
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        if (!ctx.state.objectExists(ctx.source)) return;
+        if (ctx.firing_trigger == TriggerType::WhenYouMoveAnEnemyUnit) {
+            const GameObjectId moved = ctx.state.chain.resuming.has_value()
+                ? ctx.state.chain.resuming->triggering_subject : kInvalidId;
+            auto still_legal = [&]() {
+                if (!ctx.state.objectExists(moved)) return false;
+                const auto& m = ctx.state.getObject(moved);
+                if (!m.isUnit() || !m.location.has_value()) return false;
+                return costAlreadyPaid(ctx) || !ctx.state.getObject(ctx.source).is_exhausted;
+            };
+            int conf = confirmOptional(ctx, "Blast Cone: exhaust this to stun the moved enemy?",
+                                       still_legal);
+            if (conf < 1) { if (finalizingChoices(ctx)) return; return; }
+            if (costDueNow(ctx)) {
+                if (ctx.state.getObject(ctx.source).is_exhausted) return;
+                ctx.executor.exhaustObject(ctx.source);
+            }
+            if (finalizingChoices(ctx)) return;   // choices and costs end here (CR 383.3)
+            if (!ctx.state.objectExists(moved) ||
+                !ctx.state.getObject(moved).location.has_value()) return;
+            ctx.executor.stunUnitBy(moved, ctx.source);
+            ctx.events.logTrace("BLAST CONE: exhausted to stun the moved enemy");
+            return;
+        }
 
-        // Second clause: having moved an enemy unit, you may exhaust this to
-        // stun it.
-        auto stun_legal = [&]() {
-            return ctx.state.objectExists(ctx.source) &&
-                   !ctx.state.getObject(ctx.source).is_exhausted &&
-                   ctx.state.objectExists(moved) &&
-                   !ctx.state.getObject(moved).is_stunned;
-        };
-        if (!stun_legal()) return;
-        int conf2 = confirmOptional(ctx,
-            "Blast Cone: exhaust me to stun the moved enemy?", stun_legal);
-        if (conf2 != 1) return;
-        ctx.executor.exhaustObject(ctx.source);
-        ctx.executor.stunUnitBy(moved, ctx.source);
-        ctx.events.logTrace("BLAST CONE: exhausted to stun moved enemy");
+        // WhenYouPlayThis: "you may move an enemy unit" (to its base).
+        int conf = confirmOptional(ctx, "Blast Cone: move an enemy unit?",
+            [&]() { return !movableEnemies(ctx.state, ctx.controller).empty(); });
+        if (conf < 1) { if (finalizingChoices(ctx)) return; return; }
+        GameObjectId target = pickTarget(ctx, "Blast Cone: enemy unit to move",
+                                         movableEnemies(ctx.state, ctx.controller));
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (target == kInvalidId || !ctx.state.objectExists(target)) return;
+        ctx.executor.moveToBase(target);
+        ctx.events.logTrace("BLAST CONE: moved an enemy unit on play");
     }
 private:
     const CardDef def_ = [] {

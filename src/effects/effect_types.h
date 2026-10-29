@@ -196,6 +196,38 @@ enum class TriggerType : uint8_t {
                                  // ability's Energy cost rides in triggering_spell_energy_spent
     WhenIBecomeExhausted,        // "When I become exhausted," (Radiance: Riven, Broken Blade;
                                  // Reckless Innovator) — ObjectStateChangedEvent "exhausted"
+    // ── 2026-10 audit (cards1) ──
+    WhenILeaveTheBoard,          // "When this leaves the board," — fires on the object itself
+                                 // from LeftBoardEvent (killed, returned, banished). Treasure Trove.
+    WhenAnEnemyUnitAttacksYourBattlefield, // legend: "When an enemy unit attacks a battlefield
+                                 // you control," — one per attacking unit; subject = attacker.
+    WhenYouConquerFromTrash,     // "When you conquer, ... return this from your trash" — fires on
+                                 // the conquering player's cards in their trash (Super Mega Death Rocket!).
+    WhenAUnitTakesDamage,        // delayed abilities only ("kill it the next time it takes damage
+                                 // this turn"); triggering_subject = the damaged unit.
+    WhenYouRecycleARune,         // "When you recycle a rune," (Battle Mistress) — legend sweep on
+                                 // a LeftBoardEvent of a rune going to the Rune Deck
+    WhenYouPlayATokenUnit,       // "When you play a token unit," (Lillia, Protector of Dreams)
+                                 // — TokenCreatedEvent; subject = the token
+    WhenYouMoveAnEnemyUnit,      // "When you move an enemy unit," (Blast Cone) — an
+                                 // effect-driven move of an enemy unit by a spell or
+                                 // ability you control; subject = the moved unit
+    WhenMyMightBecomes10OrMore,  // "When my Might becomes 10 or more," (Renekton, Brute) —
+                                 // ObjectStateChangedEvent "might_10" from the cleanup edge pass
+    WhenYouExhaustUnitsTogether, // "when you exhaust N or more friendly units at the same
+                                 // time" (Seraphine, Inspiring) — "exhausted_together";
+                                 // group size in PlayerState::last_exhaust_group_size
+    WhenYouReduceEnemyMightHere, // "When you reduce the Might of an enemy unit here by 1 or more,"
+                                 // (Radiance: Ahri, Confident) — ObjectStateChangedEvent
+                                 // "might_reduced"; triggering_subject = the reduced unit
+    WhenAnotherFriendlyUnitBecomesExhausted, // "When another friendly unit becomes exhausted,"
+                                 // (Radiance: Riven, Deserter); subject = the exhausted unit
+    WhenYouPlayACardFromTrash,   // "When you play a card, ... play this from your trash" — fires on
+                                 // the playing player's cards IN THEIR TRASH (Forbidden Technique);
+                                 // the played card is the subject
+    WhenYouSpendABuff,           // "When you spend a buff," (Fae Dragon) — ObjectStateChangedEvent
+                                 // "buff_spent" from EffectExecutor::spendBuff; fires on the
+                                 // spending player's cards; subject = the unit whose buff it was
 };
 
 // ─── Conditions ─────────────────────────────────────────────────────────────
@@ -290,6 +322,8 @@ struct ActivationCost {
     // gear"): 0 = any card, else 1 + static_cast<int>(CardType).
     int discard_type_filter = 0;
     bool kill_friendly_unit = false; // "Kill a friendly unit" as a cost (Escaped Grayback)
+    bool kill_friendly_gear = false; // "Kill a friendly gear" as a cost (Whirling Twirligig);
+                                     // the gear rides in the intent's targets
 };
 
 // ─── Complete effect script ─────────────────────────────────────────────────

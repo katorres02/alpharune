@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -16,9 +17,12 @@ public:
     const CardDef& def() const override { return def_; }
     // "Choose a unit. Kill it the next time it takes damage this turn.
     //  [Legion] — Kill it now instead."
+    // Without Legion: a one-shot delayed ability scoped to the unit
+    // (TriggerManager: WhenAUnitTakesDamage), expiring at end of turn.
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
         if (targets.empty() || !ctx.state.objectExists(targets[0])) return;
         GameObjectId tgt = targets[0];
+        if (!ctx.state.getObject(tgt).location.has_value()) return;
         // Legion = the controller has played another card this turn (this spell
         // already incremented the counter, so >= 2 means Legion is active).
         bool legion = ctx.state.player(ctx.controller).cards_played_this_turn >= 2;
@@ -27,14 +31,23 @@ public:
             ctx.events.logTrace("NOXIAN GUILLOTINE: [Legion] kill now");
             return;
         }
-        // Non-Legion: "Kill it the next time it takes damage this turn."
-        // ENGINE GAP: there is no "when it takes damage" trigger/event, so this
-        // delayed kill cannot be wired from the card file. Mark the target with
-        // a flag the engine would consult; we do NOT kill now (avoids the prior
-        // double-kill bug). Requires an engine-side damage trigger to honor.
-        ctx.state.getObject(tgt).card_counters["__kill_on_next_damage_this_turn"] = 1;
-        ctx.events.logTrace("NOXIAN GUILLOTINE: mark kill-on-next-damage "
-                            "(engine damage-trigger gap; not killed now)");
+        DelayedAbility da;
+        da.source = ctx.source;
+        da.card_def_id = cardDefId();
+        da.controller = ctx.controller;
+        da.trigger = TriggerType::WhenAUnitTakesDamage;
+        da.expires_on_turn = ctx.state.turn.turn_number;
+        da.target_filter = tgt;
+        ctx.state.delayed_abilities.push_back(da);
+        ctx.events.logTrace("NOXIAN GUILLOTINE: kill it the next time it takes damage this turn");
+    }
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        if (!ctx.state.chain.resuming.has_value()) return;
+        GameObjectId u = ctx.state.chain.resuming->triggering_subject;
+        if (u == kInvalidId || !ctx.state.objectExists(u)) return;
+        if (!ctx.state.getObject(u).location.has_value()) return;
+        ctx.executor.killObject(u);
+        ctx.events.logTrace("NOXIAN GUILLOTINE: it took damage -> killed");
     }
     TargetRequirements getTargetRequirements() const override {
         return TargetRequirements{.count = 1, .must_be_unit = true};

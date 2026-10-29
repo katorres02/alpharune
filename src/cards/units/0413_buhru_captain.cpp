@@ -14,8 +14,21 @@ namespace {
 class BuhruCaptain : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        ctx.executor.drawCards(ctx.controller, 1);
+    // "When you play me, you may draw 1 or buff me." Mode chosen as the
+    // ability is finalized: Draw 1 / Buff me / Neither.
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        int mode = pickMode(ctx, "Buhru Captain: you may draw 1 or buff me", 3,
+                            {"Draw 1", "Buff me", "Neither"});
+        if (mode == -1) return;   // waiting on agent
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (mode == 0) {
+            ctx.executor.drawCards(ctx.controller, 1);
+        } else if (mode == 1) {
+            if (ctx.state.objectExists(ctx.source) &&
+                ctx.state.getObject(ctx.source).location.has_value())
+                ctx.executor.buffUnit(ctx.source);
+        }
     }
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
 private:

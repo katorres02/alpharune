@@ -41,8 +41,7 @@ public:
         auto target = find_buffed_friendly();
         if (target == kInvalidId) return;
         auto& obj = ctx.state.getObject(target);
-        obj.buff_count -= 1;
-        obj.recomputeMight();
+        ctx.executor.spendBuff(target);
         ctx.executor.drawCards(ctx.controller, 1);
         ctx.events.logTrace("MONASTERY OF HIRANA: spent a buff on " + obj.name +
                              " -> draw 1");

@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -14,13 +15,17 @@ namespace {
 class HarnessedDragon : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty())
-            ctx.executor.killObject(targets[0]);
-    }
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_enemy = true};
+    // "When you play me, kill an enemy unit."
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        auto legal = chooseableUnits(ctx.state, ctx.controller,
+            [&](const GameObject& o) { return o.controller != ctx.controller; });
+        GameObjectId t = pickTarget(ctx, "Harnessed Dragon (kill an enemy unit)", legal);
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (t == kInvalidId && ctx.executor.hasPendingChoice()) return;  // suspended
+        if (t == kInvalidId || !ctx.state.objectExists(t)) return;
+        ctx.executor.killObject(t);
     }
 private:
     const CardDef def_ = [] {

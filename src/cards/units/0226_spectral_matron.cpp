@@ -17,32 +17,19 @@ public:
     unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
 
-    // Available power [A]: floating power in the pool + the player's ready
-    // (unexhausted) runes that could still be recycled for power.
-    int availablePower(CardContext& ctx) const {
-        auto& ps = ctx.state.player(ctx.controller);
-        int avail = ps.rune_pool.totalPower();
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (!obj.isRune() || obj.controller != ctx.controller) continue;
-            if (obj.is_exhausted) continue;
-            if (!obj.location.has_value()) continue;
-            avail++;
-        }
-        return avail;
-    }
-
+    // "a unit costing no more than [3] and no more than [A]": Energy cost <= 3
+    // and Power cost <= 1 (a single power of any domain).
     std::vector<GameObjectId> eligibleTrashUnits(CardContext& ctx) const {
         std::vector<GameObjectId> out;
         auto& ps = ctx.state.player(ctx.controller);
-        int avail = availablePower(ctx);
         for (auto cid : ps.trash) {
             if (!ctx.state.objectExists(cid)) continue;
             auto& obj = ctx.state.getObject(cid);
             if (!obj.isUnit()) continue;
             if (obj.card_def_id == kInvalidId) continue;
-            int cost = ctx.executor.cardDB().get(obj.card_def_id).energy_cost;
-            if (cost > 3) continue;       // "no more than [3]"
-            if (cost > avail) continue;   // "no more than [A]" (available power)
+            const auto& cd = ctx.executor.cardDB().get(obj.card_def_id);
+            if (cd.energy_cost > 3) continue;   // "no more than [3]"
+            if (cd.power_cost > 1) continue;    // "no more than [A]"
             out.push_back(cid);
         }
         return out;
@@ -65,11 +52,13 @@ public:
             return;  // suspended for agent decision
         }
         if (picked == kInvalidId || !ctx.state.objectExists(picked)) return;
+        LocationId where;   // base or a battlefield I control (CR 355.2)
+        if (pickPlayLocation(ctx, picked, where, PlayerId::None, "Spectral Matron: play it where?") <= 0) return;
 
         auto& ps = ctx.state.player(ctx.controller);
         auto it = std::find(ps.trash.begin(), ps.trash.end(), picked);
         if (it != ps.trash.end()) ps.trash.erase(it);
-        ctx.executor.playIgnoringCost(ctx.controller, picked);
+        ctx.executor.playIgnoringCost(ctx.controller, picked, where);
         ctx.events.logTrace("SPECTRAL MATRON: played a unit from trash for free");
     }
 private:

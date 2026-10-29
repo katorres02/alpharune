@@ -881,9 +881,11 @@ TEST_F(RulesCardsTest, RulesCards_Untargetable_CustomTargetListsSkipProtectedEne
     state.getObject(shrouded).untargetable_by_enemy = true;
 
     // Every card whose enumerateLegalTargets override can return enemy units.
+    // (Vi, Peacekeeper now picks its target with pickTarget over
+    // chooseableUnits — see test_audit_2026_10_cards5.cpp.)
     const std::vector<CardDefId> cards = {
         kIronBallista, kCaitlynPatrolling, kGust, kFadingMemories, kCounterStrike,
-        kHostileTakeover, kXerathFreed, kTheList, kDiviningShells, kViPeacekeeper,
+        kHostileTakeover, kXerathFreed, kTheList, kDiviningShells,
         kVoidAssault, kKeepersVerdict, kVoidreaver,
     };
     for (CardDefId def_id : cards) {

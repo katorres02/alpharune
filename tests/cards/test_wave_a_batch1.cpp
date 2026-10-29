@@ -68,13 +68,16 @@ protected:
 
 // ─── [65] Wizened Elder — "While I'm buffed, I have an additional +1 [M]." ──
 
+// The +1 [M] comes from the engine's "while i'm buffed" self-aura (see
+// test_audit_2026_10_cards0.cpp, which runs cleanup); the card adds none of its
+// own, or a buffed Elder would get +2.
 TEST_F(WaveABatch1Test, WizenedElder_BuffedGainsExtraMight) {
     EffectExecutor exec(state, events, card_db);
     auto elder = addUnit(P1, kWizenedElder, 4, 0);
     state.getObject(elder).buff_count = 1;  // buffed
 
     card_registry.get(kWizenedElder)->applyPassiveAura(state, P1);
-    EXPECT_EQ(auraMight(elder), 1) << "buffed -> +1 [M] aura";
+    EXPECT_EQ(auraMight(elder), 0) << "no card-side aura on top of the engine's";
 }
 
 TEST_F(WaveABatch1Test, WizenedElder_UnbuffedNoExtraMight) {

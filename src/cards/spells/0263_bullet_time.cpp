@@ -44,37 +44,38 @@ public:
         if (!bf_id_opt.has_value()) return;
         auto bf_id = *bf_id_opt;
 
-        // Compute the maximum X the controller can pay: count of
-        // exhausted runes in their base (recyclable for [A]).
-        auto& ps = ctx.state.player(ctx.controller);
-        int max_x = 0;
-        for (const auto& [id, obj] : ctx.state.objects) {
-            if (!obj.isRune() || obj.controller != ctx.controller) continue;
-            if (!obj.location.has_value()) continue;
-            if (!std::holds_alternative<BaseLocation>(*obj.location)) continue;
-            if (obj.is_exhausted) max_x++;
+        // Maximum X: every [A] the controller can pay — floating power plus
+        // every rune in base (ready or exhausted runes are recycled for power).
+        int max_x = ctx.executor.payableAnyPower(ctx.controller);
+        // X is asked with its own resume points: pickXAmount shares 0/1/2 with
+        // nothing here, but pickTarget has already moved resume_point to 8,
+        // where pickXAmount would return a stale 0 without asking.
+        int x = max_x;
+        if (ctx.state.chain.resuming.has_value()) {
+            auto& ri = *ctx.state.chain.resuming;
+            if (ri.resume_data.size() < 16) ri.resume_data.resize(16, 0);
+            if (ri.resume_point < 20) {
+                std::vector<Intent> opts;
+                for (int v = 0; v <= max_x; ++v)
+                    opts.push_back(valChoice(ctx.controller, v,
+                                             "Bullet Time: X = " + std::to_string(v)));
+                ctx.executor.requestChoice(ctx.controller, std::move(opts), "X: Bullet Time");
+                ri.resume_point = 21;
+                return;
+            }
+            if (ri.resume_point == 21) {
+                ri.resume_data[15] = std::clamp(takenValue(ctx, 0), 0, max_x);
+                ri.resume_point = 22;
+            }
+            x = ri.resume_data[15];
         }
-        int x = pickXAmount(ctx, "Bullet Time: X power", 0, max_x);
-        if (x < 0) return;  // pending choice
         if (x == 0) {
             ctx.events.logTrace("BULLET TIME: X=0, no damage");
             return;
         }
-
-        // Pay X power by recycling X exhausted runes (any domain — [A]
-        // is universal).
-        int paid = 0;
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (paid >= x) break;
-            if (!obj.isRune() || obj.controller != ctx.controller) continue;
-            if (!obj.location.has_value()) continue;
-            if (!std::holds_alternative<BaseLocation>(*obj.location)) continue;
-            if (!obj.is_exhausted) continue;
-            obj.location = std::nullopt;
-            obj.zone = ZoneType::RuneDeck;
-            ps.rune_deck.insert(ps.rune_deck.begin(), id);
-            paid++;
-        }
+        // Pay X [A] through the normal any-domain payment (pool, then runes).
+        if (!ctx.executor.payAnyPower(ctx.controller, x)) return;
+        int paid = x;
         ctx.events.logTrace("BULLET TIME: paid " + std::to_string(paid) +
                              " power → dealing " + std::to_string(x) +
                              " damage to all enemies at BF#" +

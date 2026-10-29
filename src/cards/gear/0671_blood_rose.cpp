@@ -40,15 +40,27 @@ public:
                              std::to_string(ps.xp) + ")");
     }
 
-    // ── Activated: Spend 3 XP, [E]: Ready a unit (Phase 6r migrated) ──
+    // ── Activated: Spend 3 XP, [E]: Ready a unit (any unit) ──
     std::vector<ActivatedAbility> activatedAbilities() const override {
         return {{
             .cost = {.exhaust = true, .xp_cost = 3},
-            .targets = TargetRequirements{.count = 1, .must_be_unit = true,
-                                           .must_be_friendly = true},
+            .targets = TargetRequirements{.count = 1, .must_be_unit = true},
             .is_action = false, .is_reaction = false,
             .needs_activation_time_target = true,
         }};
+    }
+    // The ability's own target set (the default would read the card-level
+    // getTargetRequirements, which is empty): any unit on the board, friendly
+    // or enemy, that may be chosen.
+    std::vector<GameObjectId> enumerateLegalTargets(
+        const GameState& state, PlayerId controller, int /*ability_index*/) const override {
+        std::vector<GameObjectId> out;
+        for (auto& [id, obj] : state.objects) {
+            if (!obj.isUnit() || !obj.location.has_value()) continue;
+            if (obj.controller != controller && obj.untargetable_by_enemy) continue;
+            out.push_back(id);
+        }
+        return out;
     }
     void onActivate(CardContext& ctx, int /*ability_idx*/,
                     const std::vector<GameObjectId>& targets) override {

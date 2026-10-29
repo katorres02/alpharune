@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -14,18 +15,17 @@ namespace {
 class FioraVictorious : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
+    // "While I'm [Mighty], I have [Deflect], [Ganking], and [Shield]." Granted
+    // only through this aura: the card itself prints none of the three.
     void applyPassiveAura(GameState& state, PlayerId controller) const override {
         for (auto& [sid, self] : state.objects) {
             if (self.card_def_id != cardDefId()) continue;
             if (self.controller != controller) continue;
             if (!self.location.has_value()) continue;
-            if (self.current_might < 5) continue;   // "While I'm [Mighty]"
-            for (Keyword kw : {Keyword::Deflect, Keyword::Ganking, Keyword::Shield}) {
-                GameObject::AuraEffect ae;
-                ae.source = sid;
-                ae.keyword = kw;
-                self.aura_effects.push_back(ae);
-            }
+            if (!isMighty(self)) continue;   // "While I'm [Mighty]"
+            auraKeyword(self, sid, Keyword::Deflect, 1);
+            auraKeyword(self, sid, Keyword::Ganking);
+            auraKeyword(self, sid, Keyword::Shield, 1);
         }
     }
 private:
@@ -46,11 +46,6 @@ private:
         d.energy_cost = 4;
         d.might = 4;
         d.rarity = Rarity::Rare;
-        d.shield_value = 1;
-        d.deflect_value = 1;
-        d.keywords.set(Keyword::Deflect);
-        d.keywords.set(Keyword::Ganking);
-        d.keywords.set(Keyword::Shield);
         d.ability_text = R"RB(While I'm [Mighty], I have [Deflect], [Ganking], and [Shield]. (I'm Mighty while I have 5+ [M].))RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/24d4d1997e6a5b145412e402fc69399d590ecda0-744x1039.png)RB";
         return d;

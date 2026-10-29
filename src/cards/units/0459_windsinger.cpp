@@ -58,7 +58,8 @@ private:
         d.energy_cost = 2;
         d.might = 1;
         d.rarity = Rarity::Uncommon;
-        d.ability_text = R"RB(Hidden (Hide now for [A] to react with later for .)
+        d.keywords.set(Keyword::Hidden);
+        d.ability_text = R"RB([Hidden] (Hide now for [A] to react with later for .)
 When you play me, you may return another unit at a battlefield with 3 [M] or less to its owner's hand.)RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/e47c9a3956f8fbb77daa5fdb2ee433dd1772f247-744x1039.png)RB";
         return d;

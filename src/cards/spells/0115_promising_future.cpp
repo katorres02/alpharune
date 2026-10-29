@@ -17,12 +17,13 @@ public:
     // "Each player looks at the top 5 cards of their Main Deck, banishes one of
     // them, then recycles the rest. Starting with the next player, each player
     // plays those cards [the banished card], ignoring Energy costs."
-    // (Power cost approximated as free.)
+    // (Power is still paid; each player chooses where their permanent goes.)
     //
     // Resumable: rp0 prompt controller to banish one of their top 5; rp1 apply
     // controller's banish + recycle rest, prompt opponent; rp2 apply opponent's
     // banish + recycle rest, then both players play their banished card
-    // (next player = opponent first). Banished ids stashed in resume_data[0/1].
+    // (next player = opponent first; rp3/rp4 = the opponent's / my play-location
+    // choice). Banished ids stashed in resume_data[0/1].
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         auto& ri = ctx.state.chain.resuming.value();
         PlayerId opp = opponent(ctx.controller);
@@ -82,7 +83,7 @@ public:
             return banished;
         };
 
-        auto play_banished = [&](PlayerId p, GameObjectId banished) {
+        auto play_banished = [&](PlayerId p, GameObjectId banished, LocationId where) {
             if (banished == kInvalidId || !ctx.state.objectExists(banished)) return;
             // "ignoring Energy costs": Power is still owed, and paying is
             // optional (CR 445.2) — unpaid, the card stays banished.
@@ -91,20 +92,38 @@ public:
             auto& bz = ctx.state.player(p).banishment;
             auto it = std::find(bz.begin(), bz.end(), banished);
             if (it != bz.end()) bz.erase(it);
-            // Only units/gear are playable to a board; spells would need chain
-            // handling. playIgnoringCost places permanents; for spells it puts
-            // them on board zone without resolution (best-effort, free).
-            ctx.executor.playPayingCost(p, banished, std::nullopt, power_only);
+            // A spell goes on the chain; a unit or gear to the chosen location.
+            ctx.executor.playPayingCost(p, banished, where, power_only);
         };
 
         // Finish: play both banished cards (next player = opponent first).
+        // Each player chooses where their card goes (CR 355.2) as they play
+        // it: resume_point 3 = the opponent's, 4 = mine.
+        auto play_step = [&](PlayerId p, GameObjectId b) -> bool {
+            LocationId where{BaseLocation{p}};
+            const bool valid = b != kInvalidId && ctx.state.objectExists(b) &&
+                               ctx.state.getObject(b).zone == ZoneType::Banishment;
+            const int r = valid ? pickPlayLocation(ctx, b, where, p,
+                                                   "Promising Future: play it where?")
+                                : 0;
+            if (r == -1) return false;   // waiting for that player
+            if (r == 1) play_banished(p, b, where);
+            return true;
+        };
         auto finish = [&]() {
             GameObjectId ctrl_b = static_cast<GameObjectId>(ri.resume_data[0]);
             GameObjectId opp_b   = static_cast<GameObjectId>(ri.resume_data[1]);
-            play_banished(opp, opp_b);
-            play_banished(ctx.controller, ctrl_b);
-            ctx.events.logTrace("PROMISING FUTURE: each player banished 1 of top 5, "
-                                "recycled the rest, then played the banished card");
+            if (ri.resume_point < 3) ri.resume_point = 3;
+            if (ri.resume_point == 3) {
+                if (!play_step(opp, opp_b)) return;
+                ri.resume_point = 4;
+            }
+            if (ri.resume_point == 4) {
+                if (!play_step(ctx.controller, ctrl_b)) return;
+                ri.resume_point = 5;
+                ctx.events.logTrace("PROMISING FUTURE: each player banished 1 of top 5, "
+                                    "recycled the rest, then played the banished card");
+            }
         };
 
         if (ri.resume_point == 0) {
@@ -126,6 +145,7 @@ public:
             finish();
             return;
         }
+        if (ri.resume_point == 3 || ri.resume_point == 4) finish();
     }
 private:
     const CardDef def_ = [] {

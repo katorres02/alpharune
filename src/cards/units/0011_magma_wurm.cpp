@@ -1,5 +1,6 @@
 #include "cards/card.h"
 #include "cards/card_registry.h"
+#include "cards/card_helpers.h"
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
@@ -14,11 +15,15 @@ namespace {
 class MagmaWurm : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    // "Other friendly units enter ready."
-    // ENGINE GAP: the engine consults only the ENTERING card's own
-    // entersReadyOnPlay() (resolvePermanent), so a passive that makes OTHER
-    // units enter ready cannot be expressed per-card — it needs an engine-side
-    // check (e.g. "any friendly Magma Wurm in play?") at unit-resolution time.
+    // "Other friendly units enter ready." Asked by resolvePermanent for each
+    // unit its controller plays while I'm on the board.
+    // GAP: units that enter the board other than by being played (tokens an
+    // effect creates) still use their own entry state.
+    bool grantsEnterReadyTo(const GameState& state, GameObjectId self,
+                            const GameObject& played) const override {
+        if (!state.objectExists(self) || played.id == self || !played.isUnit()) return false;
+        return state.getObject(self).location.has_value();
+    }
 private:
     const CardDef def_ = [] {
         CardDef d;

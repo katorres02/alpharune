@@ -5,6 +5,7 @@
 #include "engine/effect_executor.h"
 #include <algorithm>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 #include "cards/card_helpers.h"
@@ -23,28 +24,38 @@ public:
         return it == g.string_state.end() ? "" : it->second;
     }
 
-    // "As you play this, name a tag." Heuristic: most common tag among enemy
-    // units currently in play (ties broken by lexical order for determinism).
-    void onPlay(CardContext& ctx) override {
+    // "As you play this, name a tag." A player choice, made as it is played
+    // (AsYouPlayMe; pickMode over the candidate tags). Candidates: every tag
+    // on a unit on the board or in the player's hand, sorted, at most 32.
+    // GAP: a tag that appears on none of those cards can't be named.
+    TriggerType triggerType() const override { return TriggerType::AsYouPlayMe; }
+    static std::vector<std::string> candidateTags(const GameState& state, PlayerId player) {
+        std::set<std::string> tags;
+        for (auto& [id, obj] : state.objects) {
+            if (!obj.isUnit()) continue;
+            const bool on_board = obj.location.has_value();
+            const bool in_my_hand = obj.zone == ZoneType::Hand && obj.owner == player;
+            if (!on_board && !in_my_hand) continue;
+            for (const auto& t : obj.tags) tags.insert(t);
+        }
+        std::vector<std::string> out(tags.begin(), tags.end());
+        if (out.size() > 32) out.resize(32);
+        return out;
+    }
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         if (!ctx.state.objectExists(ctx.source)) return;
-        PlayerId opp = opponent(ctx.controller);
-        std::map<std::string, int> counts;
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (!obj.isUnit() || obj.controller != opp) continue;
-            if (!obj.location.has_value()) continue;
-            for (const auto& t : obj.tags) counts[t]++;
+        // The candidate list is recomputed identically on re-entry (nothing
+        // changes between the offer and the answer).
+        auto tags = candidateTags(ctx.state, ctx.controller);
+        if (tags.empty()) {
+            ctx.events.logTrace("THE LIST: no tag to name");
+            return;
         }
-        std::string best;
-        int best_n = 0;
-        for (const auto& [tag, n] : counts) {   // std::map → lexical iteration
-            if (n > best_n) { best_n = n; best = tag; }
-        }
-        if (!best.empty()) {
-            ctx.state.getObject(ctx.source).string_state["named_tag"] = best;
-            ctx.events.logTrace("THE LIST: named tag \"" + best + "\"");
-        } else {
-            ctx.events.logTrace("THE LIST: no enemy units to name a tag from");
-        }
+        int m = pickMode(ctx, "The List: name a tag", static_cast<int>(tags.size()), tags);
+        if (m == -1) return;   // waiting for agent
+        if (m < 0 || m >= static_cast<int>(tags.size())) return;
+        ctx.state.getObject(ctx.source).string_state["named_tag"] = tags[m];
+        ctx.events.logTrace("THE LIST: named tag \"" + tags[m] + "\"");
     }
 
     std::vector<ActivatedAbility> activatedAbilities() const override {

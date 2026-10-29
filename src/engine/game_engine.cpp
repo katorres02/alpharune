@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include "game_engine.h"
+#include "engine/keyword_abilities.h"
 #include "cards/card.h"
 #include "openspiel/action_vocab.h"
 
@@ -12,6 +13,46 @@
 #include <stdexcept>
 
 namespace riftbound {
+
+// ── Cards in banishment their player may play (PlayerState::banished_playable) ──
+// "Banish the top card of your Main Deck. Until your next Ending Phase, you may
+// play that card." The play generators offer these alongside the hand.
+static bool mayPlayFromBanishment(const GameState& state, PlayerId player, GameObjectId card) {
+    if (!state.objectExists(card)) return false;
+    if (state.getObject(card).zone != ZoneType::Banishment) return false;
+    const auto& v = state.player(player).banished_playable;
+    return std::find(v.begin(), v.end(), card) != v.end();
+}
+/// The hand, then the banished cards `player` may currently play.
+static std::vector<GameObjectId> handAndPlayableBanished(const GameState& state, PlayerId player) {
+    const auto& ps = state.player(player);
+    std::vector<GameObjectId> out = ps.hand;
+    for (auto id : ps.banished_playable)
+        if (mayPlayFromBanishment(state, player, id)) out.push_back(id);
+    return out;
+}
+/// Mark play intents emitted from index `from` on for banished cards.
+static void markBanishmentPlays(const GameState& state, std::vector<Intent>& actions, size_t from) {
+    for (size_t i = from; i < actions.size(); ++i) {
+        auto& a = actions[i];
+        if (a.card == kInvalidId || !state.objectExists(a.card)) continue;
+        if (a.type != IntentType::PlayCard && a.type != IntentType::PlayActionCard &&
+            a.type != IntentType::PlayReaction) continue;
+        if (state.getObject(a.card).zone == ZoneType::Banishment)
+            a.play_source = Intent::PlaySource::Banishment;
+        else if (state.getObject(a.card).zone == ZoneType::Trash &&
+                 a.play_source == Intent::PlaySource::Hand)
+            a.play_source = Intent::PlaySource::Trash;   // a TrashReplayGrant permanent
+    }
+}
+/// Take a card being played out of its owner's banishment (and the permission).
+static void takeFromBanishment(GameState& state, PlayerId player, GameObjectId card) {
+    auto& obj = state.getObject(card);
+    auto& ban = state.player(obj.owner).banishment;
+    ban.erase(std::remove(ban.begin(), ban.end(), card), ban.end());
+    auto& perm = state.player(player).banished_playable;
+    perm.erase(std::remove(perm.begin(), perm.end(), card), perm.end());
+}
 
 GameEngine::GameEngine(const CardDB& card_db, EventBus& event_bus,
                        const CardRegistry& card_registry)
@@ -68,6 +109,7 @@ void GameEngine::initSubsystems() {
         [this](PlayerId p, GameObjectId card) { return payCardCost(p, card); });
     chain_manager_->setEffectExecutor(effect_executor_.get());
     chain_manager_->setFinalizeChoices([this](ChainItem& item) { chooseTargetsAtFinalize(item); });
+    chain_manager_->setShowOffChoice([this](ChainItem& item) { chooseShowOff(item); });
     chain_manager_->setActivateAbility(
         [this](const Intent& i) { return payAndQueueAbility(i); });
     trigger_manager_ = std::make_unique<TriggerManager>(
@@ -330,6 +372,9 @@ void GameEngine::setupPlayer(PlayerId player, const DeckSubmission& deck) {
     auto champ_id = instantiateCard(deck.chosen_champion, player);
     auto& champ_obj = state_.getObject(champ_id);
     champ_obj.zone = ZoneType::ChampionZone;
+    // Remembers which object is the Chosen Champion wherever it goes
+    // (Hallowed Tomb returns it from the trash).
+    champ_obj.card_counters["__chosen_champion"] = 1;
     // Champion zone has no board location — it's a non-board zone
     ps.champion_zone = champ_id;
 
@@ -729,8 +774,12 @@ void GameEngine::awakenPhase() {
 
     // Ready all game objects the turn player controls (CR 315.1.b)
     auto player = state_.turn.turn_player;
+    // "Units don't ready during the Awaken Phase" (Firebrand Raider).
+    const bool units_stay = state_.turn.units_dont_awaken;
     for (auto& [id, obj] : state_.objects) {
         if (obj.controller == player && obj.is_exhausted && obj.location.has_value()) {
+            if (obj.cant_be_readied) continue;   // "I can't be readied" (Maduli)
+            if (units_stay && obj.isUnit()) continue;
             obj.is_exhausted = false;
             events_.emit(ObjectStateChangedEvent{id, "readied"});
             events_.emit(ObjectStateChangedEvent{id, "became_ready"});
@@ -757,10 +806,33 @@ void GameEngine::beginningStep() {
     // AND gear — Fading Memories (180) can grant [Temporary] to either.
     std::vector<GameObjectId> units_to_kill;
     std::vector<GameObjectId> gear_to_kill;
+    // LeBlanc, Everywhere at Once: "Your [Temporary] effects at my
+    // battlefield don't trigger" — [Temporary] is itself the triggered kill
+    // (CR 816.1), so a permanent at such a battlefield is not killed.
+    auto temporarySuppressed = [&](GameObjectId id, const GameObject& obj) {
+        auto bf = obj.battlefieldId();
+        if (!bf) return false;
+        for (const auto& [oid, other] : state_.objects) {
+            if (oid == id || other.controller != obj.controller) continue;
+            if (other.card_def_id == kInvalidId) continue;
+            auto obf = other.battlefieldId();
+            if (!obf || *obf != *bf) continue;
+            const Card* oc = card_registry_.get(other.card_def_id);
+            if (oc && oc->suppressesTemporaryTriggersHere()) return true;
+        }
+        return false;
+    };
     for (auto& [id, obj] : state_.objects) {
         if (!obj.keywords.has(Keyword::Temporary)) continue;
         if (obj.controller != state_.turn.turn_player) continue;
         if (!obj.location.has_value()) continue;
+        // An attached Equipment's own text is inactive, so its [Temporary]
+        // doesn't trigger (CR 725 — Spinning Axe example).
+        if (obj.isGear() && obj.attached_to.has_value()) continue;
+        if (temporarySuppressed(id, obj)) {
+            events_.logTrace("TEMPORARY_SUPPRESSED: " + obj.name + " is not killed (LeBlanc)");
+            continue;
+        }
         if (obj.isUnit()) units_to_kill.push_back(id);
         else if (obj.isGear()) gear_to_kill.push_back(id);
     }
@@ -977,6 +1049,8 @@ void GameEngine::endingStep() {
     events_.logTrace("── Ending Step ──");
     auto old_phase = state_.turn.phase;
     state_.turn.phase = TurnPhase::EndingStep;
+    // "Until your next Ending Phase, you may play that card" ends now.
+    state_.player(state_.turn.turn_player).banished_playable.clear();
     events_.emit(PhaseChangedEvent{old_phase, TurnPhase::EndingStep,
                                     state_.turn.turn_player});
 
@@ -1060,12 +1134,14 @@ void GameEngine::doExpirationBody() {
         // Tactical Retreat's "next time it would die THIS TURN" replacement
         // expires unused at end of turn.
         obj.death_replacement_recall_pending = false;
+        obj.banish_if_would_die_this_turn = false;   // Smite
 
         // Counter Strike's one-shot damage prevention is "this turn".
         obj.prevent_next_damage_this_turn = false;
         obj.prevent_damage_remaining = 0;   // Ki Barrier
         obj.damage_taken_this_turn = 0;
         obj.untargetable_by_enemy_this_turn = false;   // Twilight Shroud
+        obj.cant_move_this_turn = false;               // Vex, Apathetic / Hunker Down
         obj.temp_granted_abilities.clear();            // Dominus
 
         // "Empower it. Disempower it at end of turn" and the reverse (Sanction,
@@ -1100,6 +1176,7 @@ void GameEngine::doExpirationBody() {
                 }
             }
         }
+        obj.temp_disarm_value = 0;   // [Disarm X] given "this turn"
         if (obj.temp_shield_value != 0) {
             obj.shield_value -= obj.temp_shield_value;
             obj.temp_shield_value = 0;
@@ -1187,12 +1264,71 @@ int GameEngine::activationEnergyReduction(const Card& card, PlayerId player,
 // that trigger on being chosen go on the chain above the item. The card's
 // pickTarget then returns this choice at resolution, or nothing if it is no
 // longer legal (a mistarget: the instruction is ignored).
+// CR 832.1.c: "As you play this, you may reveal [Object] from your hand and/or
+// pick [Object] from among friendly game objects on the board." The choice is
+// recorded on the played object (GameObject::showed_off_object, kInvalidId when
+// the player declines or nothing qualifies) and read with Card::shownOff.
+void GameEngine::chooseShowOff(ChainItem& item) {
+    if (item.card_def_id == kInvalidId || !state_.objectExists(item.source)) return;
+    const Card* card = card_registry_.get(item.card_def_id);
+    state_.getObject(item.source).showed_off_object = kInvalidId;
+    if (!card || !card->hasShowOff()) return;
+    const PlayerId player = item.controller;
+    std::vector<GameObjectId> candidates;
+    for (auto hid : state_.player(player).hand)
+        if (hid != item.source && state_.objectExists(hid) &&
+            card->showOffMatches(state_, player, state_.getObject(hid)))
+            candidates.push_back(hid);
+    for (const auto& [id, obj] : state_.objects)
+        if (id != item.source && obj.location.has_value() && obj.controller == player &&
+            !obj.is_hidden && card->showOffMatches(state_, player, obj))
+            candidates.push_back(id);
+    const std::string name = state_.getObject(item.source).name;
+    if (candidates.empty()) {
+        events_.logTrace("SHOW_OFF: " + name + " — nothing to show off");
+        return;
+    }
+    std::vector<Intent> options;
+    Intent decline;
+    decline.type = IntentType::MakeChoice;
+    decline.player = player;
+    decline.chosen_value = 0;
+    decline.choice_label = "Don't show off — " + name;
+    options.push_back(decline);
+    for (auto c : candidates) {
+        Intent i;
+        i.type = IntentType::MakeChoice;
+        i.player = player;
+        i.chosen_objects = {c};
+        i.choice_label = "Show off " + state_.getObject(c).name + " — " + name;
+        options.push_back(i);
+    }
+    Intent chosen = decideNow(player, options, "[Show Off] for " + name);
+    GameObjectId shown = kInvalidId;
+    if (!chosen.chosen_objects.empty() &&
+        std::find(candidates.begin(), candidates.end(), chosen.chosen_objects.front()) != candidates.end())
+        shown = chosen.chosen_objects.front();
+    if (!state_.objectExists(item.source)) return;
+    state_.getObject(item.source).showed_off_object = shown;
+    if (shown == kInvalidId) {
+        events_.logTrace("SHOW_OFF: " + name + " — declined");
+        return;
+    }
+    const auto& sobj = state_.getObject(shown);
+    events_.logTrace("SHOW_OFF: " + name + " shows off " + sobj.name);
+    if (sobj.zone == ZoneType::Hand)   // revealed from hand: public now
+        events_.emit(CardRevealedEvent{shown, sobj.card_def_id, sobj.owner,
+                                       /*revealed_to_all=*/true, PlayerId::None, ZoneType::Hand});
+}
+
 void GameEngine::chooseTargetsAtFinalize(ChainItem& item) {
     if (item.card_def_id == kInvalidId) return;
     if (item.is_ability && !item.is_activated_ability) {
         // A triggered ability: its "you may", costs and targets (CR 383.3).
         // (`targets` carries the triggering event's subject, not a choice.)
-        const Card* tcard = card_registry_.get(item.card_def_id);
+        const Card* tcard = item.keyword_ability != KeywordAbility::None
+            ? keywordAbilityCard(item.keyword_ability)
+            : card_registry_.get(item.card_def_id);
         if (tcard && (tcard->choicesAtFinalization() & Card::kFinalizeTrigger))
             runFinalizePass(item);
         return;
@@ -1267,6 +1403,7 @@ void GameEngine::chooseTargetsAtFinalize(ChainItem& item) {
                              state_.getObject(t).name);
         }
     }
+    noteEnemyChoice(state_, chooser, it->source, t);   // Prodigal Explorer
     const auto& tobj = state_.getObject(t);
     if (tobj.isUnit() && tobj.location.has_value()) {
         if (tobj.controller == chooser)
@@ -1455,10 +1592,14 @@ bool GameEngine::payAndQueueAbility(const Intent& intent) {
     if (act_cost.kill_friendly_unit && !intent.targets.empty() &&
         state_.objectExists(intent.targets[0]))
         killUnit(intent.targets[0]);
+    // "Kill a friendly gear" as a cost: the chosen gear rides in targets.
+    if (act_cost.kill_friendly_gear && !intent.targets.empty() &&
+        state_.objectExists(intent.targets[0]))
+        effect_executor_->killObject(intent.targets[0]);
     // Pay energy (+ power) cost. Abilities with a power component pay
     // both through the shared resource path (floating pool, then runes).
     if (act_cost.power > 0 || act_cost.energy > 0)
-        payActivationResources(intent.player, act_cost.energy, act_cost, source.isUnit());
+        payActivationResources(intent.player, act_cost.energy, act_cost, abilitySpendPurpose(source));
     // Pay recycle-self cost [C]
     if (act_cost.recycle_self) {
         events_.logTrace("ACTIVATE_COST: recycle self " + source.name);
@@ -1581,6 +1722,13 @@ void GameEngine::executeIntent(const Intent& intent) {
 void GameEngine::executePlayCard(const Intent& intent) {
     auto& ps = state_.player(intent.player);
     auto& card = state_.getObject(intent.card);
+    // Played from the trash under a TrashReplayGrant: its cost replaces the
+    // printed one (like an alternative play cost), so the printed-cost
+    // discounts below don't apply.
+    const bool trash_grant_play = intent.play_source == Intent::PlaySource::Trash &&
+                                  card.zone == ZoneType::Trash &&
+                                  trashReplayGrantFor(intent.player, intent.card) != nullptr;
+    const bool replaced_cost = intent.use_alt_play_cost || trash_grant_play;
     int trace_cost = (card.card_def_id != kInvalidId)
         ? card_db_.get(card.card_def_id).energy_cost : 0;
     events_.logTrace("PLAY: " + card.name + " (id=" + std::to_string(intent.card) +
@@ -1593,6 +1741,12 @@ void GameEngine::executePlayCard(const Intent& intent) {
         if (it != ps.hand.end()) ps.hand.erase(it);
     } else if (card.zone == ZoneType::ChampionZone) {
         ps.champion_zone = kInvalidId;
+    } else if (card.zone == ZoneType::Banishment) {
+        takeFromBanishment(state_, intent.player, intent.card);
+    } else if (trash_grant_play) {
+        // "You may play me from your trash for <cost>" (Card::trashPlayCost).
+        auto& trash = state_.player(card.owner).trash;
+        trash.erase(std::remove(trash.begin(), trash.end(), intent.card), trash.end());
     }
 
     // Pay the card's cost (CR 357). Surface the play_source via a
@@ -1604,10 +1758,10 @@ void GameEngine::executePlayCard(const Intent& intent) {
     // staged into transient_play_discount (consumed by payCardCost) and cleared
     // after. Skipped on an alternative-cost play.
     int prepay_discount = 0;
-    if (!intent.use_alt_play_cost) {
+    if (!replaced_cost) {
         const Card* pc = card.card_def_id != kInvalidId
             ? card_registry_.get(card.card_def_id) : nullptr;
-        Card::OptionalAdditionalCost oac = pc ? pc->optionalAdditionalCost()
+        Card::OptionalAdditionalCost oac = pc ? pc->optionalAdditionalCost(state_, intent.player)
                                               : Card::OptionalAdditionalCost{};
         if (oac.valid && oac.discard_cards > 0 && oac.reduce_energy > 0 &&
             static_cast<int>(ps.hand.size()) >= oac.discard_cards) {
@@ -1633,11 +1787,96 @@ void GameEngine::executePlayCard(const Intent& intent) {
                     " discarded to reduce cost by " + std::to_string(prepay_discount));
             }
         }
+        // "You may spend N XP as an additional cost to play me [. If you do, I
+        // cost [M] less]" (Poppy, Defender of the Meek; Safety Inspector).
+        // Decided here, before payment. When the card is only affordable with
+        // the discount, declining is not offered.
+        if (oac.valid && oac.spend_xp > 0 && ps.xp >= oac.spend_xp) {
+            ps.transient_optional_cost_decided = true;   // canAfford: price without the XP discount
+            const bool can_decline = oac.reduce_energy <= 0 || canAfford(intent.player, intent.card);
+            Intent decline; decline.type = IntentType::MakeChoice;
+            decline.player = intent.player; decline.chosen_value = 0;
+            Intent accept; accept.type = IntentType::MakeChoice;
+            accept.player = intent.player; accept.chosen_value = 1;
+            std::vector<Intent> opts;
+            if (can_decline) opts.push_back(decline);
+            opts.push_back(accept);
+            state_.decision_index++;
+            events_.logTrace("DECISION #" + std::to_string(state_.decision_index) +
+                " (" + toString(intent.player) + "): spend " +
+                std::to_string(oac.spend_xp) + " XP as an additional cost for " +
+                card.name + "? [" + std::to_string(opts.size()) + " options]");
+            auto chosen = getAgent(intent.player).selectAction(state_, opts);
+            recordAppliedIntent(chosen);
+            if (on_decision) on_decision(state_, opts, chosen);
+            if (!can_decline || chosen.chosen_value.value_or(0) == 1) {
+                ps.xp -= oac.spend_xp;
+                prepay_discount += std::max(0, oac.reduce_energy);
+                if (oac.paid_flag && oac.paid_flag[0] != '\0')
+                    card.card_counters[oac.paid_flag] = 1;
+                events_.logTrace("ADDITIONAL_COST: " + card.name + " spent " +
+                    std::to_string(oac.spend_xp) + " XP");
+            }
+        }
+    }
+    // Object additional costs ("kill a friendly unit", "return a friendly
+    // unit", "spend a buff": Atakhan, Cruel Patron, Commander Ledros, Kraken
+    // Hunter, Ekko, Stalking Wolf). Decided and paid before the rune cost
+    // (CR 356.2 / 357); the discount they give is staged for payCardCost.
+    int prepay_power_discount = 0;
+    bool ignore_base_cost = false;
+    if (!replaced_cost) {
+        ps.transient_play_discount += prepay_discount;   // earlier discounts count
+        const auto od = payObjectAdditionalCost(intent.player, intent.card,
+            intent.play_location.has_value() ? intent.play_location
+                                             : std::optional<LocationId>(BaseLocation{intent.player}));
+        ps.transient_play_discount -= prepay_discount;
+        prepay_discount += od.energy;
+        prepay_power_discount += od.power;
+        ignore_base_cost = od.ignore;
+    }
+    ps.transient_power_discount += prepay_power_discount;
+    // "For each player, the first unit or gear they play here on their turn
+    // costs [N] less" (BattlefieldState::first_play_here_discount).
+    // GAP: the action generators' canAfford doesn't know the play location, so
+    // a card affordable only with this discount is not offered.
+    if ((card.isUnit() || card.isGear()) && intent.play_location.has_value() &&
+        std::holds_alternative<BattlefieldLocation>(*intent.play_location) &&
+        state_.turn.turn_player == intent.player) {
+        const auto bf_id = std::get<BattlefieldLocation>(*intent.play_location).id;
+        for (auto& bf : state_.battlefields) {
+            if (bf.id != bf_id || bf.first_play_here_discount <= 0) continue;
+            int& used = bf.first_play_here_turn[playerIndex(intent.player)];
+            if (used == state_.turn.turn_number) continue;
+            used = state_.turn.turn_number;
+            prepay_discount += bf.first_play_here_discount;
+            events_.logTrace("COST: " + card.name + " is the first unit or gear played to BF#" +
+                             std::to_string(bf_id) + " this turn: costs [" +
+                             std::to_string(bf.first_play_here_discount) + "] less");
+        }
+    }
+    // "You may return a friendly gear to its owner's hand as an additional
+    // cost. If you do, I cost [N] less." (Skystrike Squadron) — also decided
+    // before payment. Declining is offered only when the full cost is payable.
+    if (!replaced_cost) {
+        const Card* pc = card.card_def_id != kInvalidId
+            ? card_registry_.get(card.card_def_id) : nullptr;
+        Card::OptionalAdditionalCost oac = pc ? pc->optionalAdditionalCost()
+                                              : Card::OptionalAdditionalCost{};
+        if (oac.valid && oac.return_friendly_gear && oac.reduce_energy > 0) {
+            ps.transient_play_discount -= oac.reduce_energy;   // canAfford counts the discount
+            const bool full_payable = canAfford(intent.player, intent.card);
+            ps.transient_play_discount += oac.reduce_energy;
+            if (offerReturnFriendlyGear(intent.player, card, oac, full_payable))
+                prepay_discount += oac.reduce_energy;
+        }
     }
     ps.transient_play_discount += prepay_discount;
 
     ps.current_play_source = intent.play_source;
-    if (intent.use_alt_play_cost) {
+    if (trash_grant_play) {
+        payTrashReplayGrant(intent.player, intent.card);
+    } else if (intent.use_alt_play_cost) {
         // Alternative play cost (Jhin, Meticulous Killer: "play me for [B]"):
         // pay the card's alternativePlayCost instead of the printed cost.
         const Card* c = (card.card_def_id != kInvalidId)
@@ -1648,17 +1887,23 @@ void GameEngine::executePlayCard(const Intent& intent) {
         if (alt.any_domain) {
             for (int di = 0; di < static_cast<int>(Domain::Count); ++di)
                 if (canPayAdditionalCost(intent.player, alt.energy, alt.power,
-                                          static_cast<Domain>(di))) {
+                                          static_cast<Domain>(di), playSpendPurpose(card))) {
                     d = static_cast<Domain>(di); break;
                 }
         }
-        payAdditionalCost(intent.player, alt.energy, alt.power, d);
+        payAdditionalCost(intent.player, alt.energy, alt.power, d, playSpendPurpose(card));
         events_.logTrace("ALT_COST: " + card.name + " played for its alternative cost");
     } else {
+        const bool ie = ps.transient_ignore_energy, ip = ps.transient_ignore_power;
+        if (ignore_base_cost) ps.transient_ignore_energy = ps.transient_ignore_power = true;
         payCardCost(intent.player, intent.card);
+        ps.transient_ignore_energy = ie;
+        ps.transient_ignore_power = ip;
     }
     ps.current_play_source = Intent::PlaySource::Hand;
     ps.transient_play_discount -= prepay_discount;  // un-stage Brazen's discount
+    ps.transient_power_discount -= prepay_power_discount;
+    ps.transient_optional_cost_decided = false;
 
     // A battlefield's pay-to-play-here additional cost (Dragon Roost).
     if (intent.pay_location_cost && intent.play_location.has_value() &&
@@ -1698,6 +1943,9 @@ void GameEngine::executePlayCard(const Intent& intent) {
     // Set BEFORE CardPlayedEvent so "when you play a unit here" battlefield
     // triggers (Star Spring, Rakelstake) can see where the unit is going.
     card.location = intent.play_location.value_or(BaseLocation{intent.player});
+    if ((card.isUnit() || card.isGear()) &&
+        std::holds_alternative<BattlefieldLocation>(*card.location))
+        ps.played_permanent_to_bf_this_turn = true;   // Hold 'Em
     events_.emit(CardPlayedEvent{intent.card, intent.player,
         card.card_type, ps.cards_played_this_turn, energy_spent});
     if (intent.play_source != Intent::PlaySource::Hand)
@@ -1746,6 +1994,8 @@ void GameEngine::executePlaySpell(const Intent& intent) {
         // Trash-replay (Death from Below): play the spell straight out of trash.
         auto it = std::find(ps.trash.begin(), ps.trash.end(), intent.card);
         if (it != ps.trash.end()) ps.trash.erase(it);
+    } else if (card.zone == ZoneType::Banishment) {
+        takeFromBanishment(state_, intent.player, intent.card);
     }
 
     // CR 355: a spell's targets are chosen before its cost is determined and
@@ -1812,9 +2062,23 @@ void GameEngine::executePlaySpell(const Intent& intent) {
                     if (b.id == *tbf)
                         tgt_power_disc = std::max(tgt_power_disc, b.friendly_spell_discount_power);
         }
+        // A cost that depends on what the spell chose (Undying Loyalty).
+        if (card.card_def_id != kInvalidId)
+            if (const Card* sc = card_registry_.get(card.card_def_id))
+                tgt_disc -= sc->targetCostAdjustment(state_, intent.player, play_targets);
         ps.transient_play_discount = tgt_disc;
         ps.transient_power_discount = tgt_power_disc;
+        // Object additional costs (Wallop / Call to Glory: "spend a buff ...
+        // ignore this spell's cost"), decided and paid before the rune cost.
+        const auto od = payObjectAdditionalCost(intent.player, intent.card, std::nullopt);
+        ps.transient_play_discount += od.energy;
+        ps.transient_power_discount += od.power;
+        const bool ie = ps.transient_ignore_energy, ip = ps.transient_ignore_power;
+        if (od.ignore) ps.transient_ignore_energy = ps.transient_ignore_power = true;
         payCardCost(intent.player, intent.card);
+        ps.transient_ignore_energy = ie;
+        ps.transient_ignore_power = ip;
+        ps.transient_optional_cost_decided = false;
         ps.transient_play_discount = 0;
         ps.transient_power_discount = 0;
         ps.current_play_source = Intent::PlaySource::Hand;
@@ -1858,6 +2122,14 @@ void GameEngine::executePlaySpell(const Intent& intent) {
     // Marai Spire (525): "friendly [Repeat] costs cost [1] less."
     if (repeat_cost.valid && ps.repeat_cost_reduction > 0) {
         repeat_cost.energy = std::max(0, repeat_cost.energy - ps.repeat_cost_reduction);
+    }
+    // Ezreal, Prodigy: "Optional additional costs you pay cost [1] or [A] less."
+    // ([1] off when there is Energy to take it from, else [A].)
+    if (repeat_cost.valid && ps.optional_cost_discount > 0) {
+        if (repeat_cost.energy > 0)
+            repeat_cost.energy = std::max(0, repeat_cost.energy - ps.optional_cost_discount);
+        else
+            repeat_cost.power = std::max(0, repeat_cost.power - ps.optional_cost_discount);
     }
     if (repeat_cost.valid) {
         constexpr int kRepeatSafetyCap = 32;
@@ -1996,7 +2268,11 @@ void GameEngine::resolveSpell(const ChainItem& item) {
     // Cards that defer target choice to resolve time via
     // pickTarget/pickTargetPair (Phase 6q opt-in) are unaffected —
     // they re-enumerate legal targets at resolve time themselves.
-    Card* card = card_registry_.get(item.card_def_id);
+    // A keyword's own ability (Disarm, Deploy) resolves through its
+    // engine-owned ability object, not the source's Card.
+    Card* card = item.keyword_ability != KeywordAbility::None
+        ? keywordAbilityCard(item.keyword_ability)
+        : card_registry_.get(item.card_def_id);
     std::vector<GameObjectId> effective_targets = item.targets;
     if (card && !item.targets.empty()) {
         // An activated ability is re-validated against ITS OWN requirements
@@ -2121,12 +2397,15 @@ void GameEngine::resolvePermanent(const ChainItem& item) {
             // CR 805.1.b.1: the Power must match one of the unit's own domains;
             // 805.1.b.2: a unit with no domain pays it with [A].
             std::optional<Domain> domain_to_pay;
+            // Ezreal, Prodigy: optional additional costs cost [1] less.
+            const int acc_energy =
+                std::max(0, 1 - state_.player(item.controller).optional_cost_discount);
             if (card.domains.empty()) {
-                if (canPayAdditionalCost(item.controller, 1, 1, Domain::Count, true))
+                if (canPayAdditionalCost(item.controller, acc_energy, 1, Domain::Count, SpendPurpose::PlayUnit))
                     domain_to_pay = Domain::Count;
             } else {
                 for (Domain d : card.domains) {
-                    if (canPayAdditionalCost(item.controller, 1, 1, d, true)) {
+                    if (canPayAdditionalCost(item.controller, acc_energy, 1, d, SpendPurpose::PlayUnit)) {
                         domain_to_pay = d;
                         break;
                     }
@@ -2158,7 +2437,7 @@ void GameEngine::resolvePermanent(const ChainItem& item) {
                 bool wants_pay = chosen.chosen_value.value_or(0) == 1;
                 if (wants_pay) {
                     events_.logTrace("ACCELERATE: " + card.name + " pays [1] + power to enter ready");
-                    payAdditionalCost(item.controller, 1, 1, *domain_to_pay, true);
+                    payAdditionalCost(item.controller, acc_energy, 1, *domain_to_pay, SpendPurpose::PlayUnit);
                     enters_ready = true;
                 } else {
                     events_.logTrace("ACCELERATE: " + card.name + " declined");
@@ -2178,19 +2457,30 @@ void GameEngine::resolvePermanent(const ChainItem& item) {
                 if (cdef->entersReadyOnPlay(state_, card.controller, card)) enters_ready = true;
             }
         }
-        // Riven, The Exile (RAD-149, legend id 956): "Units you play to
-        // battlefields you control enter ready."
-        if (!enters_ready && std::holds_alternative<BattlefieldLocation>(loc)) {
-            auto lid = state_.player(item.controller).legend_zone;
-            if (lid != kInvalidId && state_.objectExists(lid) &&
-                state_.getObject(lid).card_def_id == 956) {
-                auto bfid = std::get<BattlefieldLocation>(loc).id;
-                auto& bf = getBattlefield(bfid);
-                if (bf.controller.has_value() && *bf.controller == item.controller) {
+        // "Units you play this turn enter ready" (Confront) and continuous
+        // effects of the controller's other cards ("Other friendly units enter
+        // ready", Magma Wurm; Sun Disc's armed next unit).
+        if (!enters_ready && state_.player(item.controller).units_enter_ready_this_turn)
+            enters_ready = true;
+        // "Other units enter ready" for every player's units (Firebrand Raider).
+        if (!enters_ready && state_.turn.all_units_enter_ready) enters_ready = true;
+        if (!enters_ready) {
+            for (const auto& [oid, other] : state_.objects) {
+                if (oid == item.source || other.controller != item.controller) continue;
+                if (!other.location.has_value() && other.zone != ZoneType::LegendZone) continue;
+                if (other.card_def_id == kInvalidId) continue;
+                const Card* granter = card_registry_.get(other.card_def_id);
+                if (granter && granter->grantsEnterReadyTo(state_, oid, card)) {
                     enters_ready = true;
-                    events_.logTrace("THE EXILE: " + card.name + " enters ready");
+                    events_.logTrace("ENTERS_READY: " + card.name + " (" + other.name + ")");
+                    break;
                 }
             }
+        }
+        // "Your units enter ready" (Wuju Master [Level 11]).
+        if (!enters_ready && state_.player(item.controller).units_enter_ready) {
+            enters_ready = true;
+            events_.logTrace("ENTERS READY: " + card.name + " (your units enter ready)");
         }
         card.is_exhausted = !enters_ready;
     }
@@ -2266,9 +2556,29 @@ Intent GameEngine::queryAgentForChain(PlayerId player,
     return chosen;
 }
 
+bool GameEngine::canPayMoveTax(PlayerId player, const BattlefieldState& bf) const {
+    const int pi = playerIndex(player);
+    if (bf.move_tax_energy[pi] <= 0 && bf.move_tax_power[pi] <= 0) return true;
+    return canPayAdditionalCost(player, bf.move_tax_energy[pi], bf.move_tax_power[pi],
+                                Domain::Count);
+}
+
 void GameEngine::executeStandardMove(const Intent& intent) {
     if (!intent.move_destination.has_value()) return;
     auto dest = *intent.move_destination;
+
+    // "Opponents must pay [1][A] to move one or more units to this
+    // battlefield" (Gravity Field): one payment for the whole move.
+    if (std::holds_alternative<BattlefieldLocation>(dest)) {
+        const auto& tbf = getBattlefield(std::get<BattlefieldLocation>(dest).id);
+        const int pi = playerIndex(intent.player);
+        if (tbf.move_tax_energy[pi] > 0 || tbf.move_tax_power[pi] > 0) {
+            const int e = tbf.move_tax_energy[pi], p = tbf.move_tax_power[pi];
+            if (!payAdditionalCost(intent.player, e, p, Domain::Count)) return;
+            events_.logTrace("MOVE_TAX: " + std::string(toString(intent.player)) + " pays [" +
+                             std::to_string(e) + "] + " + std::to_string(p) + "[A]");
+        }
+    }
 
     for (auto unit_id : intent.units_to_move) {
         auto& unit_obj = state_.getObject(unit_id);
@@ -2291,6 +2601,13 @@ void GameEngine::executeStandardMove(const Intent& intent) {
             old_location.value_or(BaseLocation{intent.player}),
             dest, true
         });
+    }
+    // The move's units were exhausted at the same time ("when you exhaust
+    // three or more friendly units at the same time" — Seraphine, Inspiring).
+    if (!intent.units_to_move.empty() && state_.objectExists(intent.units_to_move.front())) {
+        state_.player(intent.player).last_exhaust_group_size =
+            static_cast<int>(intent.units_to_move.size());
+        events_.emit(ObjectStateChangedEvent{intent.units_to_move.front(), "exhausted_together"});
     }
 
     // Check if this contests a battlefield
@@ -2393,6 +2710,34 @@ void GameEngine::executeMulligan(const Intent& intent) {
 // ASSIGNED amount becomes DEALT damage for a unit, so the assignment cascade
 // and the application step always agree.
 namespace {
+
+/// Lowest Energy cost a card `player` has on the board or as legend offers
+/// in place of the [A] hide cost (Card::hideEnergyCostInstead), or -1.
+int hideEnergyAlternative(const GameState& state, const CardRegistry& reg, PlayerId player) {
+    int best = -1;
+    auto consider = [&](const GameObject& o) {
+        if (o.card_def_id == kInvalidId) return;
+        const Card* c = reg.get(o.card_def_id);
+        if (!c) return;
+        int n = c->hideEnergyCostInstead();
+        if (n >= 0 && (best < 0 || n < best)) best = n;
+    };
+    const auto legend = state.player(player).legend_zone;
+    if (legend != kInvalidId && state.objectExists(legend)) consider(state.getObject(legend));
+    for (const auto& [id, o] : state.objects)
+        if (o.controller == player && o.location.has_value()) consider(o);
+    return best;
+}
+
+/// Energy `player` could pay right now: floating pool + ready runes in base.
+int hideEnergyPayable(const GameState& state, PlayerId player) {
+    int n = state.player(player).rune_pool.energy;
+    LocationId base{BaseLocation{player}};
+    for (const auto& [id, o] : state.objects)
+        if (o.isRune() && o.controller == player && !o.is_exhausted &&
+            o.location.has_value() && *o.location == base) ++n;
+    return n;
+}
 
 /// Damage actually dealt when `assigned` combat damage is assigned to `t`.
 int combatDamageDealt(const GameObject& t, int assigned) {
@@ -2511,9 +2856,48 @@ void GameEngine::executeHideCard(const Intent& intent) {
     auto it = std::find(ps.hand.begin(), ps.hand.end(), intent.card);
     if (it != ps.hand.end()) ps.hand.erase(it);
 
+    // "You can hide cards ignoring costs this turn" (Guerilla Warfare).
+    const bool hide_free = ps.hide_ignoring_costs_turn == state_.turn.turn_number;
+    // "You may pay [N] to hide a card with [Hidden] instead of [A]" (Swift
+    // Scout): asked when both ways can be paid.
+    bool pay_energy = false;
+    const int alt_energy = hide_free ? -1 : hideEnergyAlternative(state_, card_registry_, intent.player);
+    if (alt_energy >= 0 && hideEnergyPayable(state_, intent.player) >= alt_energy) {
+        bool rune_ready = false;
+        for (auto& [id, obj] : state_.objects)
+            if (obj.isRune() && obj.controller == intent.player && !obj.is_exhausted &&
+                obj.location.has_value() && *obj.location == LocationId{BaseLocation{intent.player}})
+                rune_ready = true;
+        pay_energy = true;
+        if (rune_ready) {
+            Intent a; a.type = IntentType::MakeChoice; a.player = intent.player; a.chosen_value = 0;
+            a.choice_label = "Pay [A] to hide";
+            Intent e; e.type = IntentType::MakeChoice; e.player = intent.player; e.chosen_value = 1;
+            e.choice_label = "Pay [" + std::to_string(alt_energy) + "] to hide";
+            pay_energy = decideNow(intent.player, {a, e}, "hide cost").chosen_value.value_or(0) == 1;
+        }
+    }
+    if (pay_energy) {
+        int need = alt_energy;
+        int from_pool = std::min(ps.rune_pool.energy, need);
+        ps.rune_pool.energy -= from_pool;
+        need -= from_pool;
+        for (auto& [id, obj] : state_.objects) {
+            if (need <= 0) break;
+            if (!obj.isRune() || obj.controller != intent.player || obj.is_exhausted) continue;
+            if (!obj.location.has_value() ||
+                *obj.location != LocationId{BaseLocation{intent.player}}) continue;
+            obj.is_exhausted = true;
+            events_.emit(ObjectStateChangedEvent{id, "exhausted"});
+            --need;
+        }
+        events_.logTrace("HIDE_COST: paid " + std::to_string(alt_energy) + " Energy instead of [A]");
+    }
+
     // Pay [A] cost — recycle a ready rune (universal power cost)
     auto base_loc = BaseLocation{intent.player};
     for (auto& [id, obj] : state_.objects) {
+        if (hide_free || pay_energy) break;
         if (!obj.isRune() || obj.controller != intent.player || obj.is_exhausted) continue;
         if (!obj.location.has_value() || *obj.location != LocationId{base_loc}) continue;
         // Recycle the rune for [A]
@@ -2633,6 +3017,8 @@ std::vector<Intent> GameEngine::generateMainPhaseActions(PlayerId player) const 
     for (auto unit_id : all_units) {
         auto& unit = state_.getObject(unit_id);
         if (unit.is_exhausted) continue; // must be ready
+        if (unit.cant_move_this_turn) continue;  // "it can't move this turn"
+        if (unit.cant_move_turn == state_.turn.turn_number) continue;  // "I can't move this turn"
 
         if (unit.isAtBase()) {
             // Can move from base to any battlefield (CR 144.4.a).
@@ -2642,6 +3028,7 @@ std::vector<Intent> GameEngine::generateMainPhaseActions(PlayerId player) const 
             for (auto& bf : state_.battlefields) {
                 // Can't move to BF with units from 2 other players (CR 144.4.a.1)
                 // In 1v1, this is never an issue
+                if (!canPayMoveTax(player, bf)) continue;   // Gravity Field
                 LocationId dest = BattlefieldLocation{bf.id};
                 actions.push_back(Intent::standardMove(
                     player, {unit_id}, dest));
@@ -2656,7 +3043,7 @@ std::vector<Intent> GameEngine::generateMainPhaseActions(PlayerId player) const 
                 const auto& src_bf = getBattlefield(*unit_bf);
                 if (src_bf.blocks_move_to_base) allow_to_base = false;
             }
-            if (unit.cant_move_to_base) allow_to_base = false;  // Determined Sentry
+            if (unit.cant_move_to_base || unit.aura_cant_move_to_base) allow_to_base = false;  // Determined Sentry
             if (allow_to_base) {
                 actions.push_back(Intent::standardMove(
                     player, {unit_id}, BaseLocation{player}));
@@ -2674,6 +3061,7 @@ std::vector<Intent> GameEngine::generateMainPhaseActions(PlayerId player) const 
                 if (!unit_bf || *unit_bf == bf.id) continue;
                 const bool can_move = has_ganking || bf.accepts_any_inbound;
                 if (!can_move) continue;
+                if (!canPayMoveTax(player, bf)) continue;   // Gravity Field
                 actions.push_back(Intent::standardMove(
                     player, {unit_id}, BattlefieldLocation{bf.id}));
             }
@@ -2683,66 +3071,59 @@ std::vector<Intent> GameEngine::generateMainPhaseActions(PlayerId player) const 
     // Play units from hand — must be able to afford the cost.
     auto& ps = state_.player(player);
     const bool locked_out = ps.cant_play_cards_this_turn;  // Brynhir Thundersong
-    for (auto card_id : ps.hand) {
+    const size_t first_play_action = actions.size();
+    auto playable_cards = handAndPlayableBanished(state_, player);
+    for (auto id : playablePermanentsInTrash(player)) playable_cards.push_back(id);
+    // A trash card is paid through its TrashReplayGrant, not its printed cost.
+    auto affordable = [&](GameObjectId card_id) {
+        const auto& c = state_.getObject(card_id);
+        if (c.zone == ZoneType::Trash) {
+            const auto* g = trashReplayGrantFor(player, card_id);
+            return g && canPayTrashReplayGrant(player, *g, playSpendPurpose(c));
+        }
+        return canAfford(player, card_id);
+    };
+    for (auto card_id : playable_cards) {
         if (locked_out) break;  // skip all play-from-hand actions
         auto& card = state_.getObject(card_id);
         if (!card.isUnit()) continue;
         if (card.card_def_id == kInvalidId) continue;  // tokens have no CardDef
-        if (!canAfford(player, card_id)) continue;
-
-        // Check play-to-location abilities from ability_text
-        const auto& def = card_db_.get(card.card_def_id);
-        auto& text = def.ability_text;
-        bool can_play_open_bf = (text.find("play me to an open battlefield") != std::string::npos);
-        bool can_play_enemy_bf = (text.find("play me to an occupied enemy battlefield") != std::string::npos);
-        bool can_play_any_bf = (text.find("play me to a battlefield") != std::string::npos ||
-                                text.find("play me at a battlefield") != std::string::npos);
-        // Board-wide grant: a friendly unit (e.g. Miss Fortune, Buccaneer) lets
-        // ALL of this player's units be played to open battlefields.
-        if (ps.grant_friendly_units_open_bf) can_play_open_bf = true;
+        if (!affordable(card_id)) continue;
 
         Intent play_intent;
         play_intent.type = IntentType::PlayCard;
         play_intent.player = player;
         play_intent.card = card_id;
 
-        // NARROWING hook (Perched Grimwyrm): the card dictates its own legal
-        // play locations and suppresses the default base + BF plays entirely.
+        // Base, controlled battlefields and the unit's own / granted
+        // permissions (shared with effect-driven plays: legalPlayLocations).
+        // A card that restricts its locations (Perched Grimwyrm) lists them.
+        const auto locs = legalPlayLocations(state_, card_db_, &card_registry_, player,
+                                             card_id, /*include_ambush=*/false);
         const Card* card_obj = card_registry_.get(card.card_def_id);
-        if (card_obj && card_obj->restrictsPlayLocations()) {
-            for (const auto& loc : card_obj->getPlayLocations(state_, player)) {
-                Intent restricted = play_intent;
-                restricted.play_location = loc;
-                actions.push_back(restricted);
-            }
-            continue;  // no default base/BF plays for this card
+        const bool restricted = card_obj && card_obj->restrictsPlayLocations();
+        auto offered = [&](BattlefieldId id) {
+            return std::any_of(locs.begin(), locs.end(), [&](const LocationId& l) {
+                const auto* b = std::get_if<BattlefieldLocation>(&l);
+                return b && b->id == id;
+            });
+        };
+        for (const auto& loc : locs) {
+            if (!restricted && std::holds_alternative<BattlefieldLocation>(loc)) break;
+            Intent at = play_intent;
+            at.play_location = loc;
+            actions.push_back(at);
         }
-
-        // Can always play to base (CR 355.2.a)
-        play_intent.play_location = BaseLocation{player};
-        actions.push_back(play_intent);
-
-        // Mageseeker Warden: while it restricts this player, units may be
-        // played ONLY to base — skip all battlefield plays.
-        if (ps.units_play_base_only) continue;
+        if (restricted) continue;  // no default base/BF plays for this card
+        if (ps.units_play_base_only) continue;   // Mageseeker Warden
 
         for (auto& bf : state_.battlefields) {
             if (bf.blocks_unit_play) continue;  // Rockfall Path
-            bool controlled = bf.controller.has_value() && *bf.controller == player;
-            bool open = !bf.controller.has_value();
-            bool enemy_occupied = bf.controller.has_value() && *bf.controller != player &&
-                                  bf.hasUnitsFrom(opponent(player), state_.objects);
-
-            bool can_play_here = controlled; // default: controlled BFs
-            if (can_play_open_bf && open) can_play_here = true;
-            if (can_play_enemy_bf && enemy_occupied) can_play_here = true;
-            if (can_play_any_bf) can_play_here = true;
-
-            if (can_play_here) {
+            if (offered(bf.id)) {
                 Intent bf_play = play_intent;
                 bf_play.play_location = BattlefieldLocation{bf.id};
                 actions.push_back(bf_play);
-            } else if (bf.paid_play_power > 0 &&
+            } else if (bf.paid_play_power > 0 && card.zone != ZoneType::Trash &&
                        std::find(card.tags.begin(), card.tags.end(), bf.paid_play_tag) !=
                            card.tags.end() &&
                        canAfford(player, card_id, bf.paid_play_power)) {
@@ -2780,12 +3161,13 @@ std::vector<Intent> GameEngine::generateMainPhaseActions(PlayerId player) const 
                     if (alt.any_domain) {
                         for (int di = 0; di < static_cast<int>(Domain::Count); ++di)
                             if (canPayAdditionalCost(player, alt.energy, alt.power,
-                                                      static_cast<Domain>(di))) {
+                                                      static_cast<Domain>(di),
+                                                      playSpendPurpose(champ))) {
                                 afford = true; break;
                             }
                     } else {
                         afford = canPayAdditionalCost(player, alt.energy, alt.power,
-                                                       alt.power_domain);
+                                                       alt.power_domain, playSpendPurpose(champ));
                     }
                 }
                 if (afford) {
@@ -2801,19 +3183,23 @@ std::vector<Intent> GameEngine::generateMainPhaseActions(PlayerId player) const 
         }
     }
 
-    // Play gear from hand (to base only, CR 149.2)
-    for (auto card_id : ps.hand) {
+    // Play gear from hand (to base, CR 149.2 — or only where the card says,
+    // e.g. [Deploy] gear goes only to a battlefield, CR 830.1.b.1)
+    for (auto card_id : playable_cards) {
         if (locked_out) break;
         auto& card = state_.getObject(card_id);
         if (!card.isGear()) continue;
-        if (!canAfford(player, card_id)) continue;
+        if (!affordable(card_id)) continue;
 
-        Intent play_intent;
-        play_intent.type = IntentType::PlayCard;
-        play_intent.player = player;
-        play_intent.card = card_id;
-        play_intent.play_location = BaseLocation{player};
-        actions.push_back(play_intent);
+        for (const auto& loc : legalPlayLocations(state_, card_db_, &card_registry_, player,
+                                                  card_id, /*include_ambush=*/false)) {
+            Intent at;
+            at.type = IntentType::PlayCard;
+            at.player = player;
+            at.card = card_id;
+            at.play_location = loc;
+            actions.push_back(at);
+        }
     }
 
     // Play spells from hand — Neutral Open allows any spell (Action or not).
@@ -2824,6 +3210,7 @@ std::vector<Intent> GameEngine::generateMainPhaseActions(PlayerId player) const 
         generateTrashReplayActions(player, /*action_ok=*/true, /*reaction_ok=*/true,
                                     actions);
     }
+    markBanishmentPlays(state_, actions, first_play_action);
 
     // Activate abilities on gear/legends/units ([E]: abilities)
     generateActivateAbilityActions(player, actions);
@@ -2883,6 +3270,12 @@ std::vector<Intent> GameEngine::generateMainPhaseActions(PlayerId player) const 
                 has_rune = true;
                 break;
             }
+        }
+        // Guerilla Warfare: no cost this turn. Swift Scout: [N] Energy instead.
+        if (ps.hide_ignoring_costs_turn == state_.turn.turn_number) has_rune = true;
+        if (!has_rune) {
+            const int alt = hideEnergyAlternative(state_, card_registry_, player);
+            if (alt >= 0 && hideEnergyPayable(state_, player) >= alt) has_rune = true;
         }
         if (!has_rune) continue;
 
@@ -2967,6 +3360,30 @@ std::vector<Intent> GameEngine::generateShowdownActions(PlayerId player) const {
             ambush.card = card_id;
             ambush.play_location = BattlefieldLocation{bf.id};
             actions.push_back(ambush);
+        }
+    }
+
+    // "Your gear with [Deploy] have [Action]" (Jarvan IV, Martial Paragon):
+    // such gear may be played in showdowns. (Gear Keyword::Action/Reaction
+    // bits describe their activated abilities' timing, not the card's.)
+    for (auto card_id : state_.player(player).hand) {
+        if (locked_out) break;
+        auto& card = state_.getObject(card_id);
+        if (!card.isGear()) continue;
+        const Card* gear_card = card.card_def_id != kInvalidId
+            ? card_registry_.get(card.card_def_id) : nullptr;
+        const bool action_timing =
+            state_.player(player).deploy_gear_have_action && gear_card && gear_card->hasDeploy();
+        if (!action_timing) continue;
+        if (!canAfford(player, card_id)) continue;
+        for (const auto& loc : legalPlayLocations(state_, card_db_, &card_registry_, player,
+                                                  card_id, /*include_ambush=*/false)) {
+            Intent at;
+            at.type = IntentType::PlayActionCard;
+            at.player = player;
+            at.card = card_id;
+            at.play_location = loc;
+            actions.push_back(at);
         }
     }
 
@@ -3140,6 +3557,9 @@ std::vector<Intent> GameEngine::generateClosedStateActions(
             if (!state_.objectExists(card_id)) continue;
             auto& card = state_.getObject(card_id);
             if (card.controller != player) continue;
+            // A continuous effect can stop this player's Hidden cards from
+            // being revealed here (Noxus Saboteur).
+            if (bf.hidden_unrevealable_for[playerIndex(player)]) continue;
             // Must be hidden on a previous turn to gain Reaction
             if (card.hidden_on_turn >= state_.turn.turn_number) continue;
 
@@ -3214,9 +3634,9 @@ std::vector<Intent> GameEngine::generateClosedStateActions(
                 if (ab.cost.exhaust && obj.is_exhausted) continue;
                 int net_energy = std::max(0, ab.cost.energy -
                     activationEnergyReduction(*card_obj, player, id, (int)ai));
-                if (net_energy > 0 && availableEnergy(player, obj.isUnit()) < net_energy) continue;
+                if (net_energy > 0 && availableEnergy(player, abilitySpendPurpose(obj)) < net_energy) continue;
                 if (ab.cost.power > 0 &&
-                    !canPayActivationResources(player, net_energy, ab.cost, obj.isUnit())) continue;
+                    !canPayActivationResources(player, net_energy, ab.cost, abilitySpendPurpose(obj))) continue;
                 if (ab.cost.discard && ab.cost.discard_count > 0 &&
                     static_cast<int>(state_.player(player).hand.size()) <
                         ab.cost.discard_count) continue;
@@ -3270,14 +3690,19 @@ void GameEngine::generateSpellActions(PlayerId player, bool action_ok,
     // Lilting Lullaby / cards-lockout: zero spell-play actions while the
     // controller is under either lockout flag this turn.
     if (ps.cant_play_cards_this_turn || ps.cant_play_spells_this_turn) return;
-    for (auto card_id : ps.hand) {
+    const size_t first_spell_action = actions.size();
+    struct MarkOnExit {   // spells played from banishment (banished_playable)
+        const GameState& st; std::vector<Intent>& acts; size_t from;
+        ~MarkOnExit() { markBanishmentPlays(st, acts, from); }
+    } mark_on_exit{state_, actions, first_spell_action};
+    for (auto card_id : handAndPlayableBanished(state_, player)) {
         auto& card = state_.getObject(card_id);
         if (!card.isSpell()) continue;
         if (!canAfford(player, card_id)) continue;
 
         // Check timing keywords
         bool has_action = card.keywords.has(Keyword::Action);
-        bool has_reaction = card.keywords.has(Keyword::Reaction);
+        bool has_reaction = card.keywords.has(Keyword::Reaction) || ps.spells_have_reaction;
 
         // Reaction grants all Action permissions too (CR 813.1.b)
         if (has_reaction) has_action = true;
@@ -3431,7 +3856,7 @@ void GameEngine::generateTrashReplayActions(PlayerId player, bool action_ok,
 
         // Timing gate — identical to generateSpellActions (CR 309/806/813).
         bool has_action = card.keywords.has(Keyword::Action);
-        bool has_reaction = card.keywords.has(Keyword::Reaction);
+        bool has_reaction = card.keywords.has(Keyword::Reaction) || ps.spells_have_reaction;
         if (has_reaction) has_action = true;
         bool allowed = false;
         if (state_.turn.isNeutralOpen()) {
@@ -3448,20 +3873,7 @@ void GameEngine::generateTrashReplayActions(PlayerId player, bool action_ok,
 
         // Affordability against the OVERRIDE cost, not the printed cost. For
         // an [A] grant, any single domain that's payable suffices.
-        bool affordable = false;
-        if (grant.any_domain) {
-            for (int di = 0; di < static_cast<int>(Domain::Count); ++di) {
-                if (canPayAdditionalCost(player, grant.energy, grant.power,
-                                          static_cast<Domain>(di))) {
-                    affordable = true;
-                    break;
-                }
-            }
-        } else {
-            affordable = canPayAdditionalCost(player, grant.energy, grant.power,
-                                               grant.power_domain);
-        }
-        if (!affordable) continue;
+        if (!canPayTrashReplayGrant(player, grant, SpendPurpose::PlaySpell)) continue;
 
         Card* spell_card = card_registry_.get(card.card_def_id);
         if (spell_card && !spell_card->hasLegalTargets(state_, player)) continue;
@@ -3537,9 +3949,9 @@ void GameEngine::generateActivateAbilityActions(PlayerId player,
             if (act_cost.exhaust && obj.is_exhausted) continue;
             int net_energy = std::max(0, act_cost.energy -
                 activationEnergyReduction(*card, player, id, (int)ai));
-            if (net_energy > 0 && availableEnergy(player, obj.isUnit()) < net_energy) continue;
+            if (net_energy > 0 && availableEnergy(player, abilitySpendPurpose(obj)) < net_energy) continue;
             if (act_cost.power > 0 &&
-                !canPayActivationResources(player, net_energy, act_cost, obj.isUnit())) continue;
+                !canPayActivationResources(player, net_energy, act_cost, abilitySpendPurpose(obj))) continue;
             if (act_cost.discard && act_cost.discard_count > 0) {
                 int matching = 0;
                 for (auto hid : state_.player(player).hand) {
@@ -3617,8 +4029,8 @@ void GameEngine::generateActivateAbilityActions(PlayerId player,
                 ref.ability_index >= static_cast<int>(gabs.size())) continue;
             const auto& gcost = gabs[ref.ability_index].cost;
             if (gcost.exhaust && obj.is_exhausted) continue;           // bearer must be ready
-            if (gcost.energy > 0 && availableEnergy(player, obj.isUnit()) < gcost.energy) continue;
-            if (gcost.power > 0 && !canPayActivationResources(player, gcost.energy, gcost, obj.isUnit())) continue;
+            if (gcost.energy > 0 && availableEnergy(player, abilitySpendPurpose(obj)) < gcost.energy) continue;
+            if (gcost.power > 0 && !canPayActivationResources(player, gcost.energy, gcost, abilitySpendPurpose(obj))) continue;
             if (gcost.xp_cost > 0 && state_.player(player).xp < gcost.xp_cost) continue;
             Intent activate;
             activate.type = IntentType::ActivateAbility;
@@ -3723,8 +4135,10 @@ void GameEngine::runShowdown(BattlefieldId bf_id) {
 
         // CR 468.5 / 471.1: a player Establishes Control (and so Conquers) only
         // "if they didn't already control this Battlefield".
-        if (!old_controller.has_value() || *old_controller != sole_player)
+        if (!old_controller.has_value() || *old_controller != sole_player) {
+            bf.conquered_from_uncontrolled = !old_controller.has_value();
             scoreConquer(sole_player, bf_id);
+        }
     }
 }
 
@@ -4253,8 +4667,10 @@ void GameEngine::combatResolutionStep(BattlefieldId bf_id) {
         bf.controller = combat_winner;
         events_.emit(ControlChangedEvent{bf_id, old_controller, combat_winner});
         // CR 468.5 / 471.1: a defender who wins already controlled it — no Conquer.
-        if (!old_controller.has_value() || *old_controller != combat_winner)
+        if (!old_controller.has_value() || *old_controller != combat_winner) {
+            bf.conquered_from_uncontrolled = !old_controller.has_value();
             scoreConquer(combat_winner, bf_id);
+        }
     } else if (att_remaining.empty() && def_remaining.empty()) {
         bf.controller = std::nullopt;
     }
@@ -4408,12 +4824,19 @@ void GameEngine::recalculateAuras() {
         obj.aura_might_bonus = 0;
         obj.aura_keywords.reset();
         obj.aura_bonus_damage_taken = 0;
+        obj.aura_disarm_value = 0;     // [Disarm] grants, re-added by applyPassiveAura
         obj.immune_to_damage = false;  // re-asserted below by applyPassiveAura
         obj.spells_targeting_me_cost_reduction = 0;  // Irelia, Graceful
         obj.granted_abilities = obj.temp_granted_abilities;  // Forge / Gardens / Heimerdinger re-add theirs; "this turn" grants persist
         obj.prevent_enemy_spell_ability_damage = false;      // Esteemed Hierophant
+        obj.aura_cant_move_to_base = false;                  // Minotaur Reckoner
         obj.cant_be_moved_by_enemy = false;                  // Jagged Cutlass
+        obj.cant_be_readied = false;                         // Maduli the Gatekeeper
         obj.empower_cost_reduction = 0;              // Risen Altar
+        {
+            const Card* dc = obj.card_def_id != kInvalidId ? card_registry_.get(obj.card_def_id) : nullptr;
+            obj.has_deploy = dc && dc->hasDeploy();
+        }
         // Empowered is a board status (CR 442.2): it doesn't survive leaving.
         if (!obj.location.has_value() && obj.zone != ZoneType::LegendZone) {
             obj.empowered = 0;
@@ -4422,6 +4845,8 @@ void GameEngine::recalculateAuras() {
     }
     state_.turn.channel_phase_cap = 0;                  // Sandstone Chimera
     state_.turn.early_score_draws_instead = false;      // Otterpus
+    state_.turn.all_units_enter_ready = false;          // Firebrand Raider
+    state_.turn.units_dont_awaken = false;
 
     // Step 1a: Reset per-player passive counters derived from on-board
     // presence. Bumped below by the corresponding aura scan.
@@ -4429,10 +4854,13 @@ void GameEngine::recalculateAuras() {
         auto& ps = state_.player(pid);
         ps.deathknell_double_count = 0;
         ps.bonus_damage_dealt = 0;   // Annie, Fiery
+        ps.gear_ability_bonus_damage = 0;  // Ziggs, Short-Fused
         ps.cannot_gain_points = false; // Tianna Crownguard
         ps.grant_friendly_units_open_bf = false; // Miss Fortune, Buccaneer
+        ps.grant_friendly_units_lone_enemy_bf = false; // Arachnoid Horror
         ps.units_play_base_only = false;         // Mageseeker Warden
         ps.tokens_enter_ready = false;           // Renata Glasc, Industrialist
+        ps.units_enter_ready = false;            // Wuju Master [Level 11]
         ps.recall_all_on_attacker_tie = false;   // Symbol of the Solari
         ps.effects_cant_ready_my_units = false;  // Mageseeker Warden cl2
         ps.spells_have_repeat_energy = 0;        // Syndra, Transcendent
@@ -4440,6 +4868,9 @@ void GameEngine::recalculateAuras() {
         ps.repeat_cost_reduction = 0;            // Marai Spire
         ps.has_reveal_peek = false;              // Void Hatchling
         ps.zilean_present = false;               // Zilean, Time Mage
+        ps.spells_have_reaction = false;         // Kai'Sa, Rebel
+        ps.deploy_gear_have_action = false;      // Jarvan IV, Martial Paragon
+        ps.channel_extra_exhausted = 0;          // Seraphic Wyvern
         // Vendetta continuous effects.
         ps.skip_draw_phase = false;              // Endless Riches
         ps.may_play_from_trash = false;
@@ -4453,20 +4884,40 @@ void GameEngine::recalculateAuras() {
         ps.extra_minus_might = 0;
         ps.locked_spell_names.clear();           // Fallen Feline
         ps.first_gear_ability_discount = 0;      // Piltovan Forge
+        // Continuous cost modifiers are re-pushed by their sources' auras.
+        ps.cost_modifiers.erase(
+            std::remove_if(ps.cost_modifiers.begin(), ps.cost_modifiers.end(),
+                           [](const PlayerState::CostModifier& m) { return m.from_aura; }),
+            ps.cost_modifiers.end());
+        ps.gold_extra_energy = 0;                // Chem-Baroness
+        ps.optional_cost_discount = 0;           // Ezreal, Prodigy
     }
     // Per-BF aura-derived flags (Mageseeker Investigator / Noxus Saboteur /
     // Altar of Blood). Reset here; re-asserted by unit/BF applyPassiveAura.
     for (auto& bf : state_.battlefields) {
         bf.surcharge_enemy_multi_move = false;
         bf.opp_hidden_unrevealable = false;
+        bf.hidden_unrevealable_for[0] = bf.hidden_unrevealable_for[1] = false;
         bf.death_recall_for_pay = false;
         bf.ignore_tank[0] = bf.ignore_tank[1] = false;   // Dune Surfer
+        bf.deathknell_extra[0] = bf.deathknell_extra[1] = 0;  // Detonation Amplifier
         bf.ignore_deflect_here = false;                  // Heisho
         bf.reaction_tax_power = 0;                       // Mystic Vortex
         bf.friendly_spell_discount_power = 0;            // Sandswept Tomb
+        bf.first_play_here_discount = 0;                 // Hunters' Circle
         bf.paid_play_power = 0;                          // Dragon Roost
         bf.paid_play_tag.clear();
         bf.empower_cost_reduction[0] = bf.empower_cost_reduction[1] = 0;  // Risen Altar
+        bf.move_tax_energy[0] = bf.move_tax_energy[1] = 0;                // Gravity Field
+        bf.move_tax_power[0] = bf.move_tax_power[1] = 0;
+        bf.facedown_max_occupancy = 1;                   // Bandle Tree / Bushwhack Trap re-add
+    }
+
+    // "If you've gained XP this turn" (Wily Newtfish): cards gain XP by
+    // writing PlayerState::xp, so an increase since the last recalc is a gain.
+    for (auto& ps : state_.players) {
+        if (ps.xp > ps.xp_last_seen) ps.xp_gained_this_turn += ps.xp - ps.xp_last_seen;
+        ps.xp_last_seen = ps.xp;
     }
 
     // Step 1b: Refresh per-object targeting-protection flags from each
@@ -4474,8 +4925,11 @@ void GameEngine::recalculateAuras() {
     // flag set; off-board cards stay default-false. Cheap O(n) pass over
     // GameState::objects; collocated with aura recalc so all "static
     // attributes of on-board cards" get refreshed in one place.
-    for (auto& [id, obj] : state_.objects) {
+    // Reset every flag first, so a passive aura below may protect OTHER
+    // objects (Alpha Wildclaw) without a later reset clobbering it.
+    for (auto& [id, obj] : state_.objects)
         obj.untargetable_by_enemy = obj.untargetable_by_enemy_this_turn;
+    for (auto& [id, obj] : state_.objects) {
         // On-board cards AND legends (LegendZone, no location) broadcast their
         // passive auras. Without including legends, legend-sourced passives
         // (Purifier's [Assault], Wuju Master's +1 [M], etc.) never fired.
@@ -4621,9 +5075,17 @@ void GameEngine::recalculateAuras() {
         d = {}; d.friendly = true; d.all_friendly = true;
         findAura("your units have", d);
 
-        // "Units here have ..."
-        d = {}; d.here_only = true;
-        findAura("units here have", d);
+        // "Units here have ..." — not "[Other] friendly / enemy units here
+        // have ...", which reach only one side (those cards give their aura
+        // through Card::applyPassiveAura).
+        {
+            const auto pos = clean.find("units here have");
+            const bool one_side = pos != std::string::npos &&
+                ((pos >= 9 && clean.compare(pos - 9, 9, "friendly ") == 0) ||
+                 (pos >= 6 && clean.compare(pos - 6, 6, "enemy ") == 0));
+            d = {}; d.here_only = true;
+            if (!one_side) findAura("units here have", d);
+        }
 
         // "Stunned enemy units here have ..."
         d = {}; d.enemy = true; d.here_only = true; d.stunned_only = true;
@@ -4700,6 +5162,19 @@ void GameEngine::recalculateAuras() {
                 tgt.aura_effects.push_back(ae);
             }
         }
+    }
+
+    // Step 3a: "Buffs give an additional +N [M] to friendly units this turn"
+    // (Stand United): +N per buff on each of that player's units.
+    for (auto& [id, obj] : state_.objects) {
+        if (!obj.isUnit() || !obj.location.has_value() || obj.buff_count <= 0) continue;
+        if (obj.controller == PlayerId::None) continue;
+        const int bonus = state_.player(obj.controller).buff_bonus_this_turn;
+        if (bonus <= 0) continue;
+        GameObject::AuraEffect ae;
+        ae.source = id;
+        ae.might_bonus = bonus * obj.buff_count;
+        obj.aura_effects.push_back(ae);
     }
 
     // Step 3b: Conditional self-effects ("If X, I have [Keyword]")
@@ -4891,16 +5366,32 @@ void GameEngine::refreshFlowGrants() {
         auto& ps = state_.player(pid);
         ps.trash_replay_grants.erase(
             std::remove_if(ps.trash_replay_grants.begin(), ps.trash_replay_grants.end(),
-                [](const PlayerState::TrashReplayGrant& g) { return g.banish_after; }),
+                [](const PlayerState::TrashReplayGrant& g) {
+                    return g.banish_after || g.standing;
+                }),
             ps.trash_replay_grants.end());
         for (auto cid : ps.trash) {
             if (!state_.objectExists(cid)) continue;
             auto& obj = state_.getObject(cid);
-            if (!obj.isSpell() || obj.card_def_id == kInvalidId) continue;
+            if (obj.card_def_id == kInvalidId) continue;
             const Card* c = card_registry_.get(obj.card_def_id);
             if (!c) continue;
+            // "You may play me from your trash for <cost>" (any card type).
+            if (auto tp = c->trashPlayCost(state_, pid); tp.valid) {
+                PlayerState::TrashReplayGrant g;
+                g.card = cid;
+                g.standing = true;
+                g.energy = tp.energy;
+                g.power = tp.power;
+                g.power_domain = tp.power_domain;
+                g.any_domain = tp.any_domain;
+                ps.trash_replay_grants.push_back(g);
+                continue;
+            }
+            if (!obj.isSpell()) continue;
             PlayerState::TrashReplayGrant g;
             g.card = cid;
+            g.standing = true;
             g.banish_after = true;
             auto flow = c->flowCost();
             if (flow.valid) {
@@ -5034,6 +5525,17 @@ void GameEngine::cleanup() {
         } else if (!mighty && was) {
             obj.card_counters["__was_mighty"] = 0;
         }
+        // Same edge at 10+ [M]: "When my Might becomes 10 or more" (Renekton,
+        // Brute). Announced only to units that print that trigger.
+        const bool ten = obj.current_might >= 10;
+        auto t_it = obj.card_counters.find("__was_might10");
+        const bool was_ten = t_it != obj.card_counters.end() && t_it->second != 0;
+        if (ten && !was_ten) {
+            obj.card_counters["__was_might10"] = 1;
+            events_.emit(ObjectStateChangedEvent{id, "might_10"});
+        } else if (!ten && was_ten) {
+            t_it->second = 0;
+        }
     }
 }
 
@@ -5148,8 +5650,12 @@ void GameEngine::recallMisplacedObjects() {
         if (obj.controller == PlayerId::None) continue;
         const LocationId home{BaseLocation{obj.controller}};
         bool recall = false;
-        if (obj.isGear() && !obj.attached_to.has_value() && obj.isAtBattlefield())
-            recall = true;
+        if (obj.isGear() && !obj.attached_to.has_value() && obj.isAtBattlefield()) {
+            // CR 830.1.b.3: non-unit gear with [Deploy] isn't recalled; nor is
+            // a gear that is also a unit (CR 178.1.a.1.a).
+            const Card* gc = obj.card_def_id != kInvalidId ? card_registry_.get(obj.card_def_id) : nullptr;
+            recall = !(obj.isUnit() || (gc && gc->hasDeploy()));
+        }
         if ((obj.isPermanent() || obj.isRune()) && !obj.attached_to.has_value() &&
             obj.isAtBase() && *obj.location != home)
             recall = true;
@@ -5293,6 +5799,11 @@ void GameEngine::channelRunes(PlayerId player, int count) {
         events_.emit(EnteredBoardEvent{
             rune_id, player, CardType::Rune, BaseLocation{player}, false});
     }
+    // "If you would channel runes, channel that many runes plus 1 exhausted
+    // rune instead" (Seraphic Wyvern) — a replacement, so it doesn't apply to
+    // its own extra runes.
+    const int extra = ps.channel_extra_exhausted;
+    if (count > 0 && extra > 0) effect_executor_->channelRunesNoReplacement(player, extra, true);
 }
 
 void GameEngine::shuffleDeck(PlayerId player) {
@@ -5309,7 +5820,7 @@ void GameEngine::shuffleRuneDeck(PlayerId player) {
 // Cost payment
 // ═══════════════════════════════════════════════════════════════════════════════
 
-int GameEngine::availableEnergy(PlayerId player, bool for_unit) const {
+int GameEngine::availableEnergy(PlayerId player, SpendPurpose purpose) const {
     // Energy comes from exhausting ready runes (CR 163.2.a: [E]: Add [1])
     // Each ready rune in base can be exhausted for 1 Energy
     int count = 0;
@@ -5322,7 +5833,8 @@ int GameEngine::availableEnergy(PlayerId player, bool for_unit) const {
     }
     // Also count Energy already in the pool
     count += state_.player(player).rune_pool.energy;
-    if (for_unit) count += state_.player(player).rune_pool.unit_energy;
+    count += state_.player(player).rune_pool.restrictedAvailable(
+        /*power=*/false, purpose, state_.turn.ns_state == NeutralShowdownState::Showdown);
     return count;
 }
 
@@ -5504,12 +6016,20 @@ void GameEngine::maybePayOptionalAdditionalCost(PlayerId player, GameObjectId ca
     if (card.card_def_id == kInvalidId) return;
     const Card* cdef = card_registry_.get(card.card_def_id);
     if (!cdef) return;
-    auto cost = cdef->optionalAdditionalCost();
+    auto cost = cdef->optionalAdditionalCost(state_, player);
     if (!cost.valid) return;
     // Discard-as-additional-cost-to-reduce (Brazen Buccaneer) is decided BEFORE
     // payment in executePlayCard (the discount must precede the base cost), so
     // it is NOT handled here.
     if (cost.discard_cards > 0 && cost.reduce_energy > 0) return;
+    // Spend-XP and object additional costs are also decided before payment.
+    if (cost.spend_xp > 0) return;
+    if (cost.object_cost != Card::OptionalAdditionalCost::ObjectCost::None) return;
+    // Return-a-gear costs: with a discount they were decided before payment.
+    if (cost.return_friendly_gear) {
+        if (cost.reduce_energy == 0) offerReturnFriendlyGear(player, card, cost, true);
+        return;
+    }
 
     // Pure "you may discard N as an additional cost" (Zed, From the Shadows;
     // Ruthless Strike): offered whenever the hand can cover it.
@@ -5534,18 +6054,25 @@ void GameEngine::maybePayOptionalAdditionalCost(PlayerId player, GameObjectId ca
         return;
     }
 
+    // Ezreal, Prodigy: "Optional additional costs you pay cost [1] or [A] less."
+    if (int d = state_.player(player).optional_cost_discount; d > 0) {
+        if (cost.energy > 0) cost.energy = std::max(0, cost.energy - d);
+        else cost.power = std::max(0, cost.power - d);
+    }
     // Pick a payable domain for the power portion (specific, any, or none).
+    const SpendPurpose purpose = playSpendPurpose(card);
     std::optional<Domain> dom;
     if (cost.power == 0) {
-        if (canPayAdditionalCost(player, cost.energy, 0, Domain::Fury)) dom = Domain::Fury;
+        if (canPayAdditionalCost(player, cost.energy, 0, Domain::Fury, purpose)) dom = Domain::Fury;
     } else if (cost.any_domain) {
         for (int di = 0; di < static_cast<int>(Domain::Count); ++di) {
-            if (canPayAdditionalCost(player, cost.energy, cost.power, static_cast<Domain>(di))) {
+            if (canPayAdditionalCost(player, cost.energy, cost.power, static_cast<Domain>(di),
+                                     purpose)) {
                 dom = static_cast<Domain>(di);
                 break;
             }
         }
-    } else if (canPayAdditionalCost(player, cost.energy, cost.power, cost.power_domain)) {
+    } else if (canPayAdditionalCost(player, cost.energy, cost.power, cost.power_domain, purpose)) {
         dom = cost.power_domain;
     }
     if (!dom.has_value()) return;  // can't afford -> not offered (CR: choice only when payable)
@@ -5563,7 +6090,7 @@ void GameEngine::maybePayOptionalAdditionalCost(PlayerId player, GameObjectId ca
     if (on_decision) on_decision(state_, opts, chosen);
 
     if (chosen.chosen_value.value_or(0) == 1) {
-        payAdditionalCost(player, cost.energy, cost.power, *dom);
+        payAdditionalCost(player, cost.energy, cost.power, *dom, purpose);
         if (cost.paid_flag && cost.paid_flag[0] != '\0') {
             card.card_counters[cost.paid_flag] = 1;
         }
@@ -5571,6 +6098,71 @@ void GameEngine::maybePayOptionalAdditionalCost(PlayerId player, GameObjectId ca
     } else {
         events_.logTrace("ADDITIONAL_COST: " + card.name + " declined additional cost");
     }
+}
+
+bool GameEngine::offerReturnFriendlyGear(PlayerId player, GameObject& card,
+                                         const Card::OptionalAdditionalCost& cost,
+                                         bool allow_decline) {
+    std::vector<GameObjectId> gears;
+    for (const auto& [id, obj] : state_.objects)
+        if (obj.isGear() && obj.controller == player && obj.location.has_value())
+            gears.push_back(id);
+    if (gears.empty()) return false;
+    std::sort(gears.begin(), gears.end());
+    std::vector<Intent> opts;
+    if (allow_decline) {
+        Intent decline; decline.type = IntentType::MakeChoice; decline.player = player;
+        decline.chosen_value = 0;
+        opts.push_back(decline);
+    }
+    for (auto g : gears) {
+        Intent pick; pick.type = IntentType::MakeChoice; pick.player = player;
+        pick.chosen_objects = {g};
+        opts.push_back(pick);
+    }
+    state_.decision_index++;
+    events_.logTrace("DECISION #" + std::to_string(state_.decision_index) + " (" +
+                     toString(player) + "): return a friendly gear to hand as additional cost for " +
+                     card.name + "? [" + std::to_string(opts.size()) + " options]");
+    auto chosen = getAgent(player).selectAction(state_, opts);
+    recordAppliedIntent(chosen);
+    if (on_decision) on_decision(state_, opts, chosen);
+    if (chosen.chosen_objects.empty()) return false;
+    const GameObjectId gear = chosen.chosen_objects.front();
+    if (std::find(gears.begin(), gears.end(), gear) == gears.end()) return false;
+    const auto& g = state_.getObject(gear);
+    const int gear_energy = g.card_def_id != kInvalidId ? card_db_.get(g.card_def_id).energy_cost : 0;
+    events_.logTrace("ADDITIONAL_COST: " + card.name + " returns " + g.name + " to hand");
+    effect_executor_->bounceToHand(gear);
+    card.card_counters["__oac_gear_energy"] = gear_energy;
+    if (cost.paid_flag && cost.paid_flag[0] != '\0') card.card_counters[cost.paid_flag] = 1;
+    return true;
+}
+
+static bool anyCombatInProgress(const GameState& state) {
+    for (const auto& bf : state.battlefields)
+        if (bf.combat_in_progress) return true;
+    return false;
+}
+
+/// Whether cost modifier `mod` applies to `payer` playing `card`. `own_list`:
+/// `mod` is in the payer's own list (else in the opponent's, where only
+/// affects_enemy_only entries count).
+static bool costModifierApplies(const PlayerState::CostModifier& mod, const GameObject& card,
+                                const PlayerState& payer, bool combat_active, bool own_list) {
+    if (own_list == mod.affects_enemy_only) return false;
+    if (mod.next_spell_only && !card.isSpell()) return false;
+    if (mod.next_unit_only && !card.isUnit()) return false;
+    if (mod.spells_only && !card.isSpell()) return false;
+    if (mod.units_only && !card.isUnit()) return false;
+    if (mod.gear_only && !card.isGear()) return false;
+    if (mod.first_gear_per_turn && payer.gears_played_this_turn > 0) return false;
+    if (mod.affects_non_token_only && card.super_type == SuperType::Token) return false;
+    if (mod.combat_active_only && !combat_active) return false;
+    if (!mod.tag_filter.empty() &&
+        std::find(card.tags.begin(), card.tags.end(), mod.tag_filter) == card.tags.end())
+        return false;
+    return true;
 }
 
 // Net change to a card's POWER cost from continuous effects and cost modifiers
@@ -5584,9 +6176,23 @@ void GameEngine::maybePayOptionalAdditionalCost(PlayerId player, GameObjectId ca
 static int extraAnyPowerCost(const GameState& state, PlayerId player, const GameObject& card) {
     int extra = 0;
     if (card.isSpell()) extra += state.player(player).spell_tax_power;
+    // CostModifier "[A] more" (Vex, Cheerless): Power of any domain.
+    {
+        const bool combat_active = anyCombatInProgress(state);
+        const auto& ps = state.player(player);
+        for (const auto& mod : ps.cost_modifiers)
+            if (mod.power_increase > 0 &&
+                costModifierApplies(mod, card, ps, combat_active, /*own_list=*/true))
+                extra += mod.power_increase;
+        for (const auto& mod : state.player(opponent(player)).cost_modifiers)
+            if (mod.power_increase > 0 &&
+                costModifierApplies(mod, card, ps, combat_active, /*own_list=*/false))
+                extra += mod.power_increase;
+    }
     // "(Hidden cards have [Reaction].)" — and [Ambush] is Reaction while played.
     const bool has_reaction = card.keywords.has(Keyword::Reaction) || card.is_hidden ||
-                              card.keywords.has(Keyword::Ambush);
+                              card.keywords.has(Keyword::Ambush) ||
+                              (card.isSpell() && state.player(player).spells_have_reaction);
     if (has_reaction) {
         int tax = 0;
         for (const auto& bf : state.battlefields)
@@ -5603,15 +6209,170 @@ static int powerCostDelta(const GameState& state, PlayerId player, const GameObj
     int delta = 0;
     if (card.isSpell()) delta -= ps.spell_discount_power;
     delta -= ps.transient_power_discount;
+    const bool combat_active = anyCombatInProgress(state);
     for (const auto& mod : ps.cost_modifiers) {
-        if (mod.power_reduction == 0 || mod.affects_enemy_only) continue;
-        if (mod.next_spell_only && !card.isSpell()) continue;
-        if (mod.next_unit_only && !card.isUnit()) continue;
-        if (mod.gear_only && !card.isGear()) continue;
+        if (mod.power_reduction == 0) continue;
+        if (!costModifierApplies(mod, card, ps, combat_active, /*own_list=*/true)) continue;
+        delta -= mod.power_reduction;
+    }
+    for (const auto& mod : state.player(opponent(player)).cost_modifiers) {
+        if (mod.power_reduction == 0) continue;
+        if (!costModifierApplies(mod, card, ps, combat_active, /*own_list=*/false)) continue;
         delta -= mod.power_reduction;
     }
     if (card_class) delta -= card_class->selfPowerCostReduction(state, player);
     return delta;
+}
+
+GameEngine::ObjectCostDiscount GameEngine::objectCostDiscount(
+    const Card::OptionalAdditionalCost& cost, const std::vector<GameObjectId>& objs) const {
+    ObjectCostDiscount d;
+    const int n = static_cast<int>(objs.size());
+    d.energy = n * cost.reduce_energy_each;
+    d.power = n * cost.reduce_power_each;
+    if (cost.reduce_by_object_cost) {
+        for (auto id : objs) {
+            if (!state_.objectExists(id)) continue;
+            const auto& o = state_.getObject(id);
+            if (o.card_def_id == kInvalidId) continue;   // tokens cost nothing
+            const auto& od = card_db_.get(o.card_def_id);
+            d.energy += od.energy_cost;
+            d.power += od.power_cost;
+        }
+    }
+    d.ignore = cost.ignore_base_cost && n >= std::max(1, cost.min_objects);
+    return d;
+}
+
+GameEngine::ObjectCostDiscount GameEngine::bestObjectCostDiscount(
+    const Card::OptionalAdditionalCost& cost, const std::vector<GameObjectId>& cands,
+    int slots, int already) const {
+    ObjectCostDiscount d;
+    const int avail = static_cast<int>(cands.size());
+    const int n = slots < 0 ? avail : std::min(slots, avail);
+    if (n <= 0) return d;
+    d.energy = n * cost.reduce_energy_each;
+    d.power = n * cost.reduce_power_each;
+    if (cost.reduce_by_object_cost) {
+        // Energy and Power maximized independently: an upper bound.
+        std::vector<int> es, ps;
+        for (auto id : cands) {
+            const auto& o = state_.getObject(id);
+            if (o.card_def_id == kInvalidId) { es.push_back(0); ps.push_back(0); continue; }
+            const auto& od = card_db_.get(o.card_def_id);
+            es.push_back(od.energy_cost);
+            ps.push_back(od.power_cost);
+        }
+        std::sort(es.rbegin(), es.rend());
+        std::sort(ps.rbegin(), ps.rend());
+        for (int i = 0; i < n; ++i) { d.energy += es[i]; d.power += ps[i]; }
+    }
+    d.ignore = cost.ignore_base_cost && already + n >= std::max(1, cost.min_objects);
+    return d;
+}
+
+GameEngine::ObjectCostDiscount GameEngine::payObjectAdditionalCost(
+    PlayerId player, GameObjectId card_id, const std::optional<LocationId>& play_location) {
+    using OC = Card::OptionalAdditionalCost::ObjectCost;
+    ObjectCostDiscount total;
+    if (!state_.objectExists(card_id)) return total;
+    auto& card = state_.getObject(card_id);
+    if (card.card_def_id == kInvalidId) return total;
+    const Card* cc = card_registry_.get(card.card_def_id);
+    if (!cc) return total;
+    const auto cost = cc->optionalAdditionalCost(state_, player);
+    if (!cost.valid || cost.object_cost == OC::None) return total;
+
+    auto& ps = state_.player(player);
+    ps.transient_optional_cost_decided = true;
+    // Whether the play is payable with discount `d` on top of what is staged.
+    auto payable = [&](const ObjectCostDiscount& d) {
+        const bool ie = ps.transient_ignore_energy, ip = ps.transient_ignore_power;
+        ps.transient_play_discount += d.energy;
+        ps.transient_power_discount += d.power;
+        if (d.ignore) { ps.transient_ignore_energy = true; ps.transient_ignore_power = true; }
+        const bool ok = canAfford(player, card_id);
+        ps.transient_play_discount -= d.energy;
+        ps.transient_power_discount -= d.power;
+        ps.transient_ignore_energy = ie;
+        ps.transient_ignore_power = ip;
+        return ok;
+    };
+    auto plus = [](ObjectCostDiscount a, const ObjectCostDiscount& b) {
+        a.energy += b.energy; a.power += b.power; a.ignore = a.ignore || b.ignore;
+        return a;
+    };
+    const int need = std::max(1, cost.min_objects);
+    const char* what = cost.object_cost == OC::KillFriendlyUnit ? "kill"
+                     : cost.object_cost == OC::ReturnFriendlyUnit ? "return to hand"
+                     : "spend the buff of";
+    std::vector<GameObjectId> paid;
+    while (cost.max_objects < 0 || static_cast<int>(paid.size()) < cost.max_objects) {
+        const auto cands = cc->objectCostCandidates(state_, player, card_id, play_location);
+        if (cands.empty()) break;
+        const int done_n = static_cast<int>(paid.size());
+        // Stopping: before any object (an optional cost declined) or once
+        // the minimum is paid — and only while the play stays payable.
+        const bool may_stop = (done_n == 0 && !cost.mandatory) || done_n >= need;
+        const bool can_stop = may_stop && payable(total);
+        std::vector<GameObjectId> picks;
+        for (auto c : cands) {
+            std::vector<GameObjectId> rest;
+            for (auto o : cands) if (o != c) rest.push_back(o);
+            const int slots = cost.max_objects < 0 ? -1 : cost.max_objects - done_n - 1;
+            if (done_n + 1 + static_cast<int>(rest.size()) < need) continue;
+            auto with = plus(total, objectCostDiscount(cost, {c}));
+            with.ignore = with.ignore || (cost.ignore_base_cost && done_n + 1 >= need);
+            if (payable(plus(with, bestObjectCostDiscount(cost, rest, slots, done_n + 1))))
+                picks.push_back(c);
+        }
+        if (picks.empty()) break;
+        std::vector<Intent> opts;
+        if (can_stop) {
+            Intent stop; stop.type = IntentType::MakeChoice; stop.player = player;
+            stop.chosen_value = 0;
+            opts.push_back(stop);
+        }
+        for (auto c : picks) {
+            Intent pick; pick.type = IntentType::MakeChoice; pick.player = player;
+            pick.chosen_objects = {c};
+            opts.push_back(pick);
+        }
+        const Intent chosen = decideNow(player, opts, std::string(what) +
+            " a friendly unit as an additional cost for " + card.name + "?");
+        GameObjectId obj = kInvalidId;
+        if (!chosen.chosen_objects.empty() &&
+            std::find(picks.begin(), picks.end(), chosen.chosen_objects.front()) != picks.end())
+            obj = chosen.chosen_objects.front();
+        else if (!can_stop)
+            obj = picks.front();
+        if (obj == kInvalidId) break;
+        // The discount reads the object before it is paid (Atakhan).
+        const auto d = objectCostDiscount(cost, {obj});
+        total.energy += d.energy;
+        total.power += d.power;
+        auto& o = state_.getObject(obj);
+        events_.logTrace("ADDITIONAL_COST: " + card.name + ": " + what + " " + o.name);
+        switch (cost.object_cost) {
+            case OC::KillFriendlyUnit: killUnit(obj); break;
+            case OC::ReturnFriendlyUnit: effect_executor_->bounceToHand(obj); break;
+            case OC::SpendBuff:
+                o.buff_count = std::max(0, o.buff_count - 1);
+                o.recomputeMight();
+                break;
+            case OC::None: break;
+        }
+        paid.push_back(obj);
+    }
+    const int n = static_cast<int>(paid.size());
+    if (cost.ignore_base_cost && n >= need) total.ignore = true;
+    if (n > 0 && n >= need) {
+        if (cost.paid_flag && cost.paid_flag[0] != '\0') card.card_counters[cost.paid_flag] = 1;
+        card.card_counters["__oac_objects_paid"] = n;
+    }
+    if (cost.mandatory && n < need)
+        events_.logTrace("ADDITIONAL_COST: " + card.name + ": mandatory cost could not be paid");
+    return total;
 }
 
 bool GameEngine::canAfford(PlayerId player, GameObjectId card_obj, int extra_any_power) const {
@@ -5651,13 +6412,7 @@ bool GameEngine::canAfford(PlayerId player, GameObjectId card_obj, int extra_any
     // (enemy cost increase) requires the modifier's source player to
     // be tracked separately — see opponent modifier sweep below.
     for (auto& mod : ps_const.cost_modifiers) {
-        if (mod.next_spell_only && !card.isSpell()) continue;
-        if (mod.next_unit_only && !card.isUnit()) continue;
-        if (mod.gear_only && !card.isGear()) continue;
-        if (mod.first_gear_per_turn && ps_const.gears_played_this_turn > 0) continue;
-        if (mod.affects_non_token_only && card.super_type == SuperType::Token) continue;
-        if (mod.combat_active_only && !combat_active) continue;
-        if (mod.affects_enemy_only) continue;  // friendly's own list, skip enemy-only
+        if (!costModifierApplies(mod, card, ps_const, combat_active, /*own_list=*/true)) continue;
         energy_needed -= mod.energy_reduction;
         energy_needed += mod.energy_increase;
         if (mod.min_cost > min_cost) min_cost = mod.min_cost;
@@ -5666,18 +6421,50 @@ bool GameEngine::canAfford(PlayerId player, GameObjectId card_obj, int extra_any
     // contain affects_enemy_only entries that target THIS player. Vex
     // Cheerless (controlled by P2) wants to make P1's spells cost more.
     for (auto& mod : state_.player(opponent(player)).cost_modifiers) {
-        if (!mod.affects_enemy_only) continue;
-        if (mod.next_spell_only && !card.isSpell()) continue;
-        if (mod.next_unit_only && !card.isUnit()) continue;
-        if (mod.affects_non_token_only && card.super_type == SuperType::Token) continue;
-        if (mod.combat_active_only && !combat_active) continue;
+        if (!costModifierApplies(mod, card, state_.player(player), combat_active, /*own_list=*/false)) continue;
         energy_needed -= mod.energy_reduction;
         energy_needed += mod.energy_increase;
         if (mod.min_cost > min_cost) min_cost = mod.min_cost;
     }
+    // Object additional costs paid as the card is played ("kill a friendly
+    // unit", "spend a buff", ...): a mandatory one makes the card unplayable
+    // without enough candidates; a discount counts at its best case
+    // (payObjectAdditionalCost only offers choices that stay payable). Not
+    // once the play is under way (the decision has staged its discount).
+    GameEngine::ObjectCostDiscount obj_disc;
+    if (const Card* oc = card_registry_.get(card.card_def_id);
+        oc && !ps_const.transient_optional_cost_decided) {
+        const auto ocost = oc->optionalAdditionalCost(state_, player);
+        if (ocost.valid && ocost.object_cost != Card::OptionalAdditionalCost::ObjectCost::None) {
+            const auto cands = oc->objectCostCandidates(state_, player, card_obj, std::nullopt);
+            const int need = std::max(1, ocost.min_objects);
+            if (static_cast<int>(cands.size()) < need) {
+                if (ocost.mandatory) return false;   // CR 356.2.a: can't be paid
+            } else {
+                obj_disc = bestObjectCostDiscount(ocost, cands, ocost.max_objects, 0);
+            }
+        }
+    }
+    energy_needed -= obj_disc.energy;
     // Self-cost reduction hook (e.g., Noxus Hopeful "[Legion] I cost [2] less").
     if (auto* self_card = card_registry_.get(card.card_def_id)) {
         energy_needed -= self_card->selfCostReduction(state_, player);
+        // "You may spend N XP as an additional cost. If you do, I cost [M]
+        // less" (Poppy): playable when the XP covers it. Not once the play is
+        // under way (executePlayCard has decided and staged the discount).
+        const auto oac = self_card->optionalAdditionalCost();
+        if (oac.valid && oac.spend_xp > 0 && oac.reduce_energy > 0 &&
+            ps_const.xp >= oac.spend_xp && !ps_const.transient_optional_cost_decided)
+            energy_needed -= oac.reduce_energy;
+        // "Return a friendly gear as an additional cost; if you do, I cost
+        // [N] less" (Skystrike Squadron): payable with the discount.
+        if (oac.valid && oac.return_friendly_gear && oac.reduce_energy > 0) {
+            for (const auto& [gid, g] : state_.objects)
+                if (g.isGear() && g.controller == player && g.location.has_value()) {
+                    energy_needed -= oac.reduce_energy;
+                    break;
+                }
+        }
     }
     // Vendetta continuous spell-cost effects (set by cards' applyPassiveAura):
     // Helm of Suppression taxes the opponent's spells; Applied Researchers
@@ -5694,10 +6481,12 @@ bool GameEngine::canAfford(PlayerId player, GameObjectId card_obj, int extra_any
     energy_needed -= ps_const.transient_play_discount;
     energy_needed = std::max(min_cost, energy_needed);
     energy_needed = std::max(0, energy_needed);
-    // Effect-driven play that ignores part of the cost (EffectExecutor::playPayingCost).
-    if (ps_const.transient_ignore_energy) energy_needed = 0;
+    // Effect-driven play that ignores part of the cost (EffectExecutor::playPayingCost),
+    // or an object cost that ignores the base cost (Wallop).
+    if (ps_const.transient_ignore_energy || obj_disc.ignore) energy_needed = 0;
     power_needed = std::max(0, power_needed + powerCostDelta(state_, player, card, card_registry_.get(card.card_def_id)));
-    if (state_.player(player).transient_ignore_power) power_needed = 0;
+    power_needed = std::max(0, power_needed - obj_disc.power);
+    if (state_.player(player).transient_ignore_power || obj_disc.ignore) power_needed = 0;
 
     // Count available runes in base, partitioned by ready/exhausted
     // and matching/non-matching-domain. The CR cost-payment ordering
@@ -5732,7 +6521,10 @@ bool GameEngine::canAfford(PlayerId player, GameObjectId card_obj, int extra_any
 
     // Energy can come from the pool's existing energy AND from
     // exhausting ready runes (each gives 1 energy).
-    int energy_available = ready_total + pool.energy + (card.isUnit() ? pool.unit_energy : 0);
+    const SpendPurpose purpose = playSpendPurpose(card);
+    const bool in_showdown = state_.turn.ns_state == NeutralShowdownState::Showdown;
+    int energy_available = ready_total + pool.energy +
+                           pool.restrictedAvailable(/*power=*/false, purpose, in_showdown);
     if (energy_available < energy_needed) return false;
 
     // Power can come from:
@@ -5744,7 +6536,8 @@ bool GameEngine::canAfford(PlayerId player, GameObjectId card_obj, int extra_any
     //     just exhausted in the energy step (the energy step exhausts
     //     `energy_needed` ready runes, and we're free to pick the
     //     matching-domain ones first when doing so).
-    int power_from_pool = pool.universal_power;
+    int power_from_pool = pool.universal_power +
+                          pool.restrictedAvailable(/*power=*/true, purpose, in_showdown);
     for (auto d : def.domains) {
         int di = static_cast<int>(d);
         if (di >= 0 && di < static_cast<int>(Domain::Count)) {
@@ -5830,24 +6623,14 @@ GameEngine::CostPaymentAdvance GameEngine::beginCostPayment(
         if (bf.combat_in_progress) { combat_active = true; break; }
     }
     for (auto& mod : ps.cost_modifiers) {
-        if (mod.next_spell_only && !card.isSpell()) continue;
-        if (mod.next_unit_only && !card.isUnit()) continue;
-        if (mod.gear_only && !card.isGear()) continue;
-        if (mod.first_gear_per_turn && ps.gears_played_this_turn > 0) continue;
-        if (mod.affects_non_token_only && card.super_type == SuperType::Token) continue;
-        if (mod.combat_active_only && !combat_active) continue;
-        if (mod.affects_enemy_only) continue;
+        if (!costModifierApplies(mod, card, ps, combat_active, /*own_list=*/true)) continue;
         energy_needed -= mod.energy_reduction;
         energy_needed += mod.energy_increase;
         if (mod.min_cost > min_cost) min_cost = mod.min_cost;
     }
     // Cross-player modifiers (Vex Cheerless makes opponent's spells cost more).
     for (auto& mod : state_.player(opponent(player)).cost_modifiers) {
-        if (!mod.affects_enemy_only) continue;
-        if (mod.next_spell_only && !card.isSpell()) continue;
-        if (mod.next_unit_only && !card.isUnit()) continue;
-        if (mod.affects_non_token_only && card.super_type == SuperType::Token) continue;
-        if (mod.combat_active_only && !combat_active) continue;
+        if (!costModifierApplies(mod, card, state_.player(player), combat_active, /*own_list=*/false)) continue;
         energy_needed -= mod.energy_reduction;
         energy_needed += mod.energy_increase;
         if (mod.min_cost > min_cost) min_cost = mod.min_cost;
@@ -5903,12 +6686,11 @@ GameEngine::CostPaymentAdvance GameEngine::beginCostPayment(
                      " P=" + std::to_string(power_needed));
 
     // Spend pool energy first (no agent decision needed): Energy restricted to
-    // units before unrestricted Energy.
-    if (energy_needed > 0 && card.isUnit()) {
-        int from_units = std::min(ps.rune_pool.unit_energy, energy_needed);
-        ps.rune_pool.unit_energy -= from_units;
-        energy_needed -= from_units;
-    }
+    // this kind of play ("Use only to play spells", ...) before unrestricted.
+    const SpendPurpose purpose = playSpendPurpose(card);
+    const bool in_showdown = state_.turn.ns_state == NeutralShowdownState::Showdown;
+    energy_needed -= ps.rune_pool.spendRestricted(/*power=*/false, energy_needed, purpose,
+                                                  in_showdown);
     if (energy_needed > 0) {
         int from_pool = std::min(ps.rune_pool.energy, energy_needed);
         ps.rune_pool.energy -= from_pool;
@@ -5924,6 +6706,10 @@ GameEngine::CostPaymentAdvance GameEngine::beginCostPayment(
             ps.rune_pool.power[di] -= from_pool;
             power_needed -= from_pool;
         }
+        // Restricted [A] usable for this play (Daughter of the Void, Iron
+        // Revenant, ...) before unrestricted [A].
+        power_needed -= ps.rune_pool.spendRestricted(/*power=*/true, power_needed, purpose,
+                                                     in_showdown);
         int from_uni = std::min(ps.rune_pool.universal_power, power_needed);
         ps.rune_pool.universal_power -= from_uni;
         power_needed -= from_uni;
@@ -6045,15 +6831,15 @@ GameEngine::CostPaymentAdvance GameEngine::resolveCostPaymentDecision(
 
 bool GameEngine::canPayActivationResources(PlayerId player, int energy,
                                             const ActivationCost& cost,
-                                            bool for_unit) const {
+                                            SpendPurpose purpose) const {
     return canPayAdditionalCost(player, energy, cost.power,
-        cost.power_any_domain ? Domain::Count : cost.power_domain, for_unit);
+        cost.power_any_domain ? Domain::Count : cost.power_domain, purpose);
 }
 
 bool GameEngine::payActivationResources(PlayerId player, int energy,
-                                         const ActivationCost& cost, bool for_unit) {
+                                         const ActivationCost& cost, SpendPurpose purpose) {
     return payAdditionalCost(player, energy, cost.power,
-        cost.power_any_domain ? Domain::Count : cost.power_domain, for_unit);
+        cost.power_any_domain ? Domain::Count : cost.power_domain, purpose);
 }
 
 // Extra (energy, power) charge on top of — or instead of — a card's base cost:
@@ -6078,13 +6864,16 @@ std::vector<GameObjectId> runesInBase(const GameState& state, PlayerId player) {
 }
 }  // namespace
 
-// `for_unit`: the payment is for playing a unit or for a unit's activated
-// ability, so Energy restricted to those (RunePool::unit_energy) may be used.
+// `purpose`: what the payment is for (playing a unit, a gear's ability, ...),
+// so restricted Energy / [A] allowed for it (RunePool::restricted) may be used.
 bool GameEngine::canPayAdditionalCost(PlayerId player, int energy, int power,
-                                       Domain domain, bool for_unit) const {
+                                       Domain domain, SpendPurpose purpose) const {
     const auto& pool = state_.player(player).rune_pool;
-    int e_need = std::max(0, energy) - pool.energy - (for_unit ? pool.unit_energy : 0);
-    int p_need = std::max(0, power) - pool.universal_power;
+    const bool in_showdown = state_.turn.ns_state == NeutralShowdownState::Showdown;
+    int e_need = std::max(0, energy) - pool.energy -
+        pool.restrictedAvailable(/*power=*/false, purpose, in_showdown);
+    int p_need = std::max(0, power) - pool.universal_power -
+        pool.restrictedAvailable(/*power=*/true, purpose, in_showdown);
     if (domain == Domain::Count) {
         for (int di = 0; di < static_cast<int>(Domain::Count); ++di) p_need -= pool.power[di];
     } else {
@@ -6102,8 +6891,8 @@ bool GameEngine::canPayAdditionalCost(PlayerId player, int energy, int power,
 }
 
 bool GameEngine::payAdditionalCost(PlayerId player, int energy, int power,
-                                    Domain domain, bool for_unit) {
-    if (!canPayAdditionalCost(player, energy, power, domain, for_unit)) return false;
+                                    Domain domain, SpendPurpose purpose) {
+    if (!canPayAdditionalCost(player, energy, power, domain, purpose)) return false;
     auto& ps = state_.player(player);
     int e_need = std::max(0, energy);
     int p_need = std::max(0, power);
@@ -6114,7 +6903,8 @@ bool GameEngine::payAdditionalCost(PlayerId player, int energy, int power,
         from -= n;
         need -= n;
     };
-    if (for_unit) take(ps.rune_pool.unit_energy, e_need);   // restricted Energy first
+    const bool in_showdown = state_.turn.ns_state == NeutralShowdownState::Showdown;
+    e_need -= ps.rune_pool.spendRestricted(/*power=*/false, e_need, purpose, in_showdown);
     take(ps.rune_pool.energy, e_need);
     if (domain == Domain::Count) {
         for (int di = 0; di < static_cast<int>(Domain::Count); ++di)
@@ -6122,6 +6912,7 @@ bool GameEngine::payAdditionalCost(PlayerId player, int energy, int power,
     } else {
         take(ps.rune_pool.power[static_cast<int>(domain)], p_need);
     }
+    p_need -= ps.rune_pool.spendRestricted(/*power=*/true, p_need, purpose, in_showdown);
     take(ps.rune_pool.universal_power, p_need);
 
     auto runes = runesInBase(state_, player);
@@ -6172,6 +6963,37 @@ bool GameEngine::payAdditionalCost(PlayerId player, int energy, int power,
 }
 
 
+const PlayerState::TrashReplayGrant* GameEngine::trashReplayGrantFor(
+        PlayerId player, GameObjectId card_id) const {
+    for (const auto& g : state_.player(player).trash_replay_grants)
+        if (g.card == card_id) return &g;
+    return nullptr;
+}
+
+bool GameEngine::canPayTrashReplayGrant(PlayerId player,
+                                        const PlayerState::TrashReplayGrant& grant,
+                                        SpendPurpose purpose) const {
+    if (!grant.any_domain)
+        return canPayAdditionalCost(player, grant.energy, grant.power, grant.power_domain,
+                                    purpose);
+    for (int di = 0; di < static_cast<int>(Domain::Count); ++di)
+        if (canPayAdditionalCost(player, grant.energy, grant.power, static_cast<Domain>(di),
+                                 purpose)) return true;
+    return false;
+}
+
+std::vector<GameObjectId> GameEngine::playablePermanentsInTrash(PlayerId player) const {
+    std::vector<GameObjectId> out;
+    for (const auto& g : state_.player(player).trash_replay_grants) {
+        if (!state_.objectExists(g.card)) continue;
+        const auto& c = state_.getObject(g.card);
+        if (c.zone != ZoneType::Trash || c.owner != player) continue;
+        if (!c.isUnit() && !c.isGear()) continue;
+        if (std::find(out.begin(), out.end(), g.card) == out.end()) out.push_back(g.card);
+    }
+    return out;
+}
+
 bool GameEngine::payTrashReplayGrant(PlayerId player, GameObjectId card_id) {
     auto& ps = state_.player(player);
     auto it = std::find_if(ps.trash_replay_grants.begin(),
@@ -6182,13 +7004,15 @@ bool GameEngine::payTrashReplayGrant(PlayerId player, GameObjectId card_id) {
     if (it == ps.trash_replay_grants.end()) return false;
     const auto grant = *it;   // copy before erase
 
+    const SpendPurpose purpose = state_.objectExists(card_id)
+        ? playSpendPurpose(state_.getObject(card_id)) : SpendPurpose::None;
     // Pick a payable domain for an [A] grant; otherwise use the fixed domain.
     Domain domain = grant.power_domain;
     if (grant.any_domain) {
         bool found = false;
         for (int di = 0; di < static_cast<int>(Domain::Count); ++di) {
             if (canPayAdditionalCost(player, grant.energy, grant.power,
-                                      static_cast<Domain>(di))) {
+                                      static_cast<Domain>(di), purpose)) {
                 domain = static_cast<Domain>(di);
                 found = true;
                 break;
@@ -6196,7 +7020,7 @@ bool GameEngine::payTrashReplayGrant(PlayerId player, GameObjectId card_id) {
         }
         if (!found) return false;  // action gen should have filtered this out
     }
-    bool ok = payAdditionalCost(player, grant.energy, grant.power, domain);
+    bool ok = payAdditionalCost(player, grant.energy, grant.power, domain, purpose);
     if (ok && grant.banish_after && state_.objectExists(card_id))
         state_.getObject(card_id).banish_on_leave_chain = true;
 
@@ -6310,15 +7134,25 @@ void GameEngine::killUnit(GameObjectId unit_id) {
         detachAllGear(unit_id);                // CR 719.5 — recall sheds gear
         auto old_loc = unit.location;
         unit.damage_marked = 0;
+        const bool recall_was_ready = !unit.is_exhausted;
         unit.is_exhausted = true;
         unit.combat_designation = CombatDesignation::None;
         unit.location = BaseLocation{controller};
         unit.zone = ZoneType::Base;
         events_.emit(ObjectStateChangedEvent{unit_id, "healed"});
+        if (recall_was_ready) events_.emit(ObjectStateChangedEvent{unit_id, "exhausted"});
         events_.emit(UnitMovedEvent{unit_id, controller,
             old_loc.value_or(BaseLocation{controller}),
             BaseLocation{controller}, false});
         return;  // replacement consumed — unit does NOT die
+    }
+
+    // "If it would die this turn, banish it instead" (Smite): it never dies.
+    if (unit.banish_if_would_die_this_turn) {
+        unit.banish_if_would_die_this_turn = false;
+        events_.logDebug("REPLACEMENT (self): " + unit.name + " is banished instead of dying");
+        effect_executor_->banishObject(unit_id);
+        return;
     }
 
     // Altar of Blood (762): "If a unit here would die during combat, its
@@ -6361,16 +7195,29 @@ void GameEngine::killUnit(GameObjectId unit_id) {
                     detachAllGear(unit_id);
                     auto old_loc = unit.location;
                     unit.damage_marked = 0;
+                    const bool recall_was_ready = !unit.is_exhausted;
                     unit.is_exhausted = true;
                     unit.combat_designation = CombatDesignation::None;
                     unit.location = BaseLocation{controller};
                     unit.zone = ZoneType::Base;
                     events_.emit(ObjectStateChangedEvent{unit_id, "healed"});
+                    if (recall_was_ready) events_.emit(ObjectStateChangedEvent{unit_id, "exhausted"});
                     events_.emit(UnitMovedEvent{unit_id, controller,
                         old_loc.value_or(BaseLocation{controller}),
                         BaseLocation{controller}, false});
                     return;  // survived
                 }
+            }
+        }
+    }
+
+    // A replacement on the dying unit itself (Mordekaiser, Twice Slain).
+    if (unit.card_def_id != kInvalidId) {
+        if (Card* self_card = card_registry_.get(unit.card_def_id)) {
+            CardContext sctx{state_, events_, *effect_executor_, controller, unit_id};
+            if (self_card->replaceOwnDeath(sctx)) {
+                events_.logDebug("REPLACEMENT (own): " + unit.name + " does not die");
+                return;
             }
         }
     }
@@ -6421,6 +7268,7 @@ void GameEngine::killUnit(GameObjectId unit_id) {
     }
 
     state_.turn.any_unit_died_this_turn = true;
+    state_.player(controller).unit_died_this_turn = true;
     // Shadow Watcher: a friendly unit dying during its controller's Beginning
     // Phase (Awaken/Beginning/Scoring steps of that player's own turn).
     {

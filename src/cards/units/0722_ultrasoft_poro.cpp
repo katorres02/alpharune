@@ -18,12 +18,11 @@ public:
     bool hasActivatedAbility() const override { return true; }
     ActivationCost getActivationCost() const override { return {.exhaust = true}; }
     // "Use this ability only while I'm at a battlefield."
-    bool canActivateAbility(const GameState& state, PlayerId controller) const override {
-        for (auto& [id, obj] : state.objects) {
-            if (obj.card_def_id != cardDefId() || obj.controller != controller) continue;
-            if (obj.isAtBattlefield()) return true;
-        }
-        return false;
+    // Checked per object: only the copy that is at a battlefield may use it.
+    bool canActivateAbilityAt(const GameState& state, PlayerId controller,
+                              GameObjectId source, int ability_index) const override {
+        if (!Card::canActivateAbilityAt(state, controller, source, ability_index)) return false;
+        return state.objectExists(source) && state.getObject(source).isAtBattlefield();
     }
     // "[E]: Play two [1] [M] Bird unit tokens with [Deflect]."
     void onActivate(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
@@ -52,8 +51,7 @@ private:
         d.tags = {R"RB(Poro)RB", R"RB(Freljord)RB"};
         d.energy_cost = 5;
         d.might = 5;
-        d.deflect_value = 1;
-        d.keywords.set(Keyword::Deflect);
+        // [Deflect] in the text belongs to the Bird tokens, not to me.
         d.ability_text = R"RB([E]: Play two [1] [M] Bird unit tokens with [Deflect]. Use this ability only while I'm at a battlefield. (Opponents must pay [A] to choose a [Deflect] unit with a spell or ability.))RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/36900508e2ce61196450a4bf7e27722ae36521d9-744x1039.png)RB";
         return d;

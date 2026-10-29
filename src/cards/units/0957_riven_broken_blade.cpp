@@ -51,14 +51,12 @@ public:
             ctx.events.logTrace("RIVEN, BROKEN BLADE: buff me");
             break;
         case 1:
-            if (self.buff_count <= 0) return;
-            self.buff_count -= 1; self.recomputeMight();
+            if (!ctx.executor.spendBuff(ctx.source)) return;
             if (tgt != kInvalidId && ctx.state.objectExists(tgt)) ctx.executor.stunUnit(tgt);
             ctx.events.logTrace("RIVEN, BROKEN BLADE: spend buff -> stun");
             break;
         case 2:
-            if (self.buff_count <= 0) return;
-            self.buff_count -= 1; self.recomputeMight();
+            if (!ctx.executor.spendBuff(ctx.source)) return;
             ctx.executor.readyObject(ctx.source);
             ctx.events.logTrace("RIVEN, BROKEN BLADE: spend buff -> ready me");
             break;
@@ -77,7 +75,7 @@ private:
         d.card_type = CardType::Unit;
         d.super_type = SuperType::Champion;
         d.domains = {Domain::Calm};
-        d.tags = {R"RB(Riven)RB"};
+        d.tags = {R"RB(Riven)RB", R"RB(Noxus)RB"};
         d.rarity = Rarity::Rare;
         d.ability_text = R"RB(When I become exhausted, choose one that hasn't been chosen this turn — [Buff] me. Spend my buff to [Stun] an enemy unit. Spend my buff to ready me.)RB";
         d.energy_cost = 4;

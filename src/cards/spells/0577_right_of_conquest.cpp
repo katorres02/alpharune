@@ -14,9 +14,15 @@ namespace {
 class RightOfConquest : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
+    // "Draw 1, then draw 1 for each battlefield you or allies control." (1v1:
+    // no allies, so the battlefields you control.)
+    void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         ctx.executor.drawCards(ctx.controller, 1);
-        ctx.executor.drawCards(ctx.controller, 1);
+        int controlled = 0;
+        for (const auto& bf : ctx.state.battlefields)
+            if (bf.controller.has_value() && *bf.controller == ctx.controller) ++controlled;
+        if (controlled > 0) ctx.executor.drawCards(ctx.controller, controlled);
+        ctx.events.logTrace("RIGHT OF CONQUEST: drew 1 + " + std::to_string(controlled));
     }
 private:
     const CardDef def_ = [] {

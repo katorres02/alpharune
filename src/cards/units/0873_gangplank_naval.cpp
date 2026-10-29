@@ -16,10 +16,11 @@ class GangplankNaval : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
 
-    // "[Empower] [O][O]"
+    // "[Empower] [C][C]" ([C] = this card's domain, Body = [O]).
     EmpowerSpec empowerSpec() const override { return empowerCost(0, 2, Domain::Body); }
     // "[Empowered][>] If a spell or ability that chooses me would stun me, give
-    // me -[M], or return me to hand, give me +3 [M] instead."
+    // me -[M], or return me to hand, give me +3 [M] this turn instead."
+    // (Vendetta errata text.)
     // A replacement effect: the executor asks this hook before stunning,
     // reducing the Might of, or bouncing a unit, and only for effects of the
     // resolving chain item that chose me (ChainItem::chosen_objects / targets).
@@ -54,8 +55,8 @@ private:
         d.might = 6;
         d.rarity = Rarity::Rare;
         d.keywords.set(Keyword::Empower);
-        d.ability_text = R"RB([Empower] [O][O] ([O][O]: Empower me. Use only if not Empowered.)
-[Empowered][>] If a spell or ability that chooses me would stun me, give me -[M], or return me to hand, give me +3 [M] instead.)RB";
+        d.ability_text = R"RB([Empower] [C][C] ([C][C]: Empower me. Use only if not Empowered.)
+[Empowered][>] If a spell or ability that chooses me would stun me, give me -[M], or return me to hand, give me +3 [M] this turn instead.)RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/f270a3ecc4850594513c45d145f2b855152e2cb7-744x1039.png)RB";
         return d;
     }();

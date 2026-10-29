@@ -28,6 +28,9 @@ public:
         // exhausted us. CR 183.1: tokens cease to exist on leaving the
         // board, handled by killObject's super_type=Token branch.
         ctx.executor.addFloatingUniversalPower(ctx.controller, 1);
+        // "your Gold [Add] an additional [1]" (Chem-Baroness, while near victory).
+        if (int extra = ctx.state.player(ctx.controller).gold_extra_energy; extra > 0)
+            ctx.executor.addFloatingEnergy(ctx.controller, extra);
         ctx.events.logTrace("GOLD: kill+[E] -> +1 [A]");
         ctx.executor.killObject(ctx.source);
     }

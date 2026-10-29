@@ -1,5 +1,6 @@
 #include "cards/card.h"
 #include "cards/card_registry.h"
+#include "cards/card_helpers.h"
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
@@ -14,19 +15,27 @@ namespace {
 class YasuoRemorseful : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty() && ctx.state.objectExists(ctx.source)) {
-            int dmg = ctx.state.getObject(ctx.source).current_might;
-            ctx.executor.dealDamage(targets[0], dmg, ctx.source);
-            if (ctx.state.objectExists(targets[0]) &&
-                ctx.state.getObject(targets[0]).hasLethalDamage()) {
-                ctx.executor.killObject(targets[0]);
-            }
-        }
-    }
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     TriggerType triggerType() const override { return TriggerType::WhenIAttack; }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_enemy = true, .must_be_at_battlefield = true};
+    // Triggers carry no targets: the enemy unit at my battlefield is chosen as
+    // the ability is finalized.
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        std::optional<BattlefieldId> here;
+        if (ctx.state.objectExists(ctx.source))
+            here = ctx.state.getObject(ctx.source).battlefieldId();
+        std::vector<GameObjectId> legal;
+        if (here)
+            legal = chooseableUnits(ctx.state, ctx.controller, [&](const GameObject& u) {
+                return u.controller != ctx.controller && u.battlefieldId() == here;
+            });
+        GameObjectId t = pickTarget(ctx, "Yasuo, Remorseful: damage", legal);
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (t == kInvalidId || !ctx.state.objectExists(t)) return;
+        if (!ctx.state.objectExists(ctx.source)) return;
+        const int dmg = ctx.state.getObject(ctx.source).current_might;
+        ctx.executor.dealDamage(t, dmg, ctx.source);
+        if (ctx.state.objectExists(t) && ctx.state.getObject(t).hasLethalDamage())
+            ctx.executor.killObject(t);
     }
 private:
     const CardDef def_ = [] {

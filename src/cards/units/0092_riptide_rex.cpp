@@ -1,5 +1,6 @@
 #include "cards/card.h"
 #include "cards/card_registry.h"
+#include "cards/card_helpers.h"
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
@@ -14,18 +15,19 @@ namespace {
 class RiptideRex : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty()) {
-            ctx.executor.dealDamage(targets[0], 6, ctx.source);
-            if (ctx.state.objectExists(targets[0]) &&
-                ctx.state.getObject(targets[0]).hasLethalDamage()) {
-                ctx.executor.killObject(targets[0]);
-            }
-        }
-    }
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_enemy = true, .must_be_at_battlefield = true};
+    // Triggers carry no targets: the unit is chosen at finalization.
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        auto legal = chooseableUnits(ctx.state, ctx.controller, [&](const GameObject& u) {
+            return u.controller != ctx.controller && u.isAtBattlefield();
+        });
+        GameObjectId t = pickTarget(ctx, "Riptide Rex: deal 6", legal);
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (t == kInvalidId || !ctx.state.objectExists(t)) return;
+        ctx.executor.dealDamage(t, 6, ctx.source);
+        if (ctx.state.objectExists(t) && ctx.state.getObject(t).hasLethalDamage())
+            ctx.executor.killObject(t);
     }
 private:
     const CardDef def_ = [] {

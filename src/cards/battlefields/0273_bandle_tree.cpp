@@ -14,14 +14,14 @@ namespace {
 class BandleTree : public BattlefieldCard {
 public:
     const CardDef& def() const override { return def_; }
-    // "You may hide an additional card here." Raise this BF's facedown
-    // capacity from the default 1 to 2. Idempotent (set, not increment), so
-    // re-running the aura recalc is safe.
+    // "You may hide an additional card here." One more facedown slot here;
+    // GameEngine::recalculateAuras resets the capacity to 1 before each pass,
+    // so additional-card effects (Bushwhack Trap) stack.
     void applyPassiveAura(GameState& state, PlayerId /*controller*/) const override {
         for (auto& bf : state.battlefields) {
             if (!state.objectExists(bf.card_object_id)) continue;
             if (state.getObject(bf.card_object_id).card_def_id != cardDefId()) continue;
-            if (bf.facedown_max_occupancy < 2) bf.facedown_max_occupancy = 2;
+            bf.facedown_max_occupancy += 1;   // reset to 1 each aura pass
         }
     }
 private:

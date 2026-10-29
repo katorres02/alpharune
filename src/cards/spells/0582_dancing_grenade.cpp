@@ -17,15 +17,22 @@ public:
     // "Deal 2 to a unit. Its controller may play this spell again for [A]. If
     //  they do, this deals 1 additional Bonus Damage for each time this spell
     //  has dealt damage this turn."
-    // The recast-for-[A] loop has no engine "may play this again + charge [A]"
-    // replay hook; it is not wired. The escalating Bonus Damage IS modeled:
-    // each time this specific spell deals damage in a turn, the count is
-    // tracked on the source object so a re-play (by any means) escalates.
+    // GAP: the recast-for-[A] loop is not wired — the trash-replay grants only
+    // cover the caster's own trash, and here the damaged unit's controller
+    // (possibly the opponent) recasts the caster's card. The escalating Bonus
+    // Damage IS modeled: each time this spell deals damage in a turn, the
+    // count is tracked on the source object (stamped with the turn, so it
+    // starts over on a later turn) and a re-play (by any means) escalates.
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
         if (targets.empty()) return;
         int prior_hits = 0;
         if (ctx.state.objectExists(ctx.source)) {
             auto& src = ctx.state.getObject(ctx.source);
+            const int turn = ctx.state.turn.turn_number;
+            if (src.card_counters["__dancing_grenade_turn"] != turn) {
+                src.card_counters["__dancing_grenade_turn"] = turn;
+                src.card_counters["__dancing_grenade_hits"] = 0;   // "this turn"
+            }
             prior_hits = src.card_counters["__dancing_grenade_hits"];
             src.card_counters["__dancing_grenade_hits"] = prior_hits + 1;
         }

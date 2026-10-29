@@ -32,11 +32,22 @@ public:
         if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
         if (tgt == kInvalidId || !ctx.state.objectExists(tgt)) return;
         auto& self = ctx.state.getObject(ctx.source);
-        // Grant my current keywords (this turn).
+        // Grant my current keywords (printed, granted this turn, or from a
+        // continuous effect), with their values: [Assault N] / [Shield N]
+        // carry N (CR 807.2: values sum on the recipient). [Deflect] is
+        // granted as the keyword only — giveTemporaryKeyword's Deflect value
+        // has no end-of-turn revert, and the keyword alone costs [A].
         for (uint32_t k = 0; k < static_cast<uint32_t>(Keyword::Count); ++k) {
             auto kw = static_cast<Keyword>(k);
-            if (self.keywords.has(kw))
-                ctx.executor.giveTemporaryKeyword(tgt, kw, 0);
+            if (!self.hasKeyword(kw)) continue;
+            int value = 0;
+            if (kw == Keyword::Assault || kw == Keyword::Shield) {
+                value = kw == Keyword::Assault ? self.assault_value : self.shield_value;
+                for (const auto& ae : self.aura_effects)
+                    if (ae.keyword == kw) value += std::max(1, ae.keyword_value);
+                value = std::max(1, value);
+            }
+            ctx.executor.giveTemporaryKeyword(tgt, kw, value);
         }
         // +[M] equal to my Might this turn.
         ctx.executor.giveTemporaryMight(tgt, self.current_might);

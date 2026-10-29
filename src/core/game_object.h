@@ -82,6 +82,11 @@ struct GameObject {
     // ── Intrinsic token-ness (CR 185.1) ──
     bool is_token = false;
 
+    // ── A gear that is also a unit (CR 178 multiple types; Orianna, Lady of
+    // Clockwork: "It becomes a unit gear"). isUnit() answers true while set;
+    // isGear() still does. Maintained by the effect that grants it.
+    bool also_unit = false;
+
     // ── Last-known information (CR 383.2.c.3.b / 429.1.a.1.b) ──
     // Snapshot taken just before this object leaves the board by dying, so
     // "When I die" abilities read the state from before the death. The kill
@@ -116,11 +121,19 @@ struct GameObject {
     // ── Combat ──
     CombatDesignation combat_designation = CombatDesignation::None;
 
+    // ── Show Off (CR 832) ──
+    // What this card showed off as it was played (a card revealed from hand or
+    // a friendly object picked on the board); kInvalidId if it didn't. Set by
+    // the engine when the card's chain item is finalized; read through
+    // Card::shownOff.
+    GameObjectId showed_off_object = kInvalidId;
+
     // ── Buffs ──
     int buff_count = 0;          // +1 might per buff
     int temp_buff_count = 0;     // temporary buffs applied "this turn" (expire at expiration step)
     int temp_assault_value = 0;  // temporary assault applied "this turn"
     int temp_shield_value = 0;   // temporary shield applied "this turn"
+    int temp_disarm_value = 0;   // [Disarm X] given "this turn" (cleared at expiration)
     int temp_might_bonus = 0;    // temporary +N might applied "this turn"
     int moves_this_turn = 0;     // times this unit moved this turn (Kayn, Unleashed)
     bool immune_to_damage = false; // recomputed each recalculateAuras; set by a
@@ -168,6 +181,9 @@ struct GameObject {
     int might_bonus = 0;                               // this gear's might bonus (from CardDef)
     int attachment_might_bonus = 0;                    // total might bonus from attached gear
     bool is_rules_text_inactive = false;              // gear: rules text inactive while attached (CR 718.2)
+    // [Deploy] (CR 830) — mirrors Card::hasDeploy(), refreshed each aura pass so
+    // applyPassiveAura (which has no registry) can ask (Overloaded Traveler).
+    bool has_deploy = false;
 
     // ── Targeting protection (CR 700.x — "can't be chosen by ...") ──
     // Set by the engine during cleanup / aura recalc by consulting the
@@ -203,6 +219,10 @@ struct GameObject {
     // the flag (one-shot). Expires at end of turn if unused.
     bool death_replacement_recall_pending = false;
 
+    // "If it would die this turn, banish it instead." (Smite 568). Both kill
+    // paths consult it after the recall replacement; expires at end of turn.
+    bool banish_if_would_die_this_turn = false;
+
     // ── One-shot damage prevention (Counter Strike 510) ──
     // "The next time that unit would be dealt damage this turn, prevent it."
     // EffectExecutor::dealDamage consults this BEFORE applying damage: when set
@@ -215,6 +235,18 @@ struct GameObject {
     // main-phase move generator (parallel to BattlefieldState::blocks_move_to_base,
     // which is the per-battlefield variant).
     bool cant_move_to_base = false;
+    // "I can't move this turn" (Entrenched Boar): the turn number on which this
+    // unit can't make moves; -1 = no restriction.
+    int cant_move_turn = -1;
+    // Continuous "can't move to base" (Minotaur Reckoner: "Units can't move to
+    // base."). Reset each recalculateAuras, re-set by the card's aura.
+    bool aura_cant_move_to_base = false;
+    // "It can't move this turn" (Vex, Apathetic; Hunker Down). Blocks the
+    // standard move; cleared by the expiration step.
+    bool cant_move_this_turn = false;
+    // "I can't be readied" (Maduli the Gatekeeper). Recomputed each
+    // recalculateAuras; the Awaken phase and EffectExecutor::readyObject skip it.
+    bool cant_be_readied = false;
 
     // ── Take-control reversion (CR 416, Phase 6q+) ──
     // EffectExecutor::takeControl with `until_end_of_turn=true` snapshots
@@ -258,6 +290,9 @@ struct GameObject {
     KeywordSet aura_keywords;              // cached union of aura-granted keywords
     bool aura_no_combat_damage = false;    // cached: any aura suppresses combat dmg
     int aura_bonus_damage_taken = 0;       // cached: +N spell/ability damage taken (Void Gate)
+    // [Disarm] granted by auras ("Your Mechs have [Disarm]", CR 831.2: values
+    // sum). Reset each recalculateAuras; a card's applyPassiveAura adds to it.
+    int aura_disarm_value = 0;
 
     /// This unit deals no combat damage (stunned, or an aura suppresses it —
     /// Vilemaw). Consulted by the combat-damage step.
@@ -276,7 +311,7 @@ struct GameObject {
 
     // ── Convenience ──
     bool isReady() const { return !is_exhausted; }
-    bool isUnit() const { return card_type == CardType::Unit; }
+    bool isUnit() const { return card_type == CardType::Unit || also_unit; }
     bool isGear() const { return card_type == CardType::Gear; }
     bool isSpell() const { return card_type == CardType::Spell; }
     bool isRune() const { return card_type == CardType::Rune; }

@@ -26,10 +26,8 @@ public:
         return {TriggerType::WhenYouPlayMe, TriggerType::WhenIHold,
                 TriggerType::WhenYouPlayAUnit};
     }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true,
-                                   .must_be_enemy = true, .optional = true};
-    }
+    // Targets are taken with pickTarget at finalization (kFinalizeTrigger);
+    // the engine never fills a triggered ability's `targets`.
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
         if (!ctx.state.objectExists(ctx.source)) return;
 

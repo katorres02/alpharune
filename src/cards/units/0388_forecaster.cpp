@@ -15,8 +15,8 @@ class Forecaster : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
 
-    // "Your Mechs have [Vision]." The engine's aura text-matcher only handles
-    // "your mechs EACH have", not "your mechs have", so grant Vision here.
+    // "Your Mechs have [Vision]." Granted here (I'm a Mech, so I get it too;
+    // it is not printed on me).
     void applyPassiveAura(GameState& state, PlayerId controller) const override {
         GameObjectId self_id = kInvalidId;
         for (auto& [id, obj] : state.objects) {
@@ -54,7 +54,6 @@ private:
         d.tags = {R"RB(Mech)RB", R"RB(Yordle)RB", R"RB(Bandle City)RB"};
         d.energy_cost = 2;
         d.might = 2;
-        d.keywords.set(Keyword::Vision);
         d.ability_text = R"RB(Your Mechs have [Vision]. (When you play us, look at the top card of your Main Deck. You may recycle it.))RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/3f58f0c58503e4f8caecb7ea7f77b478a1e92961-744x1039.png)RB";
         return d;

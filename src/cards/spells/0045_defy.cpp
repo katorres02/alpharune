@@ -16,45 +16,41 @@ class Defy : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
 
-    // Playable only if there is a counterable spell on the chain. The [4]
-    // cost gate is re-checked at resolve via the CardDB def lookup; only the
-    // printed energy cost is modeled ([A] = additional power, not tracked).
+    // "Counter a spell that costs no more than [4] and no more than [A]."
+    // Any such spell on the chain may be chosen, not only the top one.
+    static bool eligible(const GameState& state, const CardDB& db, const ChainItem& it) {
+        if (!it.is_spell || it.card_def_id == kInvalidId) return false;
+        if (state.player(it.controller).spells_cant_be_countered) return false;
+        const auto& d = db.get(it.card_def_id);
+        return d.energy_cost <= 4 && d.power_cost <= 1;
+    }
     bool hasLegalTargets(const GameState& state, PlayerId /*controller*/) const override {
-        for (auto it = state.chain.items.rbegin(); it != state.chain.items.rend(); ++it) {
-            if (!it->is_spell) continue;
-            if (it->card_def_id == kInvalidId) continue;
-            return true;  // cost re-checked at resolve via def lookup
-        }
+        // No CardDB here: any spell on the chain may be a legal target; the
+        // cost gate is applied as Defy resolves.
+        for (const auto& it : state.chain.items)
+            if (it.is_spell) return true;
         return false;
     }
 
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
-        if (ctx.state.chain.items.empty()) return;
-        auto& top = ctx.state.chain.items.back();
-        if (!top.is_spell) return;
-        if (isUncounterable(ctx, top)) return;
-
-        // Cost gate: "no more than [4]". Read the static energy cost of the
-        // spell being countered from the CardDB.
-        int cost = 0;
-        if (top.card_def_id != kInvalidId) {
-            cost = ctx.executor.cardDB().get(top.card_def_id).energy_cost;
+        std::vector<GameObjectId> legal;   // spell objects, top of the chain first
+        for (auto it = ctx.state.chain.items.rbegin(); it != ctx.state.chain.items.rend(); ++it)
+            if (eligible(ctx.state, ctx.executor.cardDB(), *it) && !isUncounterable(ctx, *it))
+                legal.push_back(it->source);
+        GameObjectId pick = pickTarget(ctx, "Defy: counter which spell", legal);
+        if (pick == kInvalidId) return;   // suspended, or nothing to counter
+        auto& items = ctx.state.chain.items;
+        for (auto it = items.begin(); it != items.end(); ++it) {
+            if (it->source != pick || !it->is_spell) continue;
+            revertCounteredPlay(ctx, *it);  // CR 425.1.b
+            items.erase(it);
+            if (ctx.state.objectExists(pick)) {
+                ctx.events.logTrace("COUNTER: " + ctx.state.getObject(pick).name +
+                                    " countered by Defy");
+                disposeCounteredCard(ctx, pick);
+            }
+            return;
         }
-        if (cost > 4) {
-            ctx.events.logTrace("DEFY: cannot counter — cost " +
-                                 std::to_string(cost) + " exceeds [4]");
-            return;  // illegal target; spell resolves normally
-        }
-
-        auto countered = top.source;
-        revertCounteredPlay(ctx, top);  // CR 425.1.b
-        ctx.state.chain.items.pop_back();
-        if (ctx.state.objectExists(countered)) {
-            auto& obj = ctx.state.getObject(countered);
-            ctx.events.logTrace("COUNTER: " + obj.name + " countered by Defy -> trash");
-            disposeCounteredCard(ctx, countered);
-        }
-        // NOTE: removed the previously-present (un-printed) "draw 1".
     }
 private:
     const CardDef def_ = [] {

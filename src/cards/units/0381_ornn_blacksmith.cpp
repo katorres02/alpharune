@@ -1,4 +1,5 @@
 #include "cards/card.h"
+#include "cards/card_helpers.h"
 #include "cards/card_registry.h"
 #include "core/game_state.h"
 #include "core/events.h"
@@ -17,27 +18,44 @@ public:
     std::vector<TriggerType> triggerTypes() const override {
         return {TriggerType::WhenYouPlayMe, TriggerType::WhenIHold};
     }
+    // "Look at the top 4 cards of your Main Deck. You may reveal a gear from
+    // among them and draw it. Then recycle the rest." The player picks a gear
+    // or "None" (resume_point 20 = consume the pick).
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>&) override {
         auto& ps = ctx.state.player(ctx.controller);
-
-        // Look at top 4 (top = back of vector).
-        std::vector<GameObjectId> peeked;
-        for (int i = 0; i < 4 && !ps.main_deck.empty(); ++i) {
-            peeked.push_back(ps.main_deck.back());
-            ps.main_deck.pop_back();
-        }
+        auto top4 = [&]() {
+            std::vector<GameObjectId> out;
+            for (int i = 0; i < 4 && i < static_cast<int>(ps.main_deck.size()); ++i)
+                out.push_back(ps.main_deck[ps.main_deck.size() - 1 - i]);
+            return out;
+        };
+        auto peeked = top4();
         if (peeked.empty()) return;
+        std::vector<GameObjectId> gears;
+        for (auto id : peeked)
+            if (ctx.state.objectExists(id) && ctx.state.getObject(id).isGear()) gears.push_back(id);
 
-        // Reveal a gear from among them and draw it (first gear; "may" is
-        // treated as always-take when a gear is present — consistent with
-        // the other look-N drafters in this engine).
         GameObjectId drafted = kInvalidId;
-        std::vector<GameObjectId> rest;
-        for (auto id : peeked) {
-            if (!ctx.state.objectExists(id)) { continue; }
-            const auto& obj = ctx.state.getObject(id);
-            if (drafted == kInvalidId && obj.isGear()) drafted = id;
-            else rest.push_back(id);
+        auto* ri = ctx.state.chain.resuming.has_value() ? &*ctx.state.chain.resuming : nullptr;
+        if (ri && ri->resume_point == 20) {
+            drafted = takenObject(ctx);
+            if (std::find(gears.begin(), gears.end(), drafted) == gears.end()) drafted = kInvalidId;
+            ri->resume_point = 21;
+        } else if (ri && ri->resume_point < 20) {
+            if (!gears.empty()) {
+                std::vector<Intent> opts;
+                for (auto id : gears) opts.push_back(objChoice(ctx.controller, id));
+                opts.push_back(valChoice(ctx.controller, 0, "None"));
+                ctx.executor.requestChoice(ctx.controller, std::move(opts),
+                                           "Ornn: reveal a gear and draw it");
+                ri->resume_point = 20;
+                return;
+            }
+            ri->resume_point = 21;
+        } else if (!ri) {
+            drafted = gears.empty() ? kInvalidId : gears.front();   // direct invocation
+        } else {
+            return;   // already done
         }
 
         if (drafted != kInvalidId) {
@@ -46,20 +64,24 @@ public:
                 /*card=*/drafted,
                 /*card_def_id=*/drafted_obj.card_def_id,
                 /*owner=*/drafted_obj.owner,
-                /*revealed_to_all=*/false,
+                /*revealed_to_all=*/true,
                 /*revealed_to=*/ctx.controller,
                 /*source_zone=*/ZoneType::MainDeck,
             });
-            ctx.events.logTrace("ORNN, BLACKSMITH: drafted gear " +
-                                 drafted_obj.name);
-            drafted_obj.zone = ZoneType::Hand;
-            ps.hand.push_back(drafted);
+            ctx.events.logTrace("ORNN, BLACKSMITH: drafted gear " + drafted_obj.name);
+            // "draw it": put it on top and draw, so it counts as a draw.
+            auto it = std::find(ps.main_deck.begin(), ps.main_deck.end(), drafted);
+            if (it != ps.main_deck.end()) ps.main_deck.erase(it);
+            ps.main_deck.push_back(drafted);
+            ctx.executor.drawCards(ctx.controller, 1);
         }
-
-        // Recycle the rest to the bottom of the deck.
-        if (!rest.empty()) {
-            ctx.executor.recycleCards(ctx.controller, rest);
+        std::vector<GameObjectId> rest;
+        for (auto id : peeked) if (id != drafted) rest.push_back(id);
+        for (auto id : rest) {
+            auto it = std::find(ps.main_deck.begin(), ps.main_deck.end(), id);
+            if (it != ps.main_deck.end()) ps.main_deck.erase(it);
         }
+        if (!rest.empty()) ctx.executor.recycleCards(ctx.controller, rest);
     }
 private:
     const CardDef def_ = [] {

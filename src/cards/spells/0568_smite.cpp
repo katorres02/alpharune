@@ -16,18 +16,16 @@ public:
     const CardDef& def() const override { return def_; }
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
         // "Deal 3 to a unit at a battlefield. If it would die this turn,
-        // banish it instead." The lingering turn-long death-replacement has
-        // no engine hook; we apply the banish on the immediate lethal damage
-        // (the common case), banishing rather than killing to trash.
-        if (!targets.empty()) {
-            ctx.executor.dealDamage(targets[0], 3, ctx.source);
-            if (ctx.state.objectExists(targets[0]) &&
-                ctx.state.getObject(targets[0]).hasLethalDamage()) {
-                ctx.executor.banishObject(targets[0]);
-                ctx.events.logTrace("SMITE: lethal -> banish instead of kill "
-                                    "(lingering turn-long replacement not engine-wired)");
-            }
-        }
+        // banish it instead." The replacement lasts the turn
+        // (GameObject::banish_if_would_die_this_turn, read by both kill paths).
+        if (targets.empty() || !ctx.state.objectExists(targets[0])) return;
+        GameObjectId t = targets[0];
+        if (!ctx.state.getObject(t).location.has_value()) return;
+        ctx.state.getObject(t).banish_if_would_die_this_turn = true;
+        ctx.executor.dealDamage(t, 3, ctx.source);
+        if (ctx.state.objectExists(t) && ctx.state.getObject(t).location.has_value() &&
+            ctx.state.getObject(t).hasLethalDamage())
+            ctx.executor.killObject(t);   // banished by the replacement
     }
     TargetRequirements getTargetRequirements() const override {
         return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_at_battlefield = true};

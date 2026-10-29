@@ -18,10 +18,11 @@ public:
     //  units to my battlefield at the same time." Represented via
     //  BattlefieldState::surcharge_enemy_multi_move (set in applyPassiveAura on
     //  this unit's battlefield).
-    // APPROX: the engine moves a single unit per action and movement is uncosted,
-    //  so there is no "multiple units at the same time" action to surcharge — the
-    //  flag is the faithful state representation but is currently inert. (Wiring a
-    //  true surcharge needs move-cost infrastructure.)
+    // GAP: the engine has no move that takes several units at the same time (the
+    //  move generator emits one unit per StandardMove, and effects move units one
+    //  by one), so nothing reads the flag yet. Once a multi-unit move exists, it
+    //  should charge [A] per unit beyond the first when the flag is set on the
+    //  destination and the mover is an opponent of this unit's controller.
     void applyPassiveAura(GameState& state, PlayerId controller) const override {
         for (auto& [id, obj] : state.objects) {
             if (obj.card_def_id != cardDefId() || obj.controller != controller)

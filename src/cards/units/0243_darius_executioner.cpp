@@ -20,6 +20,22 @@ public:
     }
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
     bool requiresLegion() const override { return true; }
+    // "Other friendly units have +1 [M] here." Here = Darius's location.
+    void applyPassiveAura(GameState& state, PlayerId controller) const override {
+        for (auto& [sid, self] : state.objects) {
+            if (self.card_def_id != cardDefId() || self.controller != controller) continue;
+            if (!self.isUnit() || !self.location.has_value()) continue;
+            for (auto& [uid, u] : state.objects) {
+                if (uid == sid) continue;  // "other"
+                if (!u.isUnit() || u.controller != controller) continue;
+                if (!u.location.has_value() || *u.location != *self.location) continue;
+                GameObject::AuraEffect ae;
+                ae.source = sid;
+                ae.might_bonus = 1;
+                u.aura_effects.push_back(ae);
+            }
+        }
+    }
 private:
     const CardDef def_ = [] {
         CardDef d;

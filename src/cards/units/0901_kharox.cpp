@@ -41,10 +41,13 @@ public:
                                          unitsInTrash(ctx.state, opp));
         if (picked == kInvalidId || !ctx.state.objectExists(picked)) return;
         auto& ops = ctx.state.player(opp);
-        auto it = std::find(ops.trash.begin(), ops.trash.end(), picked);
-        if (it == ops.trash.end()) return;
-        ops.trash.erase(it);
-        ctx.executor.playIgnoringCost(ctx.controller, picked);
+        if (std::find(ops.trash.begin(), ops.trash.end(), picked) == ops.trash.end()) return;
+        // I play it: my base or a battlefield I control (CR 355.2).
+        LocationId where;
+        if (pickPlayLocation(ctx, picked, where, PlayerId::None, "Kharox: play it where?") <= 0)
+            return;
+        ops.trash.erase(std::find(ops.trash.begin(), ops.trash.end(), picked));
+        ctx.executor.playIgnoringCost(ctx.controller, picked, where);
         ctx.events.logTrace("KHAROX: played " + ctx.state.getObject(picked).name +
                             " from the opponent's trash");
     }

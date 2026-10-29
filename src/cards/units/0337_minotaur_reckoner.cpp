@@ -15,25 +15,18 @@ class MinotaurReckoner : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
 
-    // "Units can't move to base." Global static. The engine's move-legality
-    // check reads the per-unit GameObject::cant_move_to_base flag, so while
-    // I'm on board we stamp that flag on EVERY unit (both players).
-    // NOTE: recalculateAuras() does not clear cant_move_to_base, so the
-    // restriction persists on units that were present after I leave the
-    // board (engine has no per-recalc reset for this flag). Acceptable
-    // approximation for the common case where I remain in play.
-    void applyPassiveAura(GameState& state, PlayerId controller) const override {
-        bool present = false;
-        for (auto& [id, obj] : state.objects) {
-            if (obj.card_def_id != cardDefId()) continue;
-            if (obj.controller != controller || !obj.location.has_value()) continue;
-            present = true;
-            break;
-        }
-        if (!present) return;
+    // "Units can't move to base." A continuous effect: while I'm on the board
+    // (applyPassiveAura runs only then) every unit gets
+    // GameObject::aura_cant_move_to_base, which recalculateAuras clears each
+    // pass, so the restriction ends as soon as I leave. The move-action
+    // generator reads it.
+    // GAP: EffectExecutor::moveToBase does not consult it (it also serves
+    // "recall", which isn't a move), so card effects that move a unit to base
+    // are not blocked.
+    void applyPassiveAura(GameState& state, PlayerId /*controller*/) const override {
         for (auto& [id, obj] : state.objects) {
             if (!obj.isUnit() || !obj.location.has_value()) continue;
-            obj.cant_move_to_base = true;
+            obj.aura_cant_move_to_base = true;
         }
     }
 private:

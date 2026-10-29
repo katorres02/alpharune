@@ -107,6 +107,9 @@ void EffectExecutor::dealDamage(GameObjectId target, int amount,
                             // Ravenborn Tome rider, bound to this spell object at
                             // play time — applies to every instance it deals.
                             src_obj.spell_bonus_damage;
+                // "Abilities of friendly gear deal N Bonus Damage" (Ziggs).
+                if (src_obj.isGear())
+                    bonus += state_.player(src_obj.controller).gear_ability_bonus_damage;
                 if (bonus > 0) {
                     events_.logTrace("EFFECT: +" + std::to_string(bonus) +
                                      " Bonus Damage to " + obj.name);
@@ -190,10 +193,12 @@ void EffectExecutor::killObject(GameObjectId target) {
             obj.attachment_might_bonus = 0;
             auto old_loc = obj.location;
             obj.damage_marked = 0;
+            const bool recall_was_ready = !obj.is_exhausted;
             obj.is_exhausted = true;
             obj.combat_designation = CombatDesignation::None;
             obj.location = BaseLocation{controller};
             obj.zone = ZoneType::Base;
+            if (recall_was_ready) events_.emit(ObjectStateChangedEvent{target, "exhausted"});
             events_.logTrace("  REPLACEMENT (self): " + obj.name +
                              " heals/exhausts/recalls instead of dying");
             events_.emit(ObjectStateChangedEvent{target, "healed"});
@@ -203,6 +208,25 @@ void EffectExecutor::killObject(GameObjectId target) {
             return;
         }
 
+        // "If it would die this turn, banish it instead" (Smite): it never dies.
+        if (obj.banish_if_would_die_this_turn) {
+            obj.banish_if_would_die_this_turn = false;
+            events_.logTrace("  REPLACEMENT (self): " + obj.name + " is banished instead of dying");
+            banishObject(target);
+            return;
+        }
+
+        // A replacement on the dying unit itself (Mordekaiser, Twice Slain).
+        if (card_registry_ && obj.card_def_id != kInvalidId) {
+            if (Card* self_card = card_registry_->get(obj.card_def_id)) {
+                CardContext sctx{state_, events_, *this, controller, target};
+                if (self_card->replaceOwnDeath(sctx)) {
+                    events_.logDebug("REPLACEMENT (own): " + state_.getObject(target).name +
+                                     " does not die");
+                    return;
+                }
+            }
+        }
         // Card-defined death replacements (The Boss, Zhonya's Hourglass,
         // Guardian Angel, Soraka, ...). Effect kills consult them exactly as
         // combat deaths do (GameEngine::killUnit): a kill is a kill.
@@ -250,6 +274,7 @@ void EffectExecutor::killObject(GameObjectId target) {
         // "If a unit died this turn" bookkeeping — the same as a combat death
         // (GameEngine::killUnit): a kill is a kill.
         state_.turn.any_unit_died_this_turn = true;
+        state_.player(controller).unit_died_this_turn = true;
         {
             const TurnPhase ph = state_.turn.phase;
             const bool in_beginning = ph == TurnPhase::AwakenPhase ||
@@ -273,6 +298,7 @@ void EffectExecutor::killObject(GameObjectId target) {
     } else if (obj.isGear()) {
         // A gear that dies while attached comes off its unit first.
         if (obj.attached_to.has_value()) unattachGear(target);
+        state_.player(controller).gear_died_this_turn = true;   // Lingering Animus
         const bool is_token = (obj.isToken());
         obj.zone = is_token ? ZoneType::Banishment : ZoneType::Trash;
         obj.last_location = obj.location;
@@ -313,6 +339,7 @@ void EffectExecutor::drawCards(PlayerId player, int count) {
     }
     if (drawn > 0) {
         state_.player(player).draws_this_turn += drawn;
+        state_.player(player).last_draw_count = drawn;
         events_.emit(CardsDrawnEvent{player, drawn});
     }
 }
@@ -369,6 +396,67 @@ int deflectCostFor(const GameState& state, PlayerId chooser, GameObjectId target
     for (const auto& ae : obj.aura_effects)
         if (ae.keyword == Keyword::Deflect) value += std::max(1, ae.keyword_value);
     return std::max(1, value);
+}
+
+std::vector<LocationId> legalPlayLocations(const GameState& state, const CardDB& db,
+                                           const CardRegistry* registry, PlayerId player,
+                                           GameObjectId card_id, bool include_ambush) {
+    std::vector<LocationId> out;
+    if (!state.objectExists(card_id)) return out;
+    const auto& card = state.getObject(card_id);
+    if (!card.isUnit() && !card.isGear()) return out;
+    const Card* card_obj = (registry && card.card_def_id != kInvalidId)
+        ? registry->get(card.card_def_id) : nullptr;
+    // NARROWING hook (Perched Grimwyrm, [Deploy] gear): the card lists its
+    // own legal locations and nothing else applies.
+    if (card_obj && card_obj->restrictsPlayLocations())
+        return card_obj->getPlayLocations(state, player);
+    out.push_back(BaseLocation{player});   // CR 355.2.a / 149.2
+    if (!card.isUnit()) return out;
+
+    const auto& ps = state.player(player);
+    if (ps.units_play_base_only) return out;   // Mageseeker Warden
+
+    bool can_play_open_bf = ps.grant_friendly_units_open_bf;   // Miss Fortune
+    bool can_play_enemy_bf = false;
+    bool can_play_any_bf = ps.next_unit_any_battlefield;      // Last Caress
+    if (card.card_def_id != kInvalidId && db.all().count(card.card_def_id)) {
+        const auto& text = db.get(card.card_def_id).ability_text;
+        if (text.find("play me to an open battlefield") != std::string::npos)
+            can_play_open_bf = true;
+        if (text.find("play me to an occupied enemy battlefield") != std::string::npos)
+            can_play_enemy_bf = true;
+        if (text.find("play me to a battlefield") != std::string::npos ||
+            text.find("play me at a battlefield") != std::string::npos)
+            can_play_any_bf = true;
+    }
+    const bool ambush = include_ambush && card.hasKeyword(Keyword::Ambush);
+    const bool ambush_enemy_ok = ambush && card_obj && card_obj->ambushToEnemyBattlefields();
+
+    for (const auto& bf : state.battlefields) {
+        if (bf.blocks_unit_play) continue;  // Rockfall Path
+        const bool controlled = bf.controller.has_value() && *bf.controller == player;
+        const bool open = !bf.controller.has_value();
+        const bool enemy_occupied = bf.controller.has_value() && *bf.controller != player &&
+                                    bf.hasUnitsFrom(opponent(player), state.objects);
+        bool ok = controlled;
+        if (can_play_open_bf && open) ok = true;
+        // Arachnoid Horror: an occupied battlefield where an enemy unit is alone.
+        if (!ok && ps.grant_friendly_units_lone_enemy_bf && enemy_occupied) {
+            int enemies = 0;
+            for (const auto& [oid, o] : state.objects)
+                if (o.isUnit() && o.controller != player && o.battlefieldId() == bf.id) ++enemies;
+            if (enemies == 1) ok = true;
+        }
+        if (can_play_enemy_bf && enemy_occupied) ok = true;
+        if (can_play_any_bf) ok = true;
+        if (!ok && ambush) {
+            ok = bf.hasUnitsFrom(player, state.objects) ||
+                 (ambush_enemy_ok && bf.hasUnitsFrom(opponent(player), state.objects));
+        }
+        if (ok) out.push_back(BattlefieldLocation{bf.id});
+    }
+    return out;
 }
 
 int payableAnyPower(const GameState& state, PlayerId player) {
@@ -621,6 +709,7 @@ void EffectExecutor::giveTemporaryMight(GameObjectId target, int amount, int min
         amount -= state_.player(state_.chain.resuming->controller).extra_minus_might;
     }
 
+    const int might_before = obj.current_might;
     // This-turn temporary might only — does NOT touch buff_count (permanent
     // buff counters). Expires at the expiration step (temp_might_bonus zeroed).
     obj.temp_might_bonus += amount;
@@ -643,6 +732,9 @@ void EffectExecutor::giveTemporaryMight(GameObjectId target, int amount, int min
                      " [M] this turn -> " + std::to_string(obj.current_might) + "M" +
                      (minimum > 0 ? " (min " + std::to_string(minimum) + ")" : ""));
     events_.emit(ObjectStateChangedEvent{target, "buffed"});
+    // "When you reduce the Might of an enemy unit ..." (Ahri, Confident).
+    if (amount < 0 && obj.current_might < might_before)
+        events_.emit(ObjectStateChangedEvent{target, "might_reduced"});
 }
 
 void EffectExecutor::giveTemporaryKeyword(GameObjectId target,
@@ -669,17 +761,39 @@ void EffectExecutor::giveTemporaryKeyword(GameObjectId target,
     events_.emit(ObjectStateChangedEvent{target, "buffed"});
 }
 
-void EffectExecutor::buffUnit(GameObjectId target) {
+bool EffectExecutor::buffUnit(GameObjectId target) {
     // [Buff] = a PERMANENT +1 [M] counter (CR), not this-turn temp might. It
     // persists past the expiration step and is what "spend a buff" / "if it
     // has a buff" gates count.
-    if (!state_.objectExists(target)) return;
+    if (!state_.objectExists(target)) return false;
     auto& obj = state_.getObject(target);
+    // CR 427.1.b.1: a unit that already has a buff doesn't get another one,
+    // unless an effect lets it have any number (427.1.b.2).
+    if (obj.buff_count > 0) {
+        const Card* card = card_registry_ ? card_registry_->get(obj.card_def_id) : nullptr;
+        if (!card || !card->allowsMultipleBuffs()) {
+            events_.logTrace("EFFECT: [Buff] " + obj.name + " already has a buff (no effect)");
+            return false;
+        }
+    }
     obj.buff_count += 1;
     obj.recomputeMight();
     events_.logTrace("EFFECT: [Buff] " + obj.name + " (+1 permanent) -> " +
                      std::to_string(obj.current_might) + "M");
     events_.emit(ObjectStateChangedEvent{target, "buffed"});
+    return true;
+}
+
+bool EffectExecutor::spendBuff(GameObjectId unit) {
+    if (!state_.objectExists(unit)) return false;
+    auto& obj = state_.getObject(unit);
+    if (obj.buff_count <= 0) return false;
+    obj.buff_count -= 1;
+    obj.recomputeMight();
+    events_.logTrace("EFFECT: spend a buff of " + obj.name + " -> " +
+                     std::to_string(obj.current_might) + "M");
+    events_.emit(ObjectStateChangedEvent{unit, "buff_spent"});
+    return true;
 }
 
 void EffectExecutor::readyObject(GameObjectId target) {
@@ -693,6 +807,10 @@ void EffectExecutor::readyObject(GameObjectId target) {
         state_.player(obj.controller).effects_cant_ready_my_units) {
         events_.logTrace("READY_SUPPRESSED: " + obj.name +
                          " can't be readied by effects (Mageseeker Warden)");
+        return;
+    }
+    if (obj.cant_be_readied) {   // "I can't be readied" (Maduli the Gatekeeper)
+        events_.logTrace("READY_SUPPRESSED: " + obj.name + " can't be readied");
         return;
     }
     bool was_exhausted = obj.is_exhausted;
@@ -744,6 +862,8 @@ void EffectExecutor::moveToBase(GameObjectId target) {
     auto old_loc = obj.location;
 
     LocationId dest = BaseLocation{obj.controller};
+    // "Moved this turn" counts effect moves too (Siren's Song, Kayn).
+    if (obj.isUnit() && old_loc.has_value() && !(*old_loc == dest)) ++obj.moves_this_turn;
     obj.location = dest;
     obj.zone = ZoneType::Base;
 
@@ -763,6 +883,8 @@ void EffectExecutor::moveToBattlefield(GameObjectId target, BattlefieldId bf) {
     auto old_loc = obj.location;
 
     LocationId dest = BattlefieldLocation{bf};
+    // "Moved this turn" counts effect moves too (Siren's Song, Kayn).
+    if (obj.isUnit() && old_loc.has_value() && !(*old_loc == dest)) ++obj.moves_this_turn;
     obj.location = dest;
     obj.zone = ZoneType::BattlefieldZone;
 
@@ -981,11 +1103,21 @@ void EffectExecutor::healObject(GameObjectId target) {
 void EffectExecutor::exhaustObject(GameObjectId target) {
     if (!state_.objectExists(target)) return;
     auto& obj = state_.getObject(target);
+    // Only a ready object *becomes* exhausted ("When I become exhausted").
+    const bool was_ready = !obj.is_exhausted;
     obj.is_exhausted = true;
-    events_.emit(ObjectStateChangedEvent{target, "exhausted"});
+    if (was_ready) events_.emit(ObjectStateChangedEvent{target, "exhausted"});
 }
 
 void EffectExecutor::channelRunes(PlayerId player, int count, bool enter_exhausted) {
+    channelRunesNoReplacement(player, count, enter_exhausted);
+    // "If you would channel runes, channel that many runes plus 1 exhausted
+    // rune instead" (Seraphic Wyvern; one extra per instance, CR replacement).
+    const int extra = state_.player(player).channel_extra_exhausted;
+    if (count > 0 && extra > 0) channelRunesNoReplacement(player, extra, /*enter_exhausted=*/true);
+}
+
+void EffectExecutor::channelRunesNoReplacement(PlayerId player, int count, bool enter_exhausted) {
     events_.logTrace(std::string("EFFECT: ") + toString(player) + " channels " +
                      std::to_string(count) + " runes" +
                      (enter_exhausted ? " exhausted" : ""));
@@ -1033,10 +1165,36 @@ GameObjectId EffectExecutor::chooseObjectNow(PlayerId player,
     return objects.front();
 }
 
-void EffectExecutor::addUnitOnlyEnergy(PlayerId player, int amount) {
-    state_.player(player).rune_pool.unit_energy += amount;
+bool EffectExecutor::confirmNow(PlayerId player, const std::string& label, bool fallback) {
+    if (!agent_query_) return fallback;
+    std::vector<Intent> options(2);
+    for (int v = 0; v < 2; ++v) {
+        options[v].type = IntentType::MakeChoice;
+        options[v].player = player;
+        options[v].chosen_value = v;
+        options[v].choice_label = label + (v ? ": yes" : ": no");
+    }
+    const Intent chosen = agent_query_(player, options);
+    return chosen.chosen_value.value_or(0) == 1;
+}
+
+void EffectExecutor::addRestrictedResource(PlayerId player, bool power, int amount,
+                                           SpendPurpose uses, bool showdown_only) {
+    state_.player(player).rune_pool.addRestricted(power, amount, uses, showdown_only);
     events_.logTrace("EFFECT: " + std::string(toString(player)) + " adds " +
-                     std::to_string(amount) + " Energy for units / unit abilities only");
+                     std::to_string(amount) + (power ? " [A]" : " Energy") +
+                     " (restricted, uses mask=" +
+                     std::to_string(static_cast<int>(uses)) +
+                     (showdown_only ? ", showdowns only)" : ")"));
+}
+
+void EffectExecutor::addSpellOnlyEnergy(PlayerId player, int amount) {
+    addRestrictedResource(player, /*power=*/false, amount, SpendPurpose::PlaySpell);
+}
+
+void EffectExecutor::addUnitOnlyEnergy(PlayerId player, int amount) {
+    addRestrictedResource(player, /*power=*/false, amount,
+                          SpendPurpose::PlayUnit | SpendPurpose::UnitAbility);
 }
 
 void EffectExecutor::addFloatingEnergy(PlayerId player, int amount) {
@@ -1197,6 +1355,11 @@ GameObjectId EffectExecutor::createToken(PlayerId controller, CardType type,
     // replacement on token creation — a friendly token never enters exhausted
     // while the flag is set (refreshed each cleanup via applyPassiveAura).
     if (state_.player(controller).tokens_enter_ready) enter_ready = true;
+    // Bushwhack: friendly units enter ready this turn.
+    if (type == CardType::Unit && state_.player(controller).units_enter_ready_this_turn)
+        enter_ready = true;
+    // Firebrand Raider: "Other units enter ready."
+    if (type == CardType::Unit && state_.turn.all_units_enter_ready) enter_ready = true;
     obj.is_exhausted = !enter_ready && type == CardType::Unit; // units enter exhausted unless ready
 
     if (std::holds_alternative<BaseLocation>(location)) {
@@ -1538,6 +1701,7 @@ std::vector<GameObjectId> EffectExecutor::revealAndChoose(PlayerId player, int c
 
     if (!chosen_cards.empty()) {
         state_.player(player).draws_this_turn += static_cast<int>(chosen_cards.size());
+        state_.player(player).last_draw_count = static_cast<int>(chosen_cards.size());
         events_.emit(CardsDrawnEvent{player, static_cast<int>(chosen_cards.size())});
     }
     return chosen_cards;
@@ -1719,7 +1883,9 @@ void EffectExecutor::playIgnoringCost(PlayerId player, GameObjectId card,
     obj.controller = player;
 
     if (obj.isUnit()) {
-        obj.is_exhausted = true;
+        // Bushwhack: friendly units enter ready this turn.
+        obj.is_exhausted = !state_.player(player).units_enter_ready_this_turn &&
+                           !state_.turn.all_units_enter_ready;   // Firebrand Raider
         // A unit (re-)entering play is a fresh presence — clear any marked
         // damage carried from a prior life (e.g. banished-then-replayed by
         // Thrill of the Hunt). New plays from hand are already at 0, so this

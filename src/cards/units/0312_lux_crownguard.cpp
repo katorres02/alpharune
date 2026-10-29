@@ -17,18 +17,15 @@ public:
 
     // "[E]: [Reaction] — [Add] [2]. Use only to play spells."
     // Add abilities must produce the resource themselves (the engine only
-    // declares the cost). NOTE: the "use only to play spells" restriction on
-    // the added energy is NOT enforced — the engine has no restricted-floating-
-    // energy mechanism, so the 2 energy is spendable on anything (documented
-    // engine gap; over-permissive but never under-delivers).
+    // declares the cost). The Energy is restricted to SpendPurpose::PlaySpell
+    // (RunePool::restricted), which only spell plays can spend.
     TriggerType triggerType() const override { return TriggerType::Activated; }
     bool hasActivatedAbility() const override { return true; }
     ActivationCost getActivationCost() const override { return {.exhaust = true}; }
     bool isReactionAbility() const override { return true; }  // [Reaction], not [Action]
     void onActivate(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
-        ctx.executor.addFloatingEnergy(ctx.controller, 2);
-        ctx.events.logTrace("LUX CROWNGUARD: [Add] [2] energy (spell-only "
-                            "restriction not engine-enforced)");
+        ctx.executor.addSpellOnlyEnergy(ctx.controller, 2);
+        ctx.events.logTrace("LUX CROWNGUARD: [Add] [2] energy (spells only)");
     }
 private:
     const CardDef def_ = [] {

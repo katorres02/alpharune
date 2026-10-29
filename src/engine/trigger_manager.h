@@ -64,6 +64,10 @@ private:
     // ── Equipment triggers ──
 
     /// Check attached gear for equipped triggers matching an event on a unit.
+    /// Put a keyword's own triggered ability (Disarm, Deploy) on the chain;
+    /// it resolves through engine/keyword_abilities.h, not the source's Card.
+    void queueKeywordAbility(GameObjectId source, PlayerId controller,
+                             KeywordAbility kind, int value, TriggerType fired);
     void fireEquippedTriggers(GameObjectId unit, PlayerId controller,
                                TriggerType trigger);
 
@@ -73,6 +77,10 @@ private:
     /// Also fires WhenYouPlayAUnit/WhenYouPlayASpell for other objects.
     void onCardPlayed(const CardPlayedEvent& e);
     void onSpellResolved(const SpellResolvedEvent& e);
+    /// WhenILeaveTheBoard on the departed object; a killed gear's Deathknell.
+    void onLeftBoard(const LeftBoardEvent& e);
+    /// WhenYouPlayACardFromTrash on `player`'s cards in their trash.
+    void fireFromTrashOnPlay(PlayerId player, GameObjectId played);
 
     /// Fires WhenYouPlayThis for gear entering the board.
     void onEnteredBoard(const EnteredBoardEvent& e);
@@ -94,6 +102,9 @@ private:
 
     /// Fires WhenIMove, WhenIMoveToFB for the moving unit.
     void onUnitMoved(const UnitMovedEvent& e);
+
+    /// Fires WhenYouPlayATokenUnit for the token's controller's cards.
+    void onTokenCreated(const TokenCreatedEvent& e);
 
     /// Fires AtEndOfTurn, AtStartOfBeginning, AtStartOfMain for all objects on board.
     void onPhaseChanged(const PhaseChangedEvent& e);

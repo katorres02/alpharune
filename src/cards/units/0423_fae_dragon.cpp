@@ -1,4 +1,5 @@
 #include "cards/card.h"
+#include "cards/card_helpers.h"
 #include "cards/card_registry.h"
 #include "core/game_state.h"
 #include "core/events.h"
@@ -15,28 +16,44 @@ class FaeDragon : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
     // "When you play me, buff up to four friendly units. (Give each a +1 [M]
-    //  buff if it doesn't have one.)"
-    // Auto-applies to up to four currently-unbuffed friendly units — faithful
-    // since buffing unbuffed units is strictly beneficial and never declined.
-    //
-    // ENGINE GAP: "When you spend a buff, play a Gold gear token exhausted."
-    // There is no "spend a buff" trigger event in TriggerType, so this second
-    // clause is left unimplemented.
-    TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
+    //  buff if it doesn't have one.)" — the up-to-four units are chosen as the
+    // trigger is finalized (CR 355.13, 383.3); ones gone by resolution are skipped.
+    // "When you spend a buff, play a Gold gear token exhausted." —
+    // WhenYouSpendABuff (EffectExecutor::spendBuff), one token per buff spent.
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
+    std::vector<TriggerType> triggerTypes() const override {
+        return {TriggerType::WhenYouPlayMe, TriggerType::WhenYouSpendABuff};
+    }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        if (ctx.firing_trigger == TriggerType::WhenYouSpendABuff) {
+            if (finalizingChoices(ctx)) return;
+            createGoldExhausted(ctx);
+            ctx.events.logTrace("FAE DRAGON: a buff was spent -> Gold token (exhausted)");
+            return;
+        }
+        std::vector<int> options;
+        for (auto id : friendlyUnits(ctx.state, ctx.controller))
+            options.push_back(static_cast<int>(id));
+        auto picked = pickSeveral(ctx, ctx.controller, "Fae Dragon: buff a friendly unit",
+                                  options, /*values=*/false, {}, 0, 4, kPickSlot);
+        if (!picked) return;                       // waiting for the agent
+        if (finalizingChoices(ctx)) return;        // choices end here (CR 383.3)
         int buffed = 0;
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (buffed >= 4) break;
-            if (!obj.isUnit() || obj.controller != ctx.controller) continue;
-            if (!obj.location.has_value()) continue;
-            if (obj.buff_count > 0) continue;  // "if it doesn't have one"
-            ctx.executor.buffUnit(id);
-            ++buffed;
+        for (int v : *picked) {
+            const auto id = static_cast<GameObjectId>(v);
+            if (!ctx.state.objectExists(id)) continue;
+            const auto& u = ctx.state.getObject(id);
+            if (!u.isUnit() || u.controller != ctx.controller || !u.location.has_value()) continue;
+            if (ctx.executor.buffUnit(id)) ++buffed;
         }
         ctx.events.logTrace("FAE DRAGON: buffed " + std::to_string(buffed) +
                             " friendly units (up to 4)");
     }
 private:
+    static constexpr size_t kPickSlot = 8;
+    static std::vector<GameObjectId> friendlyUnits(const GameState& state, PlayerId me) {
+        return chooseableUnits(state, me, [me](const GameObject& o) { return o.controller == me; });
+    }
     const CardDef def_ = [] {
         CardDef d;
         d.id = 423;

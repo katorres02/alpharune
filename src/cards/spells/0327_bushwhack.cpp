@@ -18,22 +18,12 @@ public:
 
     // "Friendly units enter ready this turn. Play a Gold gear token exhausted."
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>&) override {
-        // "Friendly units enter ready this turn" is a continuous effect on
-        // units played LATER this turn. The engine has no per-player
-        // "units enter ready this turn" flag (would require an engine hook),
-        // so we approximate by readying the controller's currently-on-board
-        // exhausted units now. NOTE: this does not affect units the
-        // controller plays after this spell resolves (engine gap).
-        int readied = 0;
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (!obj.isUnit() || obj.controller != ctx.controller) continue;
-            if (!obj.location.has_value() || !obj.is_exhausted) continue;
-            ctx.executor.readyObject(id);
-            ++readied;
-        }
+        // Continuous effect on units entering later this turn
+        // (PlayerState::units_enter_ready_this_turn, cleared at end of turn).
+        ctx.state.player(ctx.controller).units_enter_ready_this_turn = true;
         createGoldExhausted(ctx);
-        ctx.events.logTrace("BUSHWHACK: readied " + std::to_string(readied) +
-                            " friendly units (approx) + Gold gear token (exhausted)");
+        ctx.events.logTrace("BUSHWHACK: friendly units enter ready this turn + "
+                            "Gold gear token (exhausted)");
     }
 private:
     const CardDef def_ = [] {

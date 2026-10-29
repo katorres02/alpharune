@@ -21,9 +21,11 @@ public:
     void onActivate(CardContext& ctx,
                     const std::vector<GameObjectId>& /*targets*/) override {
         // [Add] [A] resolves immediately (CR 429.2) — not via the chain.
-        ctx.executor.addFloatingUniversalPower(ctx.controller, 1);
-        ctx.events.logTrace("ACTIVATE: Fire Below the Mountain adds [A] "
-                            "(spend earmarked for gear — not engine-enforced)");
+        // "Use only to play gear or use gear abilities": restricted [A]
+        // (RunePool::restricted) spendable only on those payments.
+        ctx.executor.addRestrictedResource(ctx.controller, /*power=*/true, 1,
+                                           SpendPurpose::PlayGear | SpendPurpose::GearAbility);
+        ctx.events.logTrace("ACTIVATE: Fire Below the Mountain adds [A] (gear only)");
     }
 private:
     const CardDef def_ = [] {

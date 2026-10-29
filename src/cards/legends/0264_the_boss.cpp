@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "cards/card_helpers.h"
 
 namespace riftbound {
 namespace {
@@ -41,11 +42,18 @@ public:
         if (victim.controller != self.controller) return false;
         if (victim.buff_count <= 0) return false;
         if (self.is_exhausted) return false;  // can't exhaust me again
-        // Pay: exhaust me, spend one of its buffs ([C] cost not charged here —
-        // see header note).
+        // "you may pay [C]": [C] on a Body/Order legend is one Body or Order
+        // power (CR 135.2.e.6.c). Only offered when it can be paid.
+        const bool body = payableOnePower(ctx.state, ctx.controller, Domain::Body);
+        const bool order = payableOnePower(ctx.state, ctx.controller, Domain::Order);
+        if (!body && !order) return false;
+        if (!ctx.executor.confirmNow(ctx.controller,
+                "The Boss: pay [C], exhaust me and spend " + victim.name +
+                "'s buff to save it")) return false;
+        if (!payOnePower(ctx, ctx.controller, body ? Domain::Body : Domain::Order))
+            return false;
         self.is_exhausted = true;
-        victim.buff_count -= 1;
-        victim.recomputeMight();
+        ctx.executor.spendBuff(dying_unit);
         ctx.events.logTrace("THE BOSS: save buffed unit " + victim.name +
                             " (exhaust me, spend buff) -> heal/exhaust/recall");
         // Heal, exhaust, recall to base.

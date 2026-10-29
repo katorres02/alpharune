@@ -25,40 +25,44 @@ public:
         auto& state = ctx.state;
         if (!state.objectExists(ctx.source)) return;
 
-        // Gate: must be the controller's own Beginning Phase. The "Beginning
-        // Phase" spans the Awaken, Beginning, and Scoring steps (CR turn
-        // structure); the dying-unit event fires within those steps.
-        if (state.turn.turn_player != ctx.controller) return;
-        TurnPhase ph = state.turn.phase;
-        if (ph != TurnPhase::AwakenPhase && ph != TurnPhase::BeginningStep &&
-            ph != TurnPhase::ScoringStep)
-            return;
+        // Gates, checked once (not again when re-entered after the
+        // opponent's choice).
+        const bool first_entry = !state.chain.resuming.has_value() ||
+                                 state.chain.resuming->resume_point < 20;
+        if (first_entry) {
+            // Gate: must be the controller's own Beginning Phase. The "Beginning
+            // Phase" spans the Awaken, Beginning, and Scoring steps (CR turn
+            // structure); the dying-unit event fires within those steps.
+            if (state.turn.turn_player != ctx.controller) return;
+            TurnPhase ph = state.turn.phase;
+            if (ph != TurnPhase::AwakenPhase && ph != TurnPhase::BeginningStep &&
+                ph != TurnPhase::ScoringStep)
+                return;
 
-        // Gate: "the first time ... each turn". Track per-turn via a counter
-        // on this gear object keyed by the current turn number.
-        auto& self = state.getObject(ctx.source);
-        const std::string key = "__shard_undoing_turn";
-        if (self.card_counters.count(key) &&
-            self.card_counters[key] == state.turn.turn_number)
-            return;  // already fired this turn
-        self.card_counters[key] = state.turn.turn_number;
-
-        // "each opponent must kill one of their units." In 1v1 the opponent
-        // selects which of their own units dies; their choice isn't surfaced
-        // through this controller's agent, so approximate the rational pick
-        // (lowest-Might unit they control) — same convention as King's Edict.
-        PlayerId opp = opponent(ctx.controller);
-        GameObjectId victim = kInvalidId;
-        int best_might = 0;
-        for (auto& [id, obj] : state.objects) {
-            if (!obj.isUnit() || obj.controller != opp) continue;
-            if (!obj.location.has_value()) continue;
-            if (victim == kInvalidId || obj.current_might < best_might) {
-                victim = id;
-                best_might = obj.current_might;
-            }
+            // Gate: "the first time ... each turn". Track per-turn via a counter
+            // on this gear object keyed by the current turn number.
+            auto& self = state.getObject(ctx.source);
+            const std::string key = "__shard_undoing_turn";
+            if (self.card_counters.count(key) &&
+                self.card_counters[key] == state.turn.turn_number)
+                return;  // already fired this turn
+            self.card_counters[key] = state.turn.turn_number;
         }
-        if (victim != kInvalidId) {
+
+        // "each opponent must kill one of their units": the opponent chooses
+        // which (the choice is published to them).
+        PlayerId opp = opponent(ctx.controller);
+        std::vector<GameObjectId> theirs;
+        for (auto& [id, obj] : state.objects)
+            if (obj.isUnit() && obj.controller == opp && obj.location.has_value())
+                theirs.push_back(id);
+        std::sort(theirs.begin(), theirs.end());
+        GameObjectId victim = kInvalidId;
+        if (!stepChooseObject(ctx, opp, theirs, "Shard of Undoing: kill one of your units",
+                              20, 10, victim))
+            return;
+        if (victim != kInvalidId && state.objectExists(victim) &&
+            state.getObject(victim).location.has_value()) {
             ctx.executor.killObject(victim);
             ctx.events.logTrace("SHARD OF UNDOING: opponent kills a unit "
                                 "(first friendly death of their Beginning Phase)");

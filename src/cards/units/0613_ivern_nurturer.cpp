@@ -15,19 +15,25 @@ namespace {
 class IvernNurturer : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
-
     std::vector<TriggerType> triggerTypes() const override {
         return {TriggerType::WhenYouPlayMe, TriggerType::WhenIHold};
     }
 
+    static bool isThemed(const GameObject& o) {
+        for (const auto& t : o.tags)
+            if (t == "Bird" || t == "Cat" || t == "Dog" || t == "Poro") return true;
+        return false;
+    }
+
+    // The whole effect happens as the ability resolves: the "you may reveal"
+    // and which unit to reveal are decided after looking at the cards, so
+    // nothing is chosen at finalization.
     void onTrigger(CardContext& ctx,
                    const std::vector<GameObjectId>& /*targets*/) override {
         auto& ps = ctx.state.player(ctx.controller);
 
-        // Peek the top 3 (top = back of vector). We do not pop yet so that
-        // a confirmOptional suspend/resume doesn't lose the peeked set; the
-        // pop happens after the agent decides.
+        // Look at the top 3 (top = back of vector). They stay in place until
+        // every choice is made, so a suspend/resume sees the same cards.
         std::vector<GameObjectId> peeked;
         for (int i = 0; i < 3; ++i) {
             int idx = static_cast<int>(ps.main_deck.size()) - 1 - i;
@@ -35,87 +41,73 @@ public:
             peeked.push_back(ps.main_deck[idx]);
         }
         if (peeked.empty()) return;
+        std::vector<GameObjectId> units;
+        for (auto id : peeked)
+            if (ctx.state.objectExists(id) && ctx.state.getObject(id).isUnit()) units.push_back(id);
 
-        // Is there a unit among the peeked cards?
-        auto has_unit = [&]() -> bool {
-            for (auto id : peeked) {
-                if (!ctx.state.objectExists(id)) continue;
-                if (ctx.state.getObject(id).isUnit()) return true;
-            }
-            return false;
-        };
-
-        // "You may reveal a unit ... and draw it." Optional.
+        // "You may reveal a unit from among them and draw it."
         int conf = confirmOptional(ctx,
-            "Ivern, Nurturer: reveal a unit from top 3 and draw it?", has_unit);
-        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+            "Ivern, Nurturer: reveal a unit from the top 3 and draw it?",
+            [&]() { return !units.empty(); });
         if (conf == -1) return;  // waiting for agent
 
-        // Now actually remove the peeked cards from the top of the deck.
-        std::vector<GameObjectId> top3;
-        for (int i = 0; i < 3 && !ps.main_deck.empty(); ++i) {
-            top3.push_back(ps.main_deck.back());
-            ps.main_deck.pop_back();
-        }
-
         GameObjectId drafted = kInvalidId;
-        std::vector<GameObjectId> rest;
-        bool themed = false;
-
+        GameObjectId buff_target = kInvalidId;
         if (conf == 1) {
-            // Draft the first unit; rest get recycled.
-            for (auto id : top3) {
-                if (!ctx.state.objectExists(id)) { rest.push_back(id); continue; }
-                const auto& obj = ctx.state.getObject(id);
-                if (drafted == kInvalidId && obj.isUnit()) {
-                    drafted = id;
-                } else {
-                    rest.push_back(id);
-                }
-            }
-        } else {
-            // Declined the reveal/draw — everything is recycled.
-            rest = top3;
+            // Which unit to reveal, then (only if it is a Bird, Cat, Dog or
+            // Poro) which friendly unit to [Buff].
+            auto [a, b] = pickTargetPair(ctx, "Ivern, Nurturer: reveal and draw a unit",
+                units,
+                [&](GameObjectId a) -> std::vector<GameObjectId> {
+                    std::vector<GameObjectId> out;
+                    if (!ctx.state.objectExists(a) || !isThemed(ctx.state.getObject(a))) return out;
+                    for (auto& [oid, u] : ctx.state.objects) {
+                        if (!u.isUnit() || u.controller != ctx.controller) continue;
+                        if (!u.location.has_value()) continue;
+                        out.push_back(oid);
+                    }
+                    return out;
+                });
+            auto& ri = ctx.state.chain.resuming;
+            if (ri.has_value() && ri->resume_point < 13) return;   // waiting for agent
+            drafted = a;
+            buff_target = b;
         }
 
-        if (drafted != kInvalidId) {
-            const auto& drafted_obj = ctx.state.getObject(drafted);
+        // Take the 3 cards off the top.
+        std::vector<GameObjectId> rest;
+        for (int i = 0; i < 3 && !ps.main_deck.empty(); ++i) {
+            GameObjectId id = ps.main_deck.back();
+            ps.main_deck.pop_back();
+            if (id != drafted) rest.push_back(id);
+        }
+
+        bool themed = false;
+        if (drafted != kInvalidId && ctx.state.objectExists(drafted)) {
+            auto& obj = ctx.state.getObject(drafted);
             ctx.events.emit(CardRevealedEvent{
                 /*card=*/drafted,
-                /*card_def_id=*/drafted_obj.card_def_id,
-                /*owner=*/drafted_obj.owner,
-                /*revealed_to_all=*/false,
+                /*card_def_id=*/obj.card_def_id,
+                /*owner=*/obj.owner,
+                /*revealed_to_all=*/true,
                 /*revealed_to=*/ctx.controller,
                 /*source_zone=*/ZoneType::MainDeck,
             });
-            ctx.events.logTrace("IVERN NURTURER: drafted " + drafted_obj.name);
-            // Move it to hand directly (already popped off the deck).
-            auto& obj = ctx.state.getObject(drafted);
-            obj.zone = ZoneType::Hand;
-            ps.hand.push_back(drafted);
-
-            for (const auto& t : drafted_obj.tags) {
-                if (t == "Bird" || t == "Cat" || t == "Dog" || t == "Poro") {
-                    themed = true; break;
-                }
-            }
+            // Draw it: put it back on top and draw, so it is a real draw.
+            ps.main_deck.push_back(drafted);
+            ctx.executor.drawCards(ctx.controller, 1);
+            ctx.events.logTrace("IVERN NURTURER: revealed and drew " + obj.name);
+            themed = isThemed(obj);
         }
 
-        // Recycle the rest to the bottom of the deck.
-        if (!rest.empty()) {
-            ctx.executor.recycleCards(ctx.controller, rest);
-        }
+        // Recycle the rest.
+        if (!rest.empty()) ctx.executor.recycleCards(ctx.controller, rest);
 
-        // Themed reveal → [Buff] a friendly unit (+1 buff counter).
-        if (themed) {
-            for (auto& [oid, u] : ctx.state.objects) {
-                if (!u.isUnit() || u.controller != ctx.controller) continue;
-                if (!u.location.has_value()) continue;
-                ctx.executor.buffUnit(oid);
-                ctx.events.logTrace("IVERN NURTURER: themed draft — buff " +
-                                     u.name);
-                break;
-            }
+        // "Then if you revealed a Bird, Cat, Dog, or Poro, [Buff] a friendly unit."
+        if (themed && buff_target != kInvalidId && ctx.state.objectExists(buff_target)) {
+            ctx.executor.buffUnit(buff_target);
+            ctx.events.logTrace("IVERN NURTURER: themed reveal — buff " +
+                                 ctx.state.getObject(buff_target).name);
         }
     }
 private:

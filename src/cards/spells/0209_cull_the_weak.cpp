@@ -16,34 +16,58 @@ class CullTheWeak : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
 
+    // "Each player kills one of their units." Each player chooses one of
+    // their own units (controller first, then opponent); both die together.
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
-        // Controller's own kill — agent-chosen via pickTarget.
-        std::vector<GameObjectId> own;
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (obj.isUnit() && obj.controller == ctx.controller &&
-                obj.location.has_value()) {
-                own.push_back(id);
+        const PlayerId opp = opponent(ctx.controller);
+        auto own = [&](PlayerId p) {
+            std::vector<GameObjectId> out;
+            for (auto& [id, obj] : ctx.state.objects)
+                if (obj.isUnit() && obj.controller == p && obj.location.has_value())
+                    out.push_back(id);
+            return out;
+        };
+        if (!ctx.state.chain.resuming.has_value()) {
+            // Direct invocation (no chain, test path): first unit of each.
+            std::vector<GameObjectId> victims;
+            for (auto p : {ctx.controller, opp}) {
+                auto units = own(p);
+                if (!units.empty()) victims.push_back(units.front());
             }
+            for (auto u : victims) ctx.executor.killObject(u);
+            return;
         }
-        if (!own.empty()) {
-            GameObjectId picked = pickTarget(ctx, "Cull the Weak (your unit)", own);
-            // Suspended for agent decision — chain manager re-enters.
-            if (picked == kInvalidId && ctx.state.chain.resuming.has_value() &&
-                ctx.state.chain.resuming->resume_point == 7) {
-                return;
-            }
-            if (picked != kInvalidId && ctx.state.objectExists(picked)) {
-                ctx.executor.killObject(picked);
-            }
+        auto& ri = *ctx.state.chain.resuming;
+        while (ri.resume_data.size() < 2) ri.resume_data.push_back(kInvalidId);
+        auto ask = [&](PlayerId p, int next_point) -> bool {
+            auto units = own(p);
+            if (units.empty()) return false;
+            std::vector<Intent> opts;
+            for (auto u : units) opts.push_back(objChoice(p, u));
+            ctx.executor.requestChoice(p, std::move(opts), "Cull the Weak: kill one of your units");
+            ri.resume_point = next_point;
+            return true;
+        };
+        switch (ri.resume_point) {
+        case 0:
+            if (ask(ctx.controller, 1)) return;
+            [[fallthrough]];
+        case 1:
+            if (ri.resume_point == 1) ri.resume_data[0] = takenObject(ctx);
+            if (ask(opp, 2)) return;
+            break;
+        case 2:
+            ri.resume_data[1] = takenObject(ctx);
+            break;
+        default:
+            break;
         }
-
-        // Opponent's own kill — first available (opponent choice not plumbable).
-        PlayerId opp = opponent(ctx.controller);
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (obj.isUnit() && obj.controller == opp && obj.location.has_value()) {
-                ctx.executor.killObject(id);
-                break;
-            }
+        ri.resume_point = 3;
+        for (int i = 0; i < 2; ++i) {
+            const auto u = static_cast<GameObjectId>(ri.resume_data[i]);
+            if (u != kInvalidId && ctx.state.objectExists(u) &&
+                ctx.state.getObject(u).location.has_value())
+                ctx.executor.killObject(u);
         }
     }
 private:

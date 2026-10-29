@@ -37,7 +37,6 @@ private:
         d.tags = {R"RB(Bandle City)RB"};
         d.energy_cost = 4;
         d.might = 4;
-        d.keywords.set(Keyword::Hidden);
         d.ability_text = R"RB(When you play a card from [Hidden], give me +2 [M] this turn.)RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/0441f70a7acc377d8cbe08559b7a2fc3139c903b-744x1039.png)RB";
         return d;

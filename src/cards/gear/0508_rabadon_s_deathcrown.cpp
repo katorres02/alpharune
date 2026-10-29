@@ -20,6 +20,18 @@ public:
         // [A] equip: recycle any rune for power.
         return standardEquip(ctx, ctx.source, unit, std::nullopt);
     }
+    // "Your spells and abilities deal 3 Bonus Damage (while this is attached)."
+    // Raises the controller's PlayerState::bonus_damage_dealt (reset each aura
+    // pass; EffectExecutor::dealDamage adds it to spell/ability damage).
+    // [Unique] keeps it to one copy, so one instance's +3 is applied per pass.
+    void applyPassiveAura(GameState& state, PlayerId controller) const override {
+        for (const auto& [id, obj] : state.objects) {
+            if (obj.card_def_id != cardDefId() || obj.controller != controller) continue;
+            if (!obj.location.has_value() || !obj.attached_to.has_value()) continue;
+            state.player(controller).bonus_damage_dealt += 3;
+            return;
+        }
+    }
 private:
     const CardDef def_ = [] {
         CardDef d;

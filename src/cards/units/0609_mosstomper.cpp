@@ -58,8 +58,7 @@ private:
         d.power_cost = 1;
         d.might = 3;
         d.rarity = Rarity::Uncommon;
-        d.deflect_value = 1;
-        d.keywords.set(Keyword::Deflect);
+        // [Deflect] is granted only at [Level 3] (applyPassiveAura), not printed.
         d.keywords.set(Keyword::Hunt);
         d.keywords.set(Keyword::Level);
         d.ability_text = R"RB([Hunt 2] (When I conquer or hold, gain 2 XP.)

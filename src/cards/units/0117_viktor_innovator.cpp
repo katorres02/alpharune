@@ -15,7 +15,7 @@ class ViktorInnovator : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
     // "When you play a card on an opponent's turn, play a 1 [M] Recruit unit
-    // token in your base." No single "play a card" trigger exists, so register
+    // token to your base." No single "play a card" trigger exists, so register
     // for spell / unit / gear plays and gate on it being the opponent's turn.
     std::vector<TriggerType> triggerTypes() const override {
         return {TriggerType::WhenYouPlayASpell,
@@ -49,7 +49,7 @@ private:
         d.power_cost = 1;
         d.might = 3;
         d.rarity = Rarity::Rare;
-        d.ability_text = R"RB(When you play a card on an opponent's turn, play a 1 [M] Recruit unit token in your base.)RB";
+        d.ability_text = R"RB(When you play a card on an opponent's turn, play a 1 [M] Recruit unit token to your base.)RB";
         d.image_url = R"RB(https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/35be0b10f13611b4f5d828f2a79001036ab57ba1-744x1039.png)RB";
         return d;
     }();

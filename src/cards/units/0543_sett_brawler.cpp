@@ -37,9 +37,7 @@ public:
     ActivationCost getActivationCost() const override { return {}; }
     void onActivate(CardContext& ctx, const std::vector<GameObjectId>&) override {
         if (!ctx.state.objectExists(ctx.source)) return;
-        auto& self = ctx.state.getObject(ctx.source);
-        if (self.buff_count <= 0) return;  // no buff to spend
-        self.buff_count -= 1;
+        if (!ctx.executor.spendBuff(ctx.source)) return;  // no buff to spend
         ctx.executor.giveTemporaryMight(ctx.source, 4);
         ctx.events.logTrace("SETT: spent a buff for +4M this turn");
     }

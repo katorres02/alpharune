@@ -21,6 +21,15 @@ public:
     }
     // Phase 6q proof-of-concept (single friendly-unit target).
     bool needsPlayTimeTarget() const override { return true; }
+    // "Choose a friendly unit without [Temporary]."
+    std::vector<GameObjectId> enumerateLegalTargets(
+        const GameState& state, PlayerId controller) const override {
+        auto out = Card::enumerateLegalTargets(state, controller);
+        out.erase(std::remove_if(out.begin(), out.end(), [&](GameObjectId id) {
+            return state.getObject(id).hasKeyword(Keyword::Temporary);
+        }), out.end());
+        return out;
+    }
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         auto legal = enumerateLegalTargets(ctx.state, ctx.controller);
         GameObjectId picked = pickTarget(ctx, "Shadow's Call", legal);
@@ -36,7 +45,12 @@ public:
             return;  // suspended for agent decision
         }
         if (picked != kInvalidId && ctx.state.objectExists(picked)) {
-            ctx.executor.giveTemporaryKeyword(picked, Keyword::Temporary, 0);
+            // A lasting [Temporary] (not a "this turn" grant, which would expire
+            // before its controller's next Beginning Phase): the Beginning Step
+            // sweep kills it then.
+            auto& u = ctx.state.getObject(picked);
+            u.keywords.set(Keyword::Temporary);
+            ctx.events.logTrace("SHADOW'S CALL: " + u.name + " gains [Temporary]");
         }
         ctx.executor.drawCards(ctx.controller, 2);
     }

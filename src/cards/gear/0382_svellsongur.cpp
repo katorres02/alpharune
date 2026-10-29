@@ -15,6 +15,10 @@ namespace {
 class Svellsongur : public GearCard {
 public:
     const CardDef& def() const override { return def_; }
+    // GAP: "copy that unit's text to this Equipment's effect text for as long
+    // as this is attached" is not modeled. The engine has no way to give a
+    // gear another card's rules text (its triggers, keywords and abilities
+    // would have to apply a second time to the bearer); only Equip is.
     bool hasEquipAbility() const override { return true; }
     bool onEquip(CardContext& ctx, GameObjectId unit) override {
         return standardEquip(ctx, ctx.source, unit,

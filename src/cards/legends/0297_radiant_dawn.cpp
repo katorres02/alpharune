@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -14,17 +15,19 @@ namespace {
 class RadiantDawn : public LegendCard {
 public:
     const CardDef& def() const override { return def_; }
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     TriggerType triggerType() const override { return TriggerType::WhenYouStun; }
+    // "When you stun one or more enemy units, buff a friendly unit."
     void onTrigger(CardContext& ctx,
                    const std::vector<GameObjectId>& /*targets*/) override {
-        // Buff a friendly unit (first on-board friendly unit found).
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (!obj.isUnit() || obj.controller != ctx.controller) continue;
-            if (!obj.location.has_value()) continue;
-            ctx.executor.buffUnit(id);
-            ctx.events.logTrace("RADIANT DAWN: stunned enemy -> buff " + obj.name);
-            return;
-        }
+        auto legal = chooseableUnits(ctx.state, ctx.controller,
+            [&](const GameObject& o) { return o.controller == ctx.controller; });
+        GameObjectId t = pickTarget(ctx, "Radiant Dawn (buff a friendly unit)", legal);
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (t == kInvalidId && ctx.executor.hasPendingChoice()) return;  // suspended
+        if (t == kInvalidId || !ctx.state.objectExists(t)) return;
+        ctx.executor.buffUnit(t);
+        ctx.events.logTrace("RADIANT DAWN: stunned enemy -> buff " + ctx.state.getObject(t).name);
     }
 private:
     const CardDef def_ = [] {

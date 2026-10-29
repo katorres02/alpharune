@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -15,22 +16,31 @@ class HallowedTomb : public BattlefieldCard {
 public:
     const CardDef& def() const override { return def_; }
     // "When you hold here, you may return your Chosen Champion from your trash
-    //  to your Champion Zone if it is empty."
-    // (Previously implemented as bounce-friendly-unit-to-hand — wrong effect.)
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
-        auto& ps = ctx.state.player(ctx.controller);
-        if (ps.champion_zone != kInvalidId &&
-            ctx.state.objectExists(ps.champion_zone)) {
-            return;  // Champion Zone not empty
-        }
-        // Find a champion unit in the player's trash.
-        GameObjectId champ = kInvalidId;
+    //  to your Champion Zone if it is empty." The Chosen Champion is the object
+    // that started the game in the Champion Zone (card_counters
+    // "__chosen_champion", set by game setup).
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
+    TriggerType triggerType() const override { return TriggerType::WhenYouHoldHere; }
+    static GameObjectId chosenChampionInTrash(const GameState& state, PlayerId p) {
+        const auto& ps = state.player(p);
+        if (ps.champion_zone != kInvalidId && state.objectExists(ps.champion_zone))
+            return kInvalidId;  // Champion Zone not empty
         for (auto cid : ps.trash) {
-            if (!ctx.state.objectExists(cid)) continue;
-            const auto& obj = ctx.state.getObject(cid);
-            if (obj.isUnit() && obj.isChampion()) { champ = cid; break; }
+            if (!state.objectExists(cid)) continue;
+            const auto& obj = state.getObject(cid);
+            auto it = obj.card_counters.find("__chosen_champion");
+            if (it != obj.card_counters.end() && it->second == 1) return cid;
         }
+        return kInvalidId;
+    }
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        int go = confirmOptional(ctx, "Hallowed Tomb: return your Chosen Champion to your Champion Zone?",
+            [&]() { return chosenChampionInTrash(ctx.state, ctx.controller) != kInvalidId; });
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (go < 1) return;
+        GameObjectId champ = chosenChampionInTrash(ctx.state, ctx.controller);
         if (champ == kInvalidId) return;
+        auto& ps = ctx.state.player(ctx.controller);
         ps.trash.erase(std::remove(ps.trash.begin(), ps.trash.end(), champ),
                        ps.trash.end());
         auto& obj = ctx.state.getObject(champ);
@@ -40,7 +50,6 @@ public:
         ctx.events.logTrace("HALLOWED TOMB: return Chosen Champion from trash to "
                             "empty Champion Zone");
     }
-    TriggerType triggerType() const override { return TriggerType::WhenYouHoldHere; }
 private:
     const CardDef def_ = [] {
         CardDef d;

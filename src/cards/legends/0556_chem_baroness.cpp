@@ -16,27 +16,33 @@ class ChemBaroness : public LegendCard {
 public:
     const CardDef& def() const override { return def_; }
     unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
-    TriggerType triggerType() const override { return TriggerType::WhenIConquerOrHold; }
+    // "When you or an ally hold" — a hold only (WhenIHold legend sweep in
+    // TriggerManager::onScore), not a conquer.
+    TriggerType triggerType() const override { return TriggerType::WhenIHold; }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         // Optional: exhaust me to play a Gold gear token exhausted.
         if (!ctx.state.objectExists(ctx.source)) return;
+        auto can_exhaust = [&]() {
+            return ctx.state.objectExists(ctx.source) &&
+                   !ctx.state.getObject(ctx.source).is_exhausted;
+        };
         int yes = confirmOptional(ctx, "Chem-Baroness: exhaust to play a Gold token?",
-                                  [&]() { return true; });
+                                  can_exhaust);
         if (yes != 1) return;
-        auto& self = ctx.state.getObject(ctx.source);
-        if (costDueNow(ctx)) self.is_exhausted = true;
-        if (finalizingChoices(ctx)) return;   // choices and costs end here (CR 383.3)
-        LocationId loc{BaseLocation{ctx.controller}};
-        auto tok = ctx.executor.createToken(ctx.controller, CardType::Gear, "Gold",
-                                            0, {}, {}, loc, /*enter_ready=*/false);
-        if (ctx.state.objectExists(tok)) {
-            ctx.state.getObject(tok).is_exhausted = true;
-            // CR 187.5: a Gold gear token has "[Reaction][>] Kill this, [E]:
-            // [Add] [A]" — carried by the registered Gold card.
-            ctx.state.getObject(tok).card_def_id = kGoldGearCardDefId;
+        if (costDueNow(ctx)) {
+            if (!can_exhaust()) return;
+            ctx.executor.exhaustObject(ctx.source);
         }
-        ctx.events.logTrace("CHEM-BARONESS: played a Gold token (Gold-add bonus "
-                            "passive not modeled)");
+        if (finalizingChoices(ctx)) return;   // choices and costs end here (CR 383.3)
+        createGoldExhausted(ctx);   // bound to the Gold card (its Add ability)
+        ctx.events.logTrace("CHEM-BARONESS: played a Gold token exhausted");
+    }
+    // "While your score is within 3 points of the Victory Score, your Gold
+    // [Add] an additional [1]." Read by Gold's ability (0326_gold.cpp).
+    // Victory Score here is the mode's; battlefield modifiers are not counted.
+    void applyPassiveAura(GameState& state, PlayerId controller) const override {
+        auto& ps = state.player(controller);
+        if (ps.score + 3 >= state.mode.victory_score) ps.gold_extra_energy = 1;
     }
 private:
     const CardDef def_ = [] {

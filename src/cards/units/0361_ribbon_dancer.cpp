@@ -1,4 +1,5 @@
 #include "cards/card.h"
+#include "cards/card_helpers.h"
 #include "cards/card_registry.h"
 #include "core/game_state.h"
 #include "core/events.h"
@@ -14,14 +15,21 @@ namespace {
 class RibbonDancer : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty())
-            ctx.executor.giveTemporaryMight(targets[0], 1);
+    // "When I move to a battlefield, give another friendly unit +1 [M] this
+    // turn." The unit is chosen as the ability is finalized (CR 383.3).
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        const GameObjectId self = ctx.source;
+        const PlayerId me = ctx.controller;
+        auto t = pickTarget(ctx, "Ribbon Dancer: give another friendly unit +1 [M]",
+                            chooseableUnits(ctx.state, me, [&](const GameObject& u) {
+                                return u.id != self && u.controller == me;
+                            }));
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (t == kInvalidId || !ctx.state.objectExists(t)) return;
+        ctx.executor.giveTemporaryMight(t, 1);
     }
     TriggerType triggerType() const override { return TriggerType::WhenIMoveToFB; }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_friendly = true};
-    }
 private:
     const CardDef def_ = [] {
         CardDef d;

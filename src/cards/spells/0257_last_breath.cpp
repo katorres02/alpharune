@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -14,12 +15,34 @@ namespace {
 class LastBreath : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty())
-            ctx.executor.readyObject(targets[0]);
+    // "Ready a friendly unit. It deals damage equal to its Might to an enemy
+    // unit at a battlefield." Two targets, chosen as the spell is played.
+    unsigned choicesAtFinalization() const override { return kFinalizeResolve; }
+    bool needsPlayTimeTargetPair() const override { return true; }
+    bool hasLegalTargets(const GameState& state, PlayerId controller) const override {
+        for (auto& [id, obj] : state.objects)
+            if (obj.isUnit() && obj.controller == controller && obj.location.has_value())
+                return true;
+        return false;
     }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_friendly = true};
+    void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        auto legal_a = chooseableUnits(ctx.state, ctx.controller,
+            [&](const GameObject& o) { return o.controller == ctx.controller; });
+        auto [friendly, enemy] = pickTargetPair(ctx, "Last Breath: friendly unit, then enemy unit",
+            legal_a, [&](GameObjectId) {
+                return chooseableUnits(ctx.state, ctx.controller, [&](const GameObject& o) {
+                    return o.controller != ctx.controller && o.isAtBattlefield();
+                });
+            });
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (friendly == kInvalidId || !ctx.state.objectExists(friendly)) return;
+        ctx.executor.readyObject(friendly);
+        if (enemy == kInvalidId || !ctx.state.objectExists(enemy)) return;
+        int dmg = ctx.state.getObject(friendly).current_might;
+        ctx.executor.dealDamage(enemy, dmg, friendly);
+        if (ctx.state.objectExists(enemy) && ctx.state.getObject(enemy).location.has_value() &&
+            ctx.state.getObject(enemy).hasLethalDamage())
+            ctx.executor.killObject(enemy);
     }
 private:
     const CardDef def_ = [] {

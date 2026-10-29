@@ -16,38 +16,54 @@ public:
     const CardDef& def() const override { return def_; }
     // "Each opponent reveals the top card of their Main Deck. Choose one and
     //  banish it, then play it, ignoring its cost. Then recycle the rest."
-    // 1v1: a single opponent reveals one card; you choose it, banish, then
-    //  play it under your control. "the rest" is empty in 1v1.
+    // 1v1: the single opponent reveals one card; it is banished and played
+    // under my control ignoring its cost. A spell goes on the chain
+    // (playIgnoringCost queues it); a unit lands where I choose (base or a
+    // battlefield I control, CR 355.2.a). "The rest" is empty in 1v1.
+    // Resumable: ri.targets stashes the banished card ({kInvalidId} = nothing
+    // revealed) so re-entry after the location choice doesn't reveal again.
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
-        PlayerId opp = opponent(ctx.controller);
-        auto& opp_deck = ctx.state.player(opp).main_deck;
-        if (opp_deck.empty()) {
-            ctx.events.logTrace("BLIND FURY: opponent deck empty — no-op");
+        auto& ri = ctx.state.chain.resuming.value();
+        if (ri.targets.empty()) {
+            PlayerId opp = opponent(ctx.controller);
+            auto& opp_deck = ctx.state.player(opp).main_deck;
+            if (opp_deck.empty() || !ctx.state.objectExists(opp_deck.back())) {
+                ctx.events.logTrace("BLIND FURY: opponent deck empty — no-op");
+                ri.targets.push_back(kInvalidId);
+                return;
+            }
+            GameObjectId top = opp_deck.back();
+            auto& card = ctx.state.getObject(top);
+            ctx.events.emit(CardRevealedEvent{
+                top, card.card_def_id, card.owner,
+                /*revealed_to_all=*/true, ctx.controller, ZoneType::MainDeck});
+            ctx.events.logTrace("BLIND FURY: opponent reveals " + card.name);
+            opp_deck.pop_back();
+            ctx.executor.banishObject(top);
+            ri.targets.push_back(top);
+            if (!ctx.state.objectExists(top)) return;
+            // It leaves banishment as it is played.
+            auto& bz = ctx.state.player(ctx.state.getObject(top).owner).banishment;
+            bz.erase(std::remove(bz.begin(), bz.end(), top), bz.end());
+        }
+        const GameObjectId top = ri.targets.front();
+        if (top == kInvalidId || !ctx.state.objectExists(top)) return;
+        const auto& card = ctx.state.getObject(top);
+
+        // A unit or gear goes where I choose (CR 355.2); a spell has no location.
+        LocationId where;
+        const int r = pickPlayLocation(ctx, top, where, PlayerId::None,
+                                       "Blind Fury: where to play " + card.name);
+        if (r == -1) return;  // waiting for the agent
+        if (r == 0) {         // nowhere it may be played: it stays banished
+            ctx.state.player(card.owner).banishment.push_back(top);
             return;
         }
-        GameObjectId top = opp_deck.back();
-        if (!ctx.state.objectExists(top)) return;
-        auto& card = ctx.state.getObject(top);
-        // Reveal publicly.
-        ctx.events.emit(CardRevealedEvent{
-            top, card.card_def_id, card.owner,
-            /*revealed_to_all=*/true, ctx.controller, ZoneType::MainDeck});
-        ctx.events.logTrace("BLIND FURY: opponent reveals " + card.name);
-        // Detach from the opponent's deck, banish, then play under my control.
-        opp_deck.pop_back();
-        bool is_permanent = card.isUnit() || card.isGear();
-        ctx.executor.banishObject(top);
-        if (is_permanent) {
-            // playIgnoringCost only boards permanents; a spell would be placed
-            // on the board incorrectly, so spells are left banished
-            // (documented limitation of the ignore-cost primitive).
-            ctx.executor.playIgnoringCost(ctx.controller, top);
-            ctx.events.logTrace("BLIND FURY: banished + played " + card.name +
-                                " ignoring cost");
-        } else {
-            ctx.events.logTrace("BLIND FURY: banished " + card.name +
-                                " (non-permanent play unsupported by primitive)");
-        }
+        std::optional<LocationId> loc;
+        if (!card.isSpell()) loc = where;
+        const std::string name = card.name;
+        ctx.executor.playIgnoringCost(ctx.controller, top, loc);
+        ctx.events.logTrace("BLIND FURY: banished + played " + name + " ignoring cost");
     }
 private:
     const CardDef def_ = [] {

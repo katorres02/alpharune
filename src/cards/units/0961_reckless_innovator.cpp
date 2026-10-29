@@ -42,7 +42,7 @@ private:
         d.card_type = CardType::Unit;
         d.super_type = SuperType::None;
         d.domains = {Domain::Chaos};
-        d.tags = {};
+        d.tags = {R"RB(Piltover)RB"};
         d.rarity = Rarity::Uncommon;
         d.ability_text = R"RB([Accelerate] When I become exhausted, choose one — Play a Gold gear token exhausted. Pay [P] to draw 1.)RB";
         d.energy_cost = 3;

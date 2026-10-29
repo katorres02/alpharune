@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -15,9 +16,13 @@ class FoxFire : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
     // "Kill any number of units at a battlefield with total Might 4 or less."
-    // Anchor on a chosen unit (identifies the battlefield), then kill units
-    // there greedily (lowest Might first) while the running total stays <= 4.
+    // The play-time target is a unit that names the battlefield. As the spell
+    // resolves the player picks the units to kill there one at a time (any
+    // controller, each fitting the remaining Might budget), or stops; the
+    // chosen units then die together. Resume points 20/21/22; resume_data[15]
+    // holds the count and [16..] the picks.
     bool needsPlayTimeTarget() const override { return true; }
+    static constexpr size_t kCount = 15;
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
         GameObjectId anchor;
         if (!targets.empty()) {
@@ -27,29 +32,78 @@ public:
             anchor = pickTarget(ctx, "Fox-Fire (a unit at a battlefield)", legal);
         }
         if (anchor == kInvalidId || !ctx.state.objectExists(anchor)) return;
-        auto bf = ctx.state.getObject(anchor).battlefieldId();
+        auto& ri_opt = ctx.state.chain.resuming;
+        // The battlefield is fixed once the first pick is offered.
+        std::optional<BattlefieldId> bf;
+        if (ri_opt.has_value() && ri_opt->resume_point >= 20 && ri_opt->resume_data.size() > kCount)
+            bf = static_cast<BattlefieldId>(ri_opt->resume_data[kCount - 1]);
+        else
+            bf = ctx.state.getObject(anchor).battlefieldId();
         if (!bf) return;
 
-        // Gather all units at that battlefield, sorted by Might ascending.
-        std::vector<std::pair<int, GameObjectId>> here;
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (!obj.isUnit()) continue;
-            if (obj.battlefieldId() != bf) continue;
-            here.emplace_back(obj.current_might, id);
-        }
-        std::sort(here.begin(), here.end());
-
+        std::vector<GameObjectId> picks;
         int budget = 4;
-        std::vector<GameObjectId> to_kill;
-        for (auto& [might, id] : here) {
-            if (might <= budget) {
-                to_kill.push_back(id);
-                budget -= might;
+        auto candidates = [&]() {
+            std::vector<GameObjectId> out;
+            for (auto& [id, obj] : ctx.state.objects) {
+                if (!obj.isUnit() || obj.battlefieldId() != bf) continue;
+                if (std::find(picks.begin(), picks.end(), id) != picks.end()) continue;
+                if (obj.controller != ctx.controller && obj.untargetable_by_enemy) continue;
+                if (obj.current_might <= budget) out.push_back(id);
+            }
+            return out;
+        };
+
+        if (!ri_opt.has_value()) {
+            // Direct invocation: lowest Might first (test path only).
+            std::vector<std::pair<int, GameObjectId>> here;
+            for (auto id : candidates()) here.emplace_back(ctx.state.getObject(id).current_might, id);
+            std::sort(here.begin(), here.end());
+            for (auto& [m, id] : here) if (m <= budget) { picks.push_back(id); budget -= m; }
+        } else {
+            auto& ri = *ri_opt;
+            if (ri.resume_point < 20) {
+                if (ri.resume_data.size() <= kCount) ri.resume_data.resize(kCount + 1, 0);
+                ri.resume_data[kCount - 1] = static_cast<int32_t>(*bf);
+                ri.resume_data[kCount] = 0;
+                ri.resume_point = 20;
+            }
+            for (int i = 0; i < ri.resume_data[kCount]; ++i) {
+                auto id = static_cast<GameObjectId>(ri.resume_data[kCount + 1 + i]);
+                picks.push_back(id);
+                if (ctx.state.objectExists(id)) budget -= ctx.state.getObject(id).current_might;
+            }
+            if (ri.resume_point == 21) {
+                GameObjectId got = takenObject(ctx);
+                auto c = candidates();
+                if (got == kInvalidId || std::find(c.begin(), c.end(), got) == c.end()) {
+                    ri.resume_point = 22;
+                } else {
+                    ri.resume_data.push_back(static_cast<int32_t>(got));
+                    ri.resume_data[kCount] += 1;
+                    picks.push_back(got);
+                    budget -= ctx.state.getObject(got).current_might;
+                    ri.resume_point = 20;
+                }
+            }
+            if (ri.resume_point == 20) {
+                auto c = candidates();
+                if (!c.empty()) {
+                    std::vector<Intent> opts;
+                    opts.push_back(valChoice(ctx.controller, 0, "Done choosing units"));
+                    for (auto id : c) opts.push_back(objChoice(ctx.controller, id));
+                    ctx.executor.requestChoice(ctx.controller, std::move(opts),
+                        "Fox-Fire: kill a unit (Might budget " + std::to_string(budget) + ")");
+                    ri.resume_point = 21;
+                    return;
+                }
+                ri.resume_point = 22;
             }
         }
-        for (auto id : to_kill)
-            if (ctx.state.objectExists(id)) ctx.executor.killObject(id);
-        ctx.events.logTrace("FOX-FIRE: killed " + std::to_string(to_kill.size()) +
+        for (auto id : picks)
+            if (ctx.state.objectExists(id) && ctx.state.getObject(id).location.has_value())
+                ctx.executor.killObject(id);
+        ctx.events.logTrace("FOX-FIRE: killed " + std::to_string(picks.size()) +
                             " units (total Might <= 4) at one BF");
     }
     TargetRequirements getTargetRequirements() const override {

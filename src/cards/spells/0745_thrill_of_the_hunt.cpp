@@ -19,50 +19,67 @@ public:
     TargetRequirements getTargetRequirements() const override {
         return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_friendly = true};
     }
+    // "Banish a friendly unit, then its owner plays it to any battlefield,
+    // ignoring its cost." The unit is chosen as the spell is played; its owner
+    // chooses the battlefield after it is banished (resume_point 20/21 —
+    // pickTarget's 6..8 come first, so the two choices compose).
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         auto legal = enumerateLegalTargets(ctx.state, ctx.controller);
         GameObjectId unit_id = pickTarget(ctx, "Thrill of the Hunt", legal);
+        if (unit_id == kInvalidId && ctx.state.chain.resuming.has_value() &&
+            ctx.state.chain.resuming->resume_point == 7)
+            return;   // waiting on the agent
         if (unit_id == kInvalidId || !ctx.state.objectExists(unit_id)) return;
-        auto owner = ctx.state.getObject(unit_id).owner;
-        std::string uname = ctx.state.getObject(unit_id).name;
+        auto& ri_opt = ctx.state.chain.resuming;
+        const bool banished_already = ri_opt.has_value() && ri_opt->resume_point >= 20;
+        const PlayerId owner = ctx.state.getObject(unit_id).owner;
 
-        // Step 1: banish the friendly unit.
-        ctx.executor.banishObject(unit_id);
-        // banishObject pushes to banishment; playIgnoringCost re-zones it, so
-        // drop the duplicate banishment entry.
-        auto& bz = ctx.state.player(owner).banishment;
-        bz.erase(std::remove(bz.begin(), bz.end(), unit_id), bz.end());
-
-        // Step 2: owner plays it to ANY battlefield, ignoring cost. Use
-        // pickMode so the agent records the battlefield choice (one option
-        // per battlefield on the board, not just controlled ones).
-        std::vector<LocationId> locations;
-        std::vector<std::string> labels;
-        for (const auto& bf : ctx.state.battlefields) {
-            locations.push_back(LocationId{BattlefieldLocation{bf.id}});
-            std::string bf_name = "BF#" + std::to_string(static_cast<int>(bf.id));
-            if (ctx.state.objectExists(bf.card_object_id)) {
-                bf_name = ctx.state.getObject(bf.card_object_id).name;
+        if (!banished_already) {
+            if (!ctx.state.getObject(unit_id).location.has_value()) return;
+            const bool token = ctx.state.getObject(unit_id).isToken();
+            ctx.executor.banishObject(unit_id);
+            // playIgnoringCost re-zones it: drop the banishment entry.
+            auto& bz = ctx.state.player(owner).banishment;
+            bz.erase(std::remove(bz.begin(), bz.end(), unit_id), bz.end());
+            // CR 183.1: a banished token ceases to exist — nothing to play.
+            if (token) {
+                if (ri_opt.has_value()) ri_opt->resume_point = 22;
+                return;
             }
-            labels.push_back(bf_name);
+            // It comes back as a new object: no damage, buffs, statuses or roles.
+            auto& u = ctx.state.getObject(unit_id);
+            u.damage_marked = 0;
+            u.buff_count = 0;
+            u.temp_buff_count = 0;
+            u.temp_might_bonus = 0;
+            u.is_stunned = false;
+            u.empowered = 0;
+            u.empower_flip_eot = 0;
+            u.combat_designation = CombatDesignation::None;
         }
-        if (locations.empty()) {
-            // No battlefields — fall back to owner's base.
-            ctx.executor.playIgnoringCost(owner, unit_id,
-                                           LocationId{BaseLocation{owner}});
-            ctx.events.logTrace("THRILL: " + uname + " (no BF) played to base");
+        if (ri_opt.has_value() && ri_opt->resume_point >= 22) return;   // token: done
+
+        std::vector<std::pair<int, std::string>> opts;
+        for (const auto& bf : ctx.state.battlefields) {
+            std::string bf_name = "BF#" + std::to_string(static_cast<int>(bf.id));
+            if (ctx.state.objectExists(bf.card_object_id))
+                bf_name = ctx.state.getObject(bf.card_object_id).name;
+            opts.push_back({static_cast<int>(bf.id), bf_name});
+        }
+        int bf_choice = -1;
+        if (!stepChooseValue(ctx, owner, opts, "Thrill of the Hunt: play it to which battlefield",
+                             20, 10, -1, bf_choice))
+            return;   // the owner is choosing
+        if (ri_opt.has_value()) ri_opt->resume_point = 22;
+        if (bf_choice < 0) {
+            ctx.executor.playIgnoringCost(owner, unit_id, LocationId{BaseLocation{owner}});
+            ctx.events.logTrace("THRILL: no battlefield, played to base");
             return;
         }
-        uint32_t legal_mask = (locations.size() >= 32)
-            ? 0xFFFFFFFFu
-            : ((1u << locations.size()) - 1);
-        int chosen = pickMode(ctx, "Thrill: which battlefield",
-                              static_cast<int>(locations.size()), labels, legal_mask);
-        if (chosen == -1) return;  // yielded for agent input
-        if (chosen < 0 || static_cast<size_t>(chosen) >= locations.size()) chosen = 0;
-        ctx.executor.playIgnoringCost(owner, unit_id, locations[chosen]);
-        ctx.events.logTrace("THRILL: " + uname + " played to " + labels[chosen] +
-                             ", ignoring cost");
+        ctx.executor.playIgnoringCost(owner, unit_id,
+            LocationId{BattlefieldLocation{static_cast<BattlefieldId>(bf_choice)}});
+        ctx.events.logTrace("THRILL: " + ctx.state.getObject(unit_id).name +
+                            " played to BF#" + std::to_string(bf_choice) + ", ignoring cost");
     }
 private:
     const CardDef def_ = [] {

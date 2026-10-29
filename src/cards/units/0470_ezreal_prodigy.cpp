@@ -15,6 +15,18 @@ class EzrealProdigy : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
+    // "Optional additional costs you pay cost [1] or [A] less." Read by the
+    // engine where Accelerate, [Repeat] and "you may pay ... as an additional
+    // cost" are paid (PlayerState::optional_cost_discount): [1] comes off when
+    // the cost has Energy, otherwise [A].
+    void applyPassiveAura(GameState& state, PlayerId controller) const override {
+        for (const auto& [id, obj] : state.objects) {
+            if (obj.card_def_id != cardDefId() || obj.controller != controller) continue;
+            if (!obj.location.has_value()) continue;
+            state.player(controller).optional_cost_discount = 1;
+            return;
+        }
+    }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         // "discard 1, then draw 2" — resumable discard via the executor's
         // pending-choice slot (resume_point 0 = publish, 1 = commit + draw).

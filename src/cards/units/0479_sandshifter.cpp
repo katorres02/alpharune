@@ -14,13 +14,23 @@ namespace {
 class Sandshifter : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
-    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        if (!targets.empty())
-            ctx.executor.killObject(targets[0]);
-    }
+    // "When you play me, kill an enemy unit with 3 [M] or less." The target is
+    // chosen as the trigger is finalized (CR 383.3).
+    unsigned choicesAtFinalization() const override { return kFinalizeTrigger; }
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
-    TargetRequirements getTargetRequirements() const override {
-        return TargetRequirements{.count = 1, .must_be_unit = true, .must_be_enemy = true, .max_might = 3};
+    void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
+        std::vector<GameObjectId> legal;
+        for (auto& [id, obj] : ctx.state.objects) {
+            if (!obj.isUnit() || !obj.location.has_value()) continue;
+            if (obj.controller == ctx.controller) continue;
+            if (obj.untargetable_by_enemy) continue;
+            if (obj.current_might > 3) continue;
+            legal.push_back(id);
+        }
+        GameObjectId picked = pickTarget(ctx, "Sandshifter: kill an enemy unit (3 [M] or less)", legal);
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
+        if (picked == kInvalidId || !ctx.state.objectExists(picked)) return;
+        ctx.executor.killObject(picked);
     }
 private:
     const CardDef def_ = [] {

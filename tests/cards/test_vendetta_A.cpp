@@ -808,12 +808,17 @@ TEST_F(VendettaA, Vendetta_AstralHeron_FirstCardAtBattlefieldDiscountsNextCard) 
     auto heron = addUnit(P1, kAstralHeron, 0, 0);
     auto& mods = state.player(P1).cost_modifiers;
 
-    // Second card this turn: not "your first card".
+    // Second card this turn: not "your first card" — checked as the play
+    // happens (the trigger condition), not at resolution. (Updated 2026-10:
+    // a card played in response no longer cancels the discount.)
+    Card* heron_card = card_registry.get(kAstralHeron);
     state.player(P1).cards_played_this_turn = 2;
-    fireTriggerAs(kAstralHeron, P1, heron, TriggerType::WhenYouPlayACard, exec);
-    EXPECT_TRUE(mods.empty());
+    EXPECT_FALSE(heron_card->triggerCondition(state, heron, P1,
+                                              TriggerType::WhenYouPlayACard, kInvalidId));
 
     state.player(P1).cards_played_this_turn = 1;
+    EXPECT_TRUE(heron_card->triggerCondition(state, heron, P1,
+                                             TriggerType::WhenYouPlayACard, kInvalidId));
     fireTriggerAs(kAstralHeron, P1, heron, TriggerType::WhenYouPlayACard, exec);
     ASSERT_EQ(mods.size(), 1u);
     EXPECT_EQ(mods[0].energy_reduction, 2);

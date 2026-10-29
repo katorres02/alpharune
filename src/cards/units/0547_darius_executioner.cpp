@@ -20,6 +20,30 @@ public:
     }
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
     bool requiresLegion() const override { return true; }
+    // "Other friendly units have +1 [M] here." Here = Darius's location.
+    // applyPassiveAura runs once per on-board instance, so each Darius's
+    // bonus is applied only if that Darius hasn't already given it this pass.
+    void applyPassiveAura(GameState& state, PlayerId controller) const override {
+        std::vector<std::pair<GameObjectId, LocationId>> sources;
+        for (auto& [sid, self] : state.objects)
+            if (self.card_def_id == cardDefId() && self.controller == controller &&
+                self.isUnit() && self.location.has_value())
+                sources.push_back({sid, *self.location});
+        for (auto& [sid, loc] : sources) {
+            for (auto& [id, obj] : state.objects) {
+                if (id == sid || !obj.isUnit() || obj.controller != controller) continue;
+                if (!obj.location.has_value() || !(*obj.location == loc)) continue;
+                bool already = false;
+                for (const auto& ae : obj.aura_effects)
+                    if (ae.source == sid && ae.might_bonus == 1) { already = true; break; }
+                if (already) continue;
+                GameObject::AuraEffect ae;
+                ae.source = sid;
+                ae.might_bonus = 1;
+                obj.aura_effects.push_back(ae);
+            }
+        }
+    }
 private:
     const CardDef def_ = [] {
         CardDef d;

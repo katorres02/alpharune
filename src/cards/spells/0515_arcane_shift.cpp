@@ -21,32 +21,44 @@ public:
                                   .must_be_friendly = true};
     }
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& targets) override {
-        // 1. Banish a friendly unit, then its owner plays it ignoring its cost.
-        if (!targets.empty() && ctx.state.objectExists(targets[0])) {
+        auto& ri = ctx.state.chain.resuming;
+        // 1. Banish a friendly unit, then its owner plays it, ignoring its cost.
+        // Runs once: the owner chooses the play location first
+        // (pickPlayLocation, which leaves resume_point alone) and the damage
+        // target after it (pickTarget, 6..8), so a re-entry at resume_point
+        // >= 6 is past this step.
+        const bool step1_pending = !ri.has_value() || ri->resume_point < 6;
+        if (step1_pending && !targets.empty() && ctx.state.objectExists(targets[0]) &&
+            ctx.state.getObject(targets[0]).isUnit() &&
+            ctx.state.getObject(targets[0]).location.has_value() &&
+            ctx.state.getObject(targets[0]).controller == ctx.controller) {
             GameObjectId unit = targets[0];
             PlayerId owner = ctx.state.getObject(unit).owner;
-            ctx.executor.banishObject(unit);
-            auto& bz = ctx.state.player(owner).banishment;
-            bz.erase(std::remove(bz.begin(), bz.end(), unit), bz.end());
-            ctx.executor.playIgnoringCost(owner, unit, LocationId{BaseLocation{owner}});
-            ctx.events.logTrace("ARCANE SHIFT: banished + replayed a friendly unit");
+            // CR 355.2: the player playing it — its owner — chooses its base
+            // or a battlefield they control.
+            LocationId where;
+            const int r = pickPlayLocation(ctx, unit, where, owner,
+                                           "Arcane Shift: play the unit where?");
+            if (r == -1) return;  // waiting for the owner
+            if (r == 1 && ctx.state.objectExists(unit)) {
+                ctx.executor.banishObject(unit);
+                auto& bz = ctx.state.player(owner).banishment;
+                bz.erase(std::remove(bz.begin(), bz.end(), unit), bz.end());
+                ctx.executor.playIgnoringCost(owner, unit, where);
+                ctx.events.logTrace("ARCANE SHIFT: banished + replayed a friendly unit");
+            }
         }
 
         // 2. Deal 3 to an enemy unit at a battlefield.
-        PlayerId opp = opponent(ctx.controller);
         std::vector<GameObjectId> legal;
         for (auto& [id, obj] : ctx.state.objects) {
-            if (!obj.isUnit() || obj.controller != opp) continue;
+            if (!obj.isUnit() || obj.controller == ctx.controller) continue;
             if (!obj.isAtBattlefield()) continue;
             if (obj.untargetable_by_enemy) continue;
             legal.push_back(id);
         }
         GameObjectId picked = pickTarget(ctx, "Arcane Shift: deal 3 to enemy unit", legal);
-        if (picked == kInvalidId && ctx.state.chain.resuming.has_value() &&
-            ctx.state.chain.resuming->resume_point == 7) {
-            return;  // suspended for agent decision (re-enters; banish-this below
-                     // still runs on the resumed pass once a target is chosen)
-        }
+        if (picked == kInvalidId && ri.has_value() && ri->resume_point == 7) return;  // waiting
         if (picked != kInvalidId && ctx.state.objectExists(picked)) {
             ctx.executor.dealDamage(picked, 3, ctx.source);
             ctx.events.logTrace("ARCANE SHIFT: dealt 3 to an enemy unit");

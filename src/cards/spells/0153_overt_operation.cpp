@@ -15,48 +15,51 @@ namespace {
 class OvertOperation : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
-
+    // "For each friendly unit, you may spend its buff to ready it. Then buff
+    // all friendly units." One yes/no per buffed friendly unit (resume point
+    // 20, resume_data[6] = index into the friendly-unit list).
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         auto friendly_units = [&]() {
             std::vector<GameObjectId> out;
-            for (auto& [id, obj] : ctx.state.objects) {
-                if (obj.isUnit() && obj.controller == ctx.controller &&
-                    obj.location.has_value()) {
+            for (auto& [id, obj] : ctx.state.objects)
+                if (obj.isUnit() && obj.controller == ctx.controller && obj.location.has_value())
                     out.push_back(id);
-                }
-            }
+            std::sort(out.begin(), out.end());
             return out;
         };
-
-        // "you may spend its buff to ready it" — gate the whole spend-to-ready
-        // step on one agent decision; legal only if some friendly unit
-        // actually has a buff to spend.
-        int answer = confirmOptional(ctx, "Overt Operation: spend buffs to ready",
-            [&]() {
-                for (auto id : friendly_units()) {
-                    if (ctx.state.getObject(id).buff_count > 0) return true;
-                }
-                return false;
-            });
-        if (answer == -1) return;  // yielded for agent input
-
-        if (answer == 1) {
-            for (auto id : friendly_units()) {
-                auto& u = ctx.state.getObject(id);
-                if (u.buff_count <= 0) continue;
-                // Spend one buff: -1 [M], then ready.
-                u.buff_count -= 1;
-                u.temp_might_bonus -= 1;
-                u.recomputeMight();
-                ctx.executor.readyObject(id);
-                ctx.events.logTrace("OVERT OPERATION: spent buff to ready " + u.name);
+        auto spend_and_ready = [&](GameObjectId id) {
+            auto& u = ctx.state.getObject(id);
+            if (!ctx.executor.spendBuff(id)) return;   // removes its +1 [M]
+            ctx.executor.readyObject(id);
+            ctx.events.logTrace("OVERT OPERATION: spent buff to ready " + u.name);
+        };
+        const auto units = friendly_units();
+        auto& ri_opt = ctx.state.chain.resuming;
+        if (ri_opt.has_value()) {
+            auto& ri = *ri_opt;
+            while (ri.resume_data.size() < 7) ri.resume_data.push_back(0);
+            size_t i = static_cast<size_t>(ri.resume_data[6]);
+            if (ri.resume_point == 20) {          // answer for units[i]
+                if (takenValue(ctx, 0) == 1 && i < units.size()) spend_and_ready(units[i]);
+                ++i;
             }
+            while (i < units.size() && ctx.state.getObject(units[i]).buff_count <= 0) ++i;
+            ri.resume_data[6] = static_cast<int32_t>(i);
+            if (i < units.size()) {
+                const auto& u = ctx.state.getObject(units[i]);
+                std::vector<Intent> opts = {valChoice(ctx.controller, 0, "Keep " + u.name + "'s buff"),
+                                            valChoice(ctx.controller, 1, "Spend it to ready " + u.name)};
+                ctx.executor.requestChoice(ctx.controller, std::move(opts),
+                                           "Overt Operation: spend " + u.name + "'s buff to ready it?");
+                ri.resume_point = 20;
+                return;
+            }
+            ri.resume_point = 21;
+        } else {
+            for (auto id : units) spend_and_ready(id);   // direct invocation: yes to all
         }
-
-        // "Then buff all friendly units." (Engine buff = +1 [M].)
-        for (auto id : friendly_units()) {
-            ctx.executor.buffUnit(id);
-        }
+        // "Then buff all friendly units." (buffUnit skips units that have one.)
+        for (auto id : friendly_units()) ctx.executor.buffUnit(id);
         ctx.events.logTrace("OVERT OPERATION: buffed all friendly units");
     }
 private:
