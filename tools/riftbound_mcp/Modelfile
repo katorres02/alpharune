@@ -1,0 +1,10 @@
+# "riftbound" model: Qwen3.5 with parameters tuned for tool use.
+# Create:  ollama create riftbound -f Modelfile
+# Swap the base for qwen3.5:9b if your machine has the memory for it.
+FROM qwen3.5:4b
+
+# More deterministic answers: better at picking tools and reporting numbers
+PARAMETER temperature 0.2
+PARAMETER top_p 0.9
+# Context: enough for deck lists and results without exhausting memory
+PARAMETER num_ctx 16384
