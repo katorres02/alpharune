@@ -56,31 +56,20 @@ La GPU funciona dentro de WSL2 sin instalar drivers adicionales en Linux.
    ```
 
    Reinicia cuando lo pida y crea tu usuario de Ubuntu.
-3. En la terminal de Ubuntu, comprueba que se ve la GPU:
+3. En la terminal de Ubuntu, corre el script de instalación. Instala las
+   dependencias, comprueba la GPU, instala Claude Code, clona y compila el
+   motor, corre sus tests y prepara PyTorch con CUDA. Es seguro correrlo de
+   nuevo si algo falla a la mitad.
 
    ```bash
-   nvidia-smi
+   curl -fsSL https://raw.githubusercontent.com/katorres02/alpharune/radiance/scripts/training/setup_ubuntu.sh -o setup_ubuntu.sh
+   bash setup_ubuntu.sh
    ```
 
-   Tiene que aparecer la RTX 4060 Ti. Si no aparece, el driver de Windows está
-   desactualizado.
-4. Instala Node.js y Claude Code dentro de Ubuntu:
-
-   ```bash
-   sudo apt update && sudo apt install -y nodejs npm git
-   sudo npm install -g @anthropic-ai/claude-code
-   ```
-
-5. Clona tu fork:
-
-   ```bash
-   mkdir -p ~/code && cd ~/code
-   git clone git@github.com:katorres02/alpharune.git
-   cd alpharune && git checkout radiance
-   ```
-
-   Si no tienes llave SSH en esa PC, usa la URL `https://github.com/katorres02/alpharune.git`.
-6. En Windows, evita que la PC se duerma de noche: Configuración → Sistema →
+   Si dice que no ve la GPU, actualiza el driver de NVIDIA en Windows y vuelve
+   a correrlo. El mismo script sirve en una PC con Ubuntu instalado
+   directamente, sin Windows; ahí ofrece instalar el driver de NVIDIA.
+4. En Windows, evita que la PC se duerma de noche: Configuración → Sistema →
    Energía → "Suspender" en "Nunca" mientras esté enchufada.
 
 ## Paso 2: que Claude Code construya el entrenamiento
@@ -109,6 +98,17 @@ Programa su ejecución en Windows:
    tarea".
 
 El script se corta solo a las 6 horas, guarda el modelo y escribe un reporte.
+
+Si la PC usa Ubuntu directamente, sin Windows, prográmalo con cron:
+
+```bash
+bash ~/code/alpharune/scripts/training/install_nightly.sh        # 1:00 a. m.
+bash ~/code/alpharune/scripts/training/install_nightly.sh 23 30  # otra hora
+bash ~/code/alpharune/scripts/training/install_nightly.sh --remove
+```
+
+En WSL2, cron solo corre mientras Ubuntu está abierto, por eso ahí conviene
+el Programador de tareas de Windows.
 
 ## Paso 4: revisar cada mañana
 
