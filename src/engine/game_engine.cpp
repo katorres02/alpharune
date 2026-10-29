@@ -843,6 +843,7 @@ void GameEngine::beginningStep() {
         if (obj.isUnit()) units_to_kill.push_back(id);
         else if (obj.isGear()) gear_to_kill.push_back(id);
     }
+    effect_executor_->snapshotDyingTogether(units_to_kill);
     for (auto id : units_to_kill) {
         killUnit(id);
     }
@@ -1390,8 +1391,70 @@ void GameEngine::settleChosenTargetDiscount(ChainItemId item_id) {
                      std::to_string(give_e) + " Energy, " + std::to_string(give_p) + " [A]");
 }
 
+void GameEngine::orderSiblingTriggers(ChainItemId item_id) {
+    auto find = [this](ChainItemId id) -> ChainItem* {
+        for (auto& ci : state_.chain.items) if (ci.id == id) return &ci;
+        return nullptr;
+    };
+    ChainItem* it = find(item_id);
+    if (!it || !it->trigger_order_pending) return;
+    const ChainItemId group = it->trigger_group;
+    const PlayerId chooser = it->controller;
+    const TriggerType fired = it->fired_trigger;
+    // The abilities not placed yet: this slot's and its later siblings'.
+    std::vector<ChainItemId> open = {item_id};
+    for (const auto& ci : state_.chain.items)
+        if (ci.id != item_id && ci.trigger_group == group && ci.trigger_order_pending)
+            open.push_back(ci.id);
+    it->trigger_order_pending = false;
+    if (open.size() < 2) return;
+
+    std::vector<Intent> options;
+    for (size_t k = 0; k < open.size(); ++k) {
+        const ChainItem* s = find(open[k]);
+        const Card* c = card_registry_.get(s->card_def_id);
+        std::string label = c ? c->triggeredAbilityLabel(fired, s->trigger_index)
+                              : "ability " + std::to_string(s->trigger_index + 1);
+        if (state_.objectExists(s->source) &&
+            s->card_def_id != state_.getObject(s->source).card_def_id)
+            label = "copied: " + label;
+        Intent i;
+        i.type = IntentType::MakeChoice;
+        i.player = chooser;
+        i.chosen_value = static_cast<int>(k);
+        i.choice_label = label;
+        options.push_back(std::move(i));
+    }
+    const std::string name = state_.objectExists(it->source)
+        ? state_.getObject(it->source).name : std::string("?");
+    const Intent chosen = decideNow(chooser, options,
+        "order the triggered abilities of " + name +
+        ": which goes on the chain now (the rest go above it and resolve first)");
+    int pick = chosen.chosen_value.value_or(0);
+    if (pick < 0 || pick >= static_cast<int>(open.size())) pick = 0;
+    if (pick == 0) return;
+    // Siblings share source, controller and event: swapping which ability
+    // each slot holds is the reordering.
+    ChainItem* a = find(item_id);
+    ChainItem* b = find(open[pick]);
+    if (!a || !b) return;
+    std::swap(a->card_def_id, b->card_def_id);
+    std::swap(a->trigger_index, b->trigger_index);
+    events_.logTrace("TRIGGER_ORDER: " + name + " — " + options[pick].choice_label +
+                     " goes on the chain first");
+}
+
 void GameEngine::chooseTargetsAtFinalize(ChainItem& item) {
     if (item.card_def_id == kInvalidId) return;
+    if (item.trigger_order_pending) {
+        // The order choice may reallocate the chain: carry on with the item
+        // found again by id.
+        const ChainItemId id = item.id;
+        orderSiblingTriggers(id);
+        for (auto& ci : state_.chain.items)
+            if (ci.id == id) { chooseTargetsAtFinalize(ci); return; }
+        return;
+    }
     if (item.is_ability && !item.is_activated_ability) {
         // A triggered ability: its "you may", costs and targets (CR 383.3).
         // (`targets` carries the triggering event's subject, not a choice.)
@@ -1637,7 +1700,7 @@ void GameEngine::runFinalizePass(ChainItem& item) {
     state_.chain.resuming = item;
     state_.chain.resuming->finalizing = true;
 
-    constexpr int kMaxChoices = 16;
+    constexpr int kMaxChoices = 512;   // one per answer (split-damage targets, ...)
     for (int iter = 0; iter < kMaxChoices; ++iter) {
         resolveSpell(*state_.chain.resuming);
         if (!effect_executor_->hasPendingChoice()) break;
@@ -2514,6 +2577,7 @@ void GameEngine::resolveSpell(const ChainItem& item) {
                     item.controller, item.source};
     ctx.firing_trigger = item.fired_trigger;
     ctx.registry = &card_registry_;  // lets effects dispatch into other cards' logic
+    ctx.trigger_index = item.trigger_index;
 
     if (card) {
         if (item.is_ability) {
@@ -5823,6 +5887,8 @@ void GameEngine::processLethalDamage() {
 
         if (lethal) to_kill.push_back(id);
     }
+    // They die together: each one's last-known information sees the others.
+    effect_executor_->snapshotDyingTogether(to_kill);
     for (auto id : to_kill) {
         killUnit(id);
     }
@@ -7635,6 +7701,8 @@ void GameEngine::killUnit(GameObjectId unit_id) {
             }
         }
     }
+    // Replacements an effect left on it (Unlicensed Armory).
+    if (effect_executor_->applyGrantedDeathReplacements(unit_id)) return;
 
     // Structured replacement effects (Card::hasReplacementEffect /
     // applyReplacement). Preferred over the legacy ability_text scan below:

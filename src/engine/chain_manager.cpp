@@ -435,7 +435,10 @@ void ChainManager::stepResolve(
     // publish a pending choice via `EffectExecutor::requestChoice` and set
     // `resuming->resume_point`; we then query the agent, record the choice
     // for the Card to read on re-entry, and re-call resolve_spell.
-    constexpr int kMaxResumeIterations = 16;
+    // One iteration per agent answer. Split damage asks once per point of
+    // damage and Chronobreak once per unit, so the bound is generous; it only
+    // stops a Card stuck re-publishing the same choice.
+    constexpr int kMaxResumeIterations = 512;
     int iter = 0;
     while (true) {
         if (++iter > kMaxResumeIterations) {

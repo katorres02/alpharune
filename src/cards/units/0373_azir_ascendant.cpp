@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -73,52 +74,62 @@ public:
         if (!ctx.state.objectExists(ctx.source)) return;
         GameObjectId source = ctx.source;
 
-        // Pair pick: (1) the friendly unit to swap with, (2) optionally one of
-        // its Equipment to attach to me (legal_b = gear on the chosen unit).
-        // GAP: the equipment move is printed "you may", but pickTargetPair has
-        // no decline path — if the chosen unit has gear, one is attached.
+        // "Choose a unit you control" — made as the ability is activated.
         std::vector<GameObjectId> legal_a = enumerateLegalTargets(ctx.state, ctx.controller);
         if (!targets.empty()) legal_a = {targets[0]};
-        auto legal_b_fn = [&ctx](GameObjectId picked_a) {
-            std::vector<GameObjectId> gear;
-            if (!ctx.state.objectExists(picked_a)) return gear;
-            for (auto gid : ctx.state.getObject(picked_a).attachments) {
-                if (ctx.state.objectExists(gid) && ctx.state.getObject(gid).isGear()) {
-                    gear.push_back(gid);
-                }
-            }
-            return gear;
-        };
-        auto pair = pickTargetPair(ctx, "Azir: choose a unit to swap with",
-                                   legal_a, legal_b_fn);
+        const GameObjectId picked = pickTarget(ctx, "Azir: choose a unit to swap with", legal_a);
+        if (ctx.executor.hasPendingChoice()) return;   // waiting for the agent
         if (finalizingChoices(ctx)) return;   // choices end here (CR 383.3)
-        GameObjectId picked = pair.first;
-        if (picked == kInvalidId) {
-            // Either suspended (resume_point != 13) or fizzled (no targets).
-            return;
-        }
+        if (picked == kInvalidId) return;     // fizzled (no target / mistarget)
         if (!ctx.state.objectExists(picked) || picked == source) return;
 
-        auto& azir = ctx.state.getObject(source);
-        auto& other = ctx.state.getObject(picked);
+        auto& ro = ctx.state.chain.resuming;
+        if (ro.has_value() && ro->resume_data.size() < kSwapped + 1)
+            ro->resume_data.resize(kSwapped + 1, 0);
+        if (!ro.has_value() || ro->resume_data[kSwapped] == 0) {
+            if (ro.has_value()) ro->resume_data[kSwapped] = 1;   // once, across re-entries
+            auto& azir = ctx.state.getObject(source);
+            auto& other = ctx.state.getObject(picked);
 
-        // Mark once-per-turn used (store turn_number+1 so 0 = never).
-        azir.card_counters["azir_used_turn"] = ctx.state.turn.turn_number + 1;
+            // Mark once-per-turn used (store turn_number+1 so 0 = never).
+            azir.card_counters["azir_used_turn"] = ctx.state.turn.turn_number + 1;
 
-        // Swap locations. Capture before moving.
-        auto azir_loc = azir.location;
-        auto other_loc = other.location;
-        moveToLoc(ctx.executor, source, other_loc);
-        moveToLoc(ctx.executor, picked, azir_loc);
-        ctx.events.logTrace("AZIR ASCENDANT: swapped locations with " + other.name);
-
-        // Optional equipment transfer (pair.second).
-        if (pair.second != kInvalidId && ctx.state.objectExists(pair.second)) {
-            reattachGear(ctx, pair.second, picked, source);
+            // Swap locations. Capture before moving.
+            auto azir_loc = azir.location;
+            auto other_loc = other.location;
+            moveToLoc(ctx.executor, source, other_loc);
+            moveToLoc(ctx.executor, picked, azir_loc);
+            ctx.events.logTrace("AZIR ASCENDANT: swapped locations with " + other.name);
         }
+
+        // "If it's equipped, you may attach one of its Equipment to me." —
+        // decided as it resolves: first whether to (no / yes), then which.
+        if (!ctx.state.objectExists(picked) || !ctx.state.objectExists(source)) return;
+        std::vector<GameObjectId> equipment;
+        for (auto gid : ctx.state.getObject(picked).attachments)
+            if (ctx.state.objectExists(gid) && isEquipment(ctx.state.getObject(gid)))
+                equipment.push_back(gid);
+        std::sort(equipment.begin(), equipment.end());
+        int go = 0;
+        const std::vector<std::pair<int, std::string>> yes_no =
+            equipment.empty() ? std::vector<std::pair<int, std::string>>{}
+                              : std::vector<std::pair<int, std::string>>{
+                                    {0, "Don't attach"}, {1, "Attach one of its Equipment to Azir"}};
+        if (!stepChooseValue(ctx, ctx.controller, yes_no,
+                             "Azir: attach one of its Equipment to me?",
+                             /*rp=*/20, /*slot=*/10, /*fallback=*/0, go))
+            return;   // waiting for the agent
+        if (go != 1) return;
+        GameObjectId gear = kInvalidId;
+        if (!stepChooseObject(ctx, ctx.controller, equipment, "Azir: which Equipment",
+                              /*rp=*/22, /*slot=*/11, gear))
+            return;   // waiting for the agent
+        if (gear != kInvalidId && ctx.state.objectExists(gear))
+            reattachGear(ctx, gear, picked, source);
     }
 
 private:
+    static constexpr size_t kSwapped = 12;   // resume_data: 1 = the swap was done
     static void moveToLoc(EffectExecutor& exec, GameObjectId obj,
                           const std::optional<LocationId>& loc) {
         if (!loc) return;

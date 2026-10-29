@@ -18,6 +18,10 @@ public:
 
     // ── Equip [1][B] ──
     bool hasEquipAbility() const override { return true; }
+    // [Weaponmaster] prices it through this (CR 821.1.c).
+    EquipCostSpec equipCost(const GameState&, GameObjectId, GameObjectId) const override {
+        return {true, 1, {{Domain::Mind}}};   // [Equip] [1][B]
+    }
     bool onEquip(CardContext& ctx, GameObjectId unit) override {
         return payEquipAndAttach(ctx, ctx.source, unit, /*energy=*/1, Domain::Mind);
     }

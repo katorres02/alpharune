@@ -251,7 +251,7 @@ TEST_F(AuditFix0Test, SentinelAdept_EquipsChosenGearForFree) {
     auto self = addUnit(P1, kSentinelAdept, /*might=*/3, /*at_bf=*/0);
     auto gear = addGear(P1, kLongSword, /*at_bf=*/0);  // +2M, [Equipment]
 
-    EffectExecutor exec(state, events, card_db);
+    EffectExecutor exec(state, events, card_db, &card_registry);   // Equip costs come from the cards
     int dirk_bonus = state.getObject(gear).might_bonus;
     ASSERT_GT(dirk_bonus, 0);
 

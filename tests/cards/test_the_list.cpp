@@ -50,8 +50,24 @@ GameObjectId taggedUnit(GameState& s, PlayerId owner, int might,
     return id;
 }
 
+// Answers The List's naming steps (a range of the sorted tag list, then a
+// tag in it) so that `tag` is named.
+std::function<Intent(const std::vector<Intent>&)> nameTag(std::string tag) {
+    return [tag](const std::vector<Intent>& legal) -> Intent {
+        for (auto& i : legal) if (i.choice_label == tag) return i;
+        for (auto& i : legal) {
+            const auto sep = i.choice_label.find(" ... ");
+            if (sep == std::string::npos) continue;
+            if (i.choice_label.substr(0, sep) <= tag && tag <= i.choice_label.substr(sep + 5))
+                return i;
+        }
+        ADD_FAILURE() << "tag " << tag << " not offered";
+        return legal.front();
+    };
+}
+
 // "As you play this, name a tag" is the player's choice (2026-10 audit): an
-// AsYouPlayMe choice among the tags on units on the board / in hand, sorted.
+// AsYouPlayMe choice among every tag in the card pool, sorted.
 TEST_F(CardTestFixture, TheList_PlayerNamesTheTag) {
     auto gear = makeList(state, P1);
     taggedUnit(state, P2, 3, {"Poro"});
@@ -60,10 +76,7 @@ TEST_F(CardTestFixture, TheList_PlayerNamesTheTag) {
 
     EffectExecutor exec(state, events, card_db, &card_registry);
     driveResumableTrigger(kTheList, P1, gear,
-        [](const std::vector<Intent>& legal) -> Intent {
-            for (auto& i : legal) if (i.chosen_value == 1) return i;
-            return legal.front();
-        }, exec, TriggerType::AsYouPlayMe);
+nameTag("Poro"), exec, TriggerType::AsYouPlayMe);
 
     EXPECT_EQ(state.getObject(gear).string_state["named_tag"], "Poro");
 }
@@ -75,10 +88,7 @@ TEST_F(CardTestFixture, TheList_CanNameAFriendlyTag) {
 
     EffectExecutor exec(state, events, card_db, &card_registry);
     driveResumableTrigger(kTheList, P1, gear,
-        [](const std::vector<Intent>& legal) -> Intent {
-            for (auto& i : legal) if (i.chosen_value == 1) return i;
-            return legal.front();
-        }, exec, TriggerType::AsYouPlayMe);
+nameTag("Yordle"), exec, TriggerType::AsYouPlayMe);
 
     EXPECT_EQ(state.getObject(gear).string_state["named_tag"], "Yordle");
 }

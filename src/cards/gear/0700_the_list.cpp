@@ -25,35 +25,29 @@ public:
     }
 
     // "As you play this, name a tag." A player choice, made as it is played
-    // (AsYouPlayMe; pickMode over the candidate tags). Candidates: every tag
-    // on a unit on the board or in the player's hand, sorted, at most 32.
-    // GAP: a tag that appears on none of those cards can't be named.
+    // (AsYouPlayMe). Any tag can be named: the candidates are every tag on a
+    // card in the card pool (CardDB), sorted. There are more of them than
+    // MakeChoice has int slots, so the name is asked in steps — a range of the
+    // list, then a tag within it (stepChooseFromList) — each option its own slot.
     TriggerType triggerType() const override { return TriggerType::AsYouPlayMe; }
-    static std::vector<std::string> candidateTags(const GameState& state, PlayerId player) {
+    static std::vector<std::string> candidateTags(const CardDB& db) {
         std::set<std::string> tags;
-        for (auto& [id, obj] : state.objects) {
-            if (!obj.isUnit()) continue;
-            const bool on_board = obj.location.has_value();
-            const bool in_my_hand = obj.zone == ZoneType::Hand && obj.owner == player;
-            if (!on_board && !in_my_hand) continue;
-            for (const auto& t : obj.tags) tags.insert(t);
-        }
-        std::vector<std::string> out(tags.begin(), tags.end());
-        if (out.size() > 32) out.resize(32);
-        return out;
+        for (const auto& [id, d] : db.all())
+            for (const auto& t : d.tags) tags.insert(t);
+        return {tags.begin(), tags.end()};
     }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
         if (!ctx.state.objectExists(ctx.source)) return;
-        // The candidate list is recomputed identically on re-entry (nothing
-        // changes between the offer and the answer).
-        auto tags = candidateTags(ctx.state, ctx.controller);
-        if (tags.empty()) {
+        // The list depends only on the card pool: identical on re-entry.
+        const auto tags = candidateTags(ctx.executor.cardDB());
+        int m = -1;
+        if (!stepChooseFromList(ctx, ctx.controller, tags, "The List: name a tag",
+                                /*rp=*/20, /*slot=*/10, m))
+            return;   // waiting for agent
+        if (m < 0 || m >= static_cast<int>(tags.size())) {
             ctx.events.logTrace("THE LIST: no tag to name");
             return;
         }
-        int m = pickMode(ctx, "The List: name a tag", static_cast<int>(tags.size()), tags);
-        if (m == -1) return;   // waiting for agent
-        if (m < 0 || m >= static_cast<int>(tags.size())) return;
         ctx.state.getObject(ctx.source).string_state["named_tag"] = tags[m];
         ctx.events.logTrace("THE LIST: named tag \"" + tags[m] + "\"");
     }

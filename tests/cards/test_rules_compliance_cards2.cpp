@@ -256,8 +256,8 @@ protected:
         card->onResolve(ctx, targets);
         int guard = 0;
         while (exec.hasPendingChoice()) {
-            // ChainManager::stepResolve allows 16 entries per resolution.
-            ASSERT_LT(++guard, 16) << "more choices than the chain's resume loop allows";
+            // ChainManager::stepResolve allows 512 entries per resolution.
+            ASSERT_LT(++guard, 512) << "more choices than the chain's resume loop allows";
             auto pending = exec.consumePendingChoice();
             exec.recordChoice(picker(pending.legal));
             card->onResolve(ctx, targets);
@@ -286,7 +286,7 @@ protected:
         card->onTrigger(ctx, {});
         int guard = 0;
         while (exec.hasPendingChoice()) {
-            ASSERT_LT(++guard, 16) << "more choices than the chain's resume loop allows";
+            ASSERT_LT(++guard, 512) << "more choices than the chain's resume loop allows";
             auto pending = exec.consumePendingChoice();
             exec.recordChoice(picker(pending.legal));
             card->onTrigger(ctx, {});

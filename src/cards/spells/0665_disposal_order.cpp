@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -14,9 +15,15 @@ namespace {
 class DisposalOrder : public SpellCard {
 public:
     const CardDef& def() const override { return def_; }
+    // "Choose one — Choose up to 3 cards from opponents' trashes. Their owners
+    //  recycle them. / Draw 1." The mode and the cards (targets: a trash is
+    // public, CR 355.10.a) are chosen as the spell is played (CR 355.3,
+    // 355.5); the player picks them one at a time (pickSeveral).
+    unsigned choicesAtFinalization() const override { return kFinalizeResolve; }
+
     void onResolve(CardContext& ctx,
                    const std::vector<GameObjectId>& /*targets*/) override {
-        PlayerId opp = opponent(ctx.controller);
+        const PlayerId opp = opponent(ctx.controller);
         bool opp_trash_has_cards = !ctx.state.player(opp).trash.empty();
         // If the opponent's trash is empty, mode 0 is illegal; only mode 1.
         uint32_t legal = opp_trash_has_cards ? 0b11u : 0b10u;
@@ -26,33 +33,47 @@ public:
         int mode = pickMode(ctx, "Disposal Order: choose one", /*num_modes=*/2,
                             kModes, legal);
         if (mode == -1) return;       // waiting on agent
+        std::vector<GameObjectId> chosen;
+        if (mode == 0) {
+            std::vector<int> cards;
+            for (auto cid : ctx.state.player(opp).trash) cards.push_back(static_cast<int>(cid));
+            auto picks = pickSeveral(ctx, ctx.controller,
+                                     "Disposal Order: choose a card from the opponent's trash",
+                                     cards, /*values=*/false, {}, /*min=*/0, /*max=*/3, kPickSlot);
+            if (!picks) return;       // waiting on agent
+            for (int v : *picks) chosen.push_back(static_cast<GameObjectId>(v));
+        }
+        if (finalizingChoices(ctx)) return;   // choices end here (CR 355)
         if (mode == -2) {             // no legal mode (shouldn't happen — draw always legal)
             ctx.executor.drawCards(ctx.controller, 1);
             return;
         }
 
         if (mode == 0) {
-            // Recycle up to 3 cards from the opponent's trash. The owner (the
-            // opponent) recycles them. We take the first up-to-3 cards from
-            // their trash (the agent-choice of WHICH cards is not surfaced —
-            // documented approximation: take the most recent up to 3).
-            auto& opp_ps = ctx.state.player(opp);
+            // Their owners recycle them: the chosen cards still in a trash.
             std::vector<GameObjectId> to_recycle;
-            for (auto it = opp_ps.trash.rbegin();
-                 it != opp_ps.trash.rend() && (int)to_recycle.size() < 3; ++it) {
-                to_recycle.push_back(*it);
+            for (auto cid : chosen) {
+                if (!ctx.state.objectExists(cid)) continue;
+                const auto& t = ctx.state.player(ctx.state.getObject(cid).owner).trash;
+                if (std::find(t.begin(), t.end(), cid) != t.end()) to_recycle.push_back(cid);
             }
             if (!to_recycle.empty()) {
+                for (auto cid : to_recycle) {
+                    auto& t = ctx.state.player(ctx.state.getObject(cid).owner).trash;
+                    t.erase(std::remove(t.begin(), t.end(), cid), t.end());
+                }
                 ctx.executor.recycleCards(opp, to_recycle);
                 ctx.events.logTrace("DISPOSAL ORDER: opponent recycles " +
                                     std::to_string(to_recycle.size()) +
-                                    " card(s) from trash");
+                                    " chosen card(s) from trash");
             }
         } else {
             ctx.executor.drawCards(ctx.controller, 1);
             ctx.events.logTrace("DISPOSAL ORDER: draw 1");
         }
     }
+private:
+    static constexpr size_t kPickSlot = 8;   // pickSeveral: 8 .. 8+2+3
 private:
     const CardDef def_ = [] {
         CardDef d;

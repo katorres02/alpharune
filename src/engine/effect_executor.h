@@ -106,6 +106,14 @@ public:
     /// Fill GameObject::last_known from the object's current state (called by
     /// the kill paths just before it dies).
     void snapshotLastKnown(GameObjectId id);
+    /// Snapshot a group of units that die at once (cleanup's lethal-damage
+    /// pass), so each one's last-known information sees the others still there.
+    void snapshotDyingTogether(const std::vector<GameObjectId>& ids);
+    /// The death replacements effects left on `unit` (Card::
+    /// applyGrantedDeathReplacement). True if one applied: it does not die.
+    bool applyGrantedDeathReplacements(GameObjectId unit);
+    /// The card registry, when set (null in bare tests).
+    const CardRegistry* cardRegistry() const { return card_registry_; }
     void drawCards(PlayerId player, int count);
     void bounceToHand(GameObjectId target);
     void giveTemporaryMight(GameObjectId target, int amount, int minimum = 0);

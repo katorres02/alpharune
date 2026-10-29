@@ -819,7 +819,7 @@ TEST_F(WeaponmasterTest, ArmedAssailantEquipsAvailableEquipment) {
     auto gear = addEquipmentGear(P1, kLongSword, /*at_bf=*/0);
     int gear_bonus = state.getObject(gear).might_bonus;
 
-    EffectExecutor exec(state, events, card_db);
+    EffectExecutor exec(state, events, card_db, &card_registry);   // Equip costs come from the cards
     fireWeaponmasterTrigger(wm, kArmedAssailant, exec);
 
     EXPECT_EQ(state.getObject(gear).attached_to, std::optional<GameObjectId>(wm))
@@ -839,7 +839,7 @@ TEST_F(WeaponmasterTest, OrnnDetachesGearFromOtherUnitToSelf) {
 
     auto ornn = addUnit(P1, kOrnnForgeGod, /*might=*/0, /*at_bf=*/0);
 
-    EffectExecutor exec(state, events, card_db);
+    EffectExecutor exec(state, events, card_db, &card_registry);   // Equip costs come from the cards
     fireWeaponmasterTrigger(ornn, kOrnnForgeGod, exec);
 
     EXPECT_EQ(state.getObject(gear).attached_to, std::optional<GameObjectId>(ornn))

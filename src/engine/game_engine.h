@@ -661,6 +661,10 @@ private:
     /// payment; clearDeclinedCostModifiers re-offers them afterwards.
     void decideOptionalCostModifiers(PlayerId player, GameObjectId card_obj);
     void clearDeclinedCostModifiers(PlayerId player);
+    /// Several triggered abilities of one card on one event (ChainItem::
+    /// trigger_group): as the first not-yet-placed one is finalized, its
+    /// controller chooses which ability takes that slot on the chain.
+    void orderSiblingTriggers(ChainItemId item_id);
     // [Show Off] (CR 832): offered as a played card's chain item is finalized.
     void chooseShowOff(ChainItem& item);
     void runFinalizePass(ChainItem& item);

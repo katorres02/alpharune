@@ -18,6 +18,10 @@ class ProtectorsShield : public GearCard {
 public:
     const CardDef& def() const override { return def_; }
     bool hasEquipAbility() const override { return true; }
+    // [Weaponmaster] prices it through this (CR 821.1.c).
+    EquipCostSpec equipCost(const GameState&, GameObjectId, GameObjectId) const override {
+        return {true, 1, {}};   // [Equip] [1]
+    }
     KeywordSet equippedKeywords() const override { KeywordSet k; k.set(Keyword::Tank); return k; }
     bool onEquip(CardContext& ctx, GameObjectId unit) override {
         if (!ctx.state.objectExists(unit)) return false;

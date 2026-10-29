@@ -17,6 +17,10 @@ public:
     const CardDef& def() const override { return def_; }
 
     bool hasEquipAbility() const override { return true; }
+    // [Weaponmaster] prices it through this (CR 821.1.c).
+    EquipCostSpec equipCost(const GameState&, GameObjectId, GameObjectId) const override {
+        return {true, 0, {def().domains}};   // [Equip] [C] (my Domain)
+    }
     bool onEquip(CardContext& ctx, GameObjectId unit) override {
         // [C] = Chaos-domain power, no energy (mirrors original
         // SimpleEquipGear(460, Domain::Chaos) with energy_cost 0).

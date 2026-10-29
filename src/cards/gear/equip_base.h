@@ -194,6 +194,9 @@ public:
     bool onEquip(CardContext& ctx, GameObjectId unit) override {
         return standardEquip(ctx, ctx.source, unit, energy_cost_, equip_domain_);
     }
+    EquipCostSpec equipCost(const GameState&, GameObjectId, GameObjectId) const override {
+        return {true, energy_cost_, {{equip_domain_}}};   // [Equip] [n][domain]
+    }
 
 protected:
     Domain equip_domain_;
@@ -207,6 +210,9 @@ public:
         : energy_cost_(energy_cost) {}
 
     bool hasEquipAbility() const override { return true; }
+    EquipCostSpec equipCost(const GameState&, GameObjectId, GameObjectId) const override {
+        return {true, energy_cost_, {{}}};   // [Equip] [n][A]
+    }
     bool onEquip(CardContext& ctx, GameObjectId unit) override {
         auto& state = ctx.state;
         auto player = ctx.controller;

@@ -206,8 +206,8 @@ protected:
         card->onResolve(ctx, targets);
         int guard = 0;
         while (exec.hasPendingChoice()) {
-            // ChainManager::stepResolve allows 16 entries per resolution.
-            ASSERT_LT(++guard, 16) << "more choices than the chain's resume loop allows";
+            // ChainManager::stepResolve allows 512 entries per resolution.
+            ASSERT_LT(++guard, 512) << "more choices than the chain's resume loop allows";
             auto pending = exec.consumePendingChoice();
             exec.recordChoice(picker(pending.legal));
             card->onResolve(ctx, targets);
@@ -576,6 +576,36 @@ TEST_F(RulesCardsTest, RulesCards_CR445_AvaAchiever_NotOfferedWhenPowerCantBePai
 }
 
 // ═══ B. Split damage (CR 355.14) ════════════════════════════════════════════
+// The friendly unit and the split's targets are chosen as the spell / ability
+// is finalized (splitDamageTargets); the division as it resolves
+// (splitDamageResolve). A kInvalidId in `order` answers "Done".
+namespace {
+// `seen` is RulesCardsTest::Seen (a template: the fixture's type is protected).
+template <typename SeenT = int>
+Picker splitScript(std::vector<GameObjectId> order, SeenT* seen = nullptr,
+                   std::function<void(size_t)> on_answer = nullptr) {
+    auto next = std::make_shared<size_t>(0);
+    return [order, seen, next, on_answer](const std::vector<Intent>& legal) -> Intent {
+        if constexpr (!std::is_same_v<SeenT, int>) {
+            if (seen) {
+                ++seen->prompts;
+                for (const auto& i : legal)
+                    if (!i.chosen_objects.empty()) seen->offered.push_back(i.chosen_objects[0]);
+            }
+        }
+        const size_t k = *next;
+        ++*next;
+        if (on_answer) on_answer(k);
+        const GameObjectId want = k < order.size() ? order[k] : kInvalidId;
+        for (const auto& i : legal)
+            if (!i.chosen_objects.empty() && i.chosen_objects[0] == want) return i;
+        for (const auto& i : legal)
+            if (i.chosen_objects.empty() && i.chosen_value.value_or(-1) == kPickSeveralDone)
+                return i;
+        return legal.empty() ? Intent{} : legal.front();
+    };
+}
+}  // namespace
 
 TEST_F(RulesCardsTest, RulesCards_CR355_14_AlphaStrike_ControllerMayPutAllDamageOnOneUnit) {
     EffectExecutor exec(state, events, card_db, &card_registry);
@@ -586,9 +616,9 @@ TEST_F(RulesCardsTest, RulesCards_CR355_14_AlphaStrike_ControllerMayPutAllDamage
     auto spell = addToHand(P1, kAlphaStrike);
     Seen seen;
 
-    driveSpell(kAlphaStrike, P1, spell, {striker}, yesThen(e1, &seen), exec);
+    driveSpell(kAlphaStrike, P1, spell, {}, splitScript({striker, e1, kInvalidId}, &seen), exec);
 
-    EXPECT_EQ(seen.prompts, 4) << "CR 355.14.e: the division is decided at resolution";
+    EXPECT_EQ(seen.prompts, 3) << "the friendly unit, one target, then Done";
     EXPECT_FALSE(seen.wasOffered(in_base)) << "\"enemy units at battlefields\" only";
     EXPECT_TRUE(inTrash(P2, e1))
         << "CR 355.14: all 4 damage on the 3 [M] unit kills it (an even spread would not)";
@@ -604,10 +634,12 @@ TEST_F(RulesCardsTest, RulesCards_CR355_14_AlphaStrike_DivisionFollowsTheControl
     auto e2 = addUnit(P2, kInvalidId, 5, /*at_bf=*/1);
     auto spell = addToHand(P1, kAlphaStrike);
 
-    driveSpell(kAlphaStrike, P1, spell, {striker}, inOrder({e1, e2, e2, e2}), exec);
+    // Targets e1, e2 (then no unit is left to offer); the 2 damage beyond the
+    // first point each both go to e2.
+    driveSpell(kAlphaStrike, P1, spell, {}, splitScript({striker, e1, e2, e2, e2}), exec);
 
     EXPECT_EQ(state.getObject(e1).damage_marked, 1) << "CR 355.14.f-g: at least 1 each";
-    EXPECT_EQ(state.getObject(e2).damage_marked, 3) << "CR 355.14.e: 1 + 3, as chosen";
+    EXPECT_EQ(state.getObject(e2).damage_marked, 3) << "CR 355.14.e: 1 + 2, as chosen";
     EXPECT_EQ(state.player(P1).xp, 0) << "nothing died";
 }
 
@@ -620,7 +652,7 @@ TEST_F(RulesCardsTest, RulesCards_CR355_14_AlphaStrike_CantChooseUntargetableUni
     auto spell = addToHand(P1, kAlphaStrike);
     Seen seen;
 
-    driveSpell(kAlphaStrike, P1, spell, {striker}, yesThen(shrouded, &seen), exec);
+    driveSpell(kAlphaStrike, P1, spell, {}, splitScript({striker, shrouded}, &seen), exec);
 
     EXPECT_FALSE(seen.wasOffered(shrouded))
         << "CR 355.14.a: split units are targets, so one that can't be chosen is not legal";
@@ -628,7 +660,7 @@ TEST_F(RulesCardsTest, RulesCards_CR355_14_AlphaStrike_CantChooseUntargetableUni
     EXPECT_EQ(state.getObject(e1).damage_marked, 3);
 }
 
-TEST_F(RulesCardsTest, RulesCards_CR355_14_AlphaStrike_LargeAmountStaysWithinTheResumeLoop) {
+TEST_F(RulesCardsTest, RulesCards_CR355_14_AlphaStrike_LargeAmountIsDividedPointByPoint) {
     EffectExecutor exec(state, events, card_db, &card_registry);
     auto striker = addUnit(P1, kInvalidId, 24, /*at_bf=*/-1);
     auto e1 = addUnit(P2, kInvalidId, 40, /*at_bf=*/0);
@@ -636,14 +668,41 @@ TEST_F(RulesCardsTest, RulesCards_CR355_14_AlphaStrike_LargeAmountStaysWithinThe
     auto spell = addToHand(P1, kAlphaStrike);
     Seen seen;
 
-    // driveSpell fails the test if more than 15 choices are requested.
-    driveSpell(kAlphaStrike, P1, spell, {striker}, inOrder({e1, e2}, &seen), exec);
+    // 22 points beyond the first each: 7 more to e1, the rest to e2.
+    std::vector<GameObjectId> order = {striker, e1, e2};
+    for (int i = 0; i < 22; ++i) order.push_back(i < 7 ? e1 : e2);
+    driveSpell(kAlphaStrike, P1, spell, {}, splitScript(order, &seen), exec);
 
-    EXPECT_LE(seen.prompts, 12);
-    EXPECT_EQ(state.getObject(e1).damage_marked + state.getObject(e2).damage_marked, 24)
-        << "CR 355.14: all of the damage is divided, none lost";
-    EXPECT_GT(state.getObject(e1).damage_marked, 0);
-    EXPECT_GT(state.getObject(e2).damage_marked, 0);
+    EXPECT_EQ(seen.prompts, 25) << "no coarsening: one prompt per point (ChainManager allows 512)";
+    EXPECT_EQ(state.getObject(e1).damage_marked, 8);
+    EXPECT_EQ(state.getObject(e2).damage_marked, 16);
+}
+
+TEST_F(RulesCardsTest, RulesCards_CR355_14h_AlphaStrike_LessDamageThanTargetsDropsSome) {
+    EffectExecutor exec(state, events, card_db, &card_registry);
+    auto striker = addUnit(P1, kInvalidId, 3, /*at_bf=*/-1);
+    auto e1 = addUnit(P2, kInvalidId, 5, /*at_bf=*/0);
+    auto e2 = addUnit(P2, kInvalidId, 5, /*at_bf=*/0);
+    auto e3 = addUnit(P2, kInvalidId, 5, /*at_bf=*/1);
+    auto spell = addToHand(P1, kAlphaStrike);
+    Seen seen;
+
+    // Three targets chosen with 3 Might; its Might drops to 2 before the spell
+    // resolves (as the 4th answer is read), so one target must be dropped.
+    driveSpell(kAlphaStrike, P1, spell, {},
+               splitScript({striker, e1, e2, e3, e2}, &seen, [&](size_t k) {
+                   if (k == 3) {
+                       auto& s = state.getObject(striker);
+                       s.base_might = 2;
+                       s.recomputeMight();
+                   }
+               }),
+               exec);
+
+    EXPECT_EQ(seen.prompts, 5) << "unit, three targets, then the one that stops being a target";
+    EXPECT_EQ(state.getObject(e1).damage_marked, 1);
+    EXPECT_EQ(state.getObject(e2).damage_marked, 0) << "CR 355.14.h: no longer a target";
+    EXPECT_EQ(state.getObject(e3).damage_marked, 1);
 }
 
 TEST_F(RulesCardsTest, RulesCards_CR355_14_Volibear_ControllerChoosesAmongEnemyUnitsHere) {
@@ -656,10 +715,10 @@ TEST_F(RulesCardsTest, RulesCards_CR355_14_Volibear_ControllerChoosesAmongEnemyU
     state.getObject(shrouded).untargetable_by_enemy = true;
     Seen seen;
 
-    driveResumableTrigger(kVolibearFurious, P1, voli, yesThen(big, &seen), exec,
-                          TriggerType::WhenIAttack);
+    driveResumableTrigger(kVolibearFurious, P1, voli, splitScript({big, kInvalidId}, &seen),
+                          exec, TriggerType::WhenIAttack);
 
-    EXPECT_EQ(seen.prompts, 5);
+    EXPECT_EQ(seen.prompts, 2) << "one target, then Done";
     EXPECT_EQ(state.getObject(big).damage_marked, 5)
         << "CR 355.14.e: all 5 where the controller put them";
     EXPECT_EQ(state.getObject(small).damage_marked, 0)
@@ -669,13 +728,26 @@ TEST_F(RulesCardsTest, RulesCards_CR355_14_Volibear_ControllerChoosesAmongEnemyU
     EXPECT_FALSE(seen.wasOffered(voli));
 }
 
+TEST_F(RulesCardsTest, RulesCards_CR355_13_Volibear_MayChooseNoTargets) {
+    EffectExecutor exec(state, events, card_db, &card_registry);
+    auto voli = addUnit(P1, kVolibearFurious, 0, /*at_bf=*/0);
+    auto e = addUnit(P2, kInvalidId, 6, /*at_bf=*/0);
+    Seen seen;
+
+    driveResumableTrigger(kVolibearFurious, P1, voli, splitScript({kInvalidId}, &seen), exec,
+                          TriggerType::WhenIAttack);
+
+    EXPECT_EQ(seen.prompts, 1);
+    EXPECT_EQ(state.getObject(e).damage_marked, 0) << "\"any number\" includes zero";
+}
+
 TEST_F(RulesCardsTest, RulesCards_CR355_14_Volibear_SingleEnemyTakesAllInOnePick) {
     EffectExecutor exec(state, events, card_db, &card_registry);
     auto voli = addUnit(P1, kVolibearFurious, 0, /*at_bf=*/0);
     auto only = addUnit(P2, kInvalidId, 9, /*at_bf=*/0);
     Seen seen;
 
-    driveResumableTrigger(kVolibearFurious, P1, voli, yesThen(only, &seen), exec,
+    driveResumableTrigger(kVolibearFurious, P1, voli, splitScript({only}, &seen), exec,
                           TriggerType::WhenIAttack);
 
     EXPECT_EQ(seen.prompts, 1);

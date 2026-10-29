@@ -228,9 +228,10 @@ TEST_F(Radiance0Test, ChronobreakBanishesAndReplaysUnits) {
     auto spell = pushSpellOnChain(P1, kChronobreak);
     state.chain.items.clear();
     Script s;
-    s.V(2).O(at_bf).O(at_base).V(0);   // X = 2; both units; BF unit back to its battlefield
+    // X = 2; both units; the BF unit is played back first, to its battlefield.
+    s.V(2).O(at_bf).O(at_base).O(at_bf).V(0);
     driveResumable(kChronobreak, P1, spell, s.fn(), exec);
-    EXPECT_EQ(s.used(), 4u);
+    EXPECT_EQ(s.used(), 5u);
     EXPECT_EQ(runesOnBoard(P1), 0) << "paid [A][A]";
     const auto& a = state.getObject(at_bf);
     const auto& b = state.getObject(at_base);

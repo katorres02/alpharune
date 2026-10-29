@@ -100,8 +100,24 @@ struct GameObject {
         bool in_combat = false;                 // at a battlefield with combat in progress
         std::vector<GameObjectId> attachments;  // gear attached at death
         KeywordSet keywords;                    // printed + aura + "this turn"
+        std::optional<LocationId> location;     // where it was ("If I died alone")
+        int other_friendly_units_here = 0;      // other units its controller had there
+        // Taken for a group of units that die at once (cleanup's lethal-damage
+        // pass), so the later deaths in the group still see the earlier ones:
+        // the next kill keeps this snapshot instead of retaking it.
+        bool batch = false;
     };
     LastKnown last_known;
+
+    // ── Death replacements an effect left on this unit (Card::
+    // applyGrantedDeathReplacement): which card's logic applies it, who made
+    // it, and a card-defined stamp (e.g. the turn). Consumed by that card.
+    struct DeathReplacementGrant {
+        CardDefId source_def = kInvalidId;
+        PlayerId granted_by = PlayerId::None;
+        int stamp = 0;
+    };
+    std::vector<DeathReplacementGrant> death_replacement_grants;
 
     // ── Who marked the damage (CR: "your damage" = damage you marked) ──
     // damage_marked split by the player whose effect / units dealt it. Index
@@ -185,6 +201,11 @@ struct GameObject {
     int might_bonus = 0;                               // this gear's might bonus (from CardDef)
     int attachment_might_bonus = 0;                    // total might bonus from attached gear
     bool is_rules_text_inactive = false;              // gear: rules text inactive while attached (CR 718.2)
+    // An Equipment whose effect text is a copy of a card's text (Svellsongur:
+    // "copy that unit's text to this Equipment's effect text", CR 136.2.c /
+    // 479): that card's triggered abilities trigger again for the unit it is
+    // attached to (TriggerManager::fireTrigger) — kInvalidId = none.
+    CardDefId copied_effect_text_def = kInvalidId;
     // [Deploy] (CR 830) — mirrors Card::hasDeploy(), refreshed each aura pass so
     // applyPassiveAura (which has no registry) can ask (Overloaded Traveler).
     bool has_deploy = false;

@@ -300,27 +300,52 @@ void TriggerManager::fireTrigger(GameObjectId source, PlayerId controller,
 
     // The card's intervening condition ("When a BUFFED friendly unit dies"):
     // if it isn't met the ability does not trigger.
-    if (const Card* card = card_registry_.get(obj.card_def_id);
-        card && (!card->triggerCondition(state_, source, controller, fired, subject) ||
-                 !card->triggerConditionOnDefs(state_, card_db_, source, controller, fired, subject)))
-        return;
+    auto triggers = [&](CardDefId def) -> int {
+        const Card* card = card_registry_.get(def);
+        if (!card) return def == obj.card_def_id ? 1 : 0;
+        if (def != obj.card_def_id && !card->firesOn(fired)) return 0;
+        if (!card->triggerCondition(state_, source, controller, fired, subject) ||
+            !card->triggerConditionOnDefs(state_, card_db_, source, controller, fired, subject))
+            return 0;
+        return std::max(0, card->triggeredAbilityCount(state_, source, fired));
+    };
+    // The abilities that trigger: the card's own (one per
+    // Card::triggeredAbilityCount), then copies of a card's text an attached
+    // Equipment carries as effect text (Svellsongur, CR 136.2.c).
+    std::vector<std::pair<CardDefId, int>> abilities;
+    for (int k = 0, n = triggers(obj.card_def_id); k < n; ++k)
+        abilities.emplace_back(obj.card_def_id, k);
+    if (obj.isUnit())
+        for (auto gid : obj.attachments) {
+            if (!state_.objectExists(gid)) continue;
+            const CardDefId copied = state_.getObject(gid).copied_effect_text_def;
+            if (copied == kInvalidId) continue;
+            for (int k = 0, n = triggers(copied); k < n; ++k) abilities.emplace_back(copied, k);
+        }
+    if (abilities.empty()) return;
 
-    events_.logDebug("TRIGGER: " + obj.name + " (" + toString(controller) +
-                     ") fires ability");
-    chain_.addAbility(source, controller, obj.card_def_id);
-    // Snapshot the triggering spell's spent value on the just-added
-    // chain item so resume-time reads aren't subject to clobber by a
-    // subsequent spell-play. Phase 6q+ engine-audit follow-on for
-    // Virtuoso / Forgotten Library correctness.
-    if (!state_.chain.items.empty()) {
-        state_.chain.items.back().fired_trigger = fired;
-        if (triggering_spell_energy_spent > 0) {
-            state_.chain.items.back().triggering_spell_energy_spent =
-                triggering_spell_energy_spent;
+    ChainItemId group = kInvalidId;
+    for (const auto& [def, index] : abilities) {
+        events_.logDebug("TRIGGER: " + obj.name + " (" + toString(controller) +
+                         ") fires ability" +
+                         (abilities.size() > 1 ? " #" + std::to_string(index + 1) : std::string()));
+        const ChainItemId id = chain_.addAbility(source, controller, def);
+        // Snapshot the triggering spell's spent value on the just-added
+        // chain item so resume-time reads aren't subject to clobber by a
+        // subsequent spell-play. Phase 6q+ engine-audit follow-on for
+        // Virtuoso / Forgotten Library correctness.
+        if (state_.chain.items.empty()) continue;
+        auto& item = state_.chain.items.back();
+        item.fired_trigger = fired;
+        item.trigger_index = index;
+        if (abilities.size() > 1) {
+            if (group == kInvalidId) group = id;
+            item.trigger_group = group;
+            item.trigger_order_pending = true;
         }
-        if (subject != kInvalidId) {
-            state_.chain.items.back().triggering_subject = subject;
-        }
+        if (triggering_spell_energy_spent > 0)
+            item.triggering_spell_energy_spent = triggering_spell_energy_spent;
+        if (subject != kInvalidId) item.triggering_subject = subject;
     }
 }
 

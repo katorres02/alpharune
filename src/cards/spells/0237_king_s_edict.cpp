@@ -3,6 +3,7 @@
 #include "core/game_state.h"
 #include "core/events.h"
 #include "engine/effect_executor.h"
+#include "cards/card_helpers.h"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -16,27 +17,30 @@ public:
     const CardDef& def() const override { return def_; }
     // "Starting with the next player, each other player chooses a unit you don't
     //  control that hasn't been chosen for this spell. Kill those units."
-    // In 1v1 this means: the opponent chooses one of their OWN units to be
-    // killed. The opponent's choice isn't surfaced through the caster's agent,
-    // so we approximate their rational pick (lowest-Might unit they control).
+    // In 1v1 the opponent chooses one unit the caster doesn't control (one of
+    // their own, as nobody else has units) as the spell resolves; the choice
+    // is published to the opponent (stepChooseObject, resume_point 20).
     void onResolve(CardContext& ctx, const std::vector<GameObjectId>& /*targets*/) override {
-        PlayerId opp = opponent(ctx.controller);
-        GameObjectId victim = kInvalidId;
-        int best_might = 0;
+        const PlayerId opp = opponent(ctx.controller);
+        std::vector<GameObjectId> legal;
         for (auto& [id, obj] : ctx.state.objects) {
-            // "a unit you don't control" — not controlled by the caster.
-            if (!obj.isUnit() || obj.controller == ctx.controller) continue;
-            if (!obj.location.has_value()) continue;
-            if (obj.controller != opp) continue;  // 1v1: opponent's own unit
-            if (victim == kInvalidId || obj.current_might < best_might) {
-                victim = id;
-                best_might = obj.current_might;
-            }
+            if (!obj.isUnit() || !obj.location.has_value()) continue;
+            if (obj.controller == ctx.controller) continue;   // "a unit you don't control"
+            // A unit chosen for this (enemy) spell: one that can't be chosen by
+            // the caster's spells isn't a legal choice.
+            if (obj.untargetable_by_enemy) continue;
+            legal.push_back(id);
         }
-        if (victim != kInvalidId) {
-            ctx.executor.killObject(victim);
-            ctx.events.logTrace("KING'S EDICT: opponent's chosen unit killed");
-        }
+        std::sort(legal.begin(), legal.end());
+        GameObjectId victim = kInvalidId;
+        if (!stepChooseObject(ctx, opp, legal, "King's Edict: choose a unit to kill",
+                              /*rp=*/20, /*slot=*/10, victim))
+            return;   // waiting for the opponent
+        if (victim == kInvalidId || !ctx.state.objectExists(victim)) return;
+        if (!ctx.state.getObject(victim).location.has_value()) return;
+        ctx.events.logTrace("KING'S EDICT: " + ctx.state.getObject(victim).name +
+                            " (opponent's choice) is killed");
+        ctx.executor.killObject(victim);
     }
     // No play-time target: the killed unit is the OPPONENT's choice, not the
     // caster's, so we don't expose a caster-chosen target.

@@ -672,4 +672,260 @@ inline void moveTo(CardContext& ctx, GameObjectId u, int dest) {
     else ctx.executor.moveToBattlefield(u, static_cast<BattlefieldId>(dest - 1));
 }
 
+// ── One name from a long list, in int-coded steps ──
+/// MakeChoice int answers have kIntChoiceSlots action slots
+/// (openspiel::kNumIntChoices), so a choice among more names than that ("name
+/// a tag": every tag in the card pool) is asked in steps: first a range of
+/// the (sorted) list, then a name within it — each step at most
+/// kIntChoiceSlots options, each option a distinct slot. Steps use
+/// stepChooseValue with resume_points rp, rp+2, ... and resume_data slots
+/// slot, slot+1, ... (two steps cover 256 names, three 4096). Returns false
+/// while waiting; then `out` is the chosen index (-1 if `names` is empty).
+constexpr int kIntChoiceSlots = 16;
+inline bool stepChooseFromList(CardContext& ctx, PlayerId chooser,
+                               const std::vector<std::string>& names,
+                               const std::string& label, int rp, size_t slot, int& out) {
+    if (names.empty()) { out = -1; return true; }
+    size_t lo = 0, hi = names.size();
+    for (int level = 0;; ++level) {
+        const size_t n = hi - lo;
+        std::vector<std::pair<int, std::string>> opts;
+        size_t chunk = 1;
+        if (n <= static_cast<size_t>(kIntChoiceSlots)) {
+            for (size_t i = lo; i < hi; ++i) opts.emplace_back(static_cast<int>(i - lo), names[i]);
+        } else {
+            chunk = (n + kIntChoiceSlots - 1) / kIntChoiceSlots;
+            for (size_t b = 0; lo + b * chunk < hi; ++b) {
+                const size_t first = lo + b * chunk;
+                const size_t last = std::min(first + chunk, hi) - 1;
+                opts.emplace_back(static_cast<int>(b), names[first] + " ... " + names[last]);
+            }
+        }
+        int v = 0;
+        if (!stepChooseValue(ctx, chooser, opts,
+                             label + (chunk > 1 ? " (choose a range)" : ""),
+                             rp + 2 * level, slot + level, 0, v))
+            return false;
+        if (chunk == 1) { out = static_cast<int>(lo) + v; return true; }
+        lo += static_cast<size_t>(v) * chunk;
+        hi = std::min(lo + chunk, hi);
+    }
+}
+
+// ── Death replacements left on a unit (Card::applyGrantedDeathReplacement) ──
+/// Record that `card_def`'s death replacement applies to `unit` (made by
+/// `by`, with a card-defined `stamp` such as turn_number + 1). One per card.
+inline void grantDeathReplacement(GameState& state, GameObjectId unit, CardDefId card_def,
+                                  PlayerId by, int stamp) {
+    if (!state.objectExists(unit)) return;
+    auto& grants = state.getObject(unit).death_replacement_grants;
+    for (auto& g : grants)
+        if (g.source_def == card_def) { g.granted_by = by; g.stamp = stamp; return; }
+    grants.push_back({card_def, by, stamp});
+}
+/// Remove `card_def`'s grant from `unit` ("the next time": used up), returning it.
+inline std::optional<GameObject::DeathReplacementGrant> takeDeathReplacement(
+        GameState& state, GameObjectId unit, CardDefId card_def) {
+    if (!state.objectExists(unit)) return std::nullopt;
+    auto& grants = state.getObject(unit).death_replacement_grants;
+    for (auto it = grants.begin(); it != grants.end(); ++it)
+        if (it->source_def == card_def) {
+            auto g = *it;
+            grants.erase(it);
+            return g;
+        }
+    return std::nullopt;
+}
+
+// ── Split damage (CR 355.14) ────────────────────────────────────────────────
+// "Deal N damage split among <units>". Each unit in the split is a target
+// chosen when the spell or ability is finalized (355.14.a-b), up to the
+// initial amount of damage (355.14.c): splitDamageTargets, called before the
+// card's finalizingChoices marker, asks for them one at a time (choosing an
+// opponent's [Deflect] unit costs its Deflect then), with "Done" once
+// `min_targets` are chosen. As it resolves, splitDamageResolve drops targets
+// that are no longer legal; if more remain than there is damage, the
+// controller picks which stop being targets until they match (355.14.h);
+// every remaining target gets 1 (355.14.f-g) and the controller assigns the
+// rest one point at a time (355.14.e). The damage is dealt once the division
+// is known; `damaged` receives the units dealt damage (kill lethally damaged
+// ones after). State lives in resume_data[kSplitBase .. kSplitEnd).
+constexpr int kSplitMaxTargets = 32;
+constexpr size_t kSplitBase = 16;
+constexpr size_t kSplitTState = kSplitBase;                     // 0 ask, 1 waiting, 2 done
+constexpr size_t kSplitTCount = kSplitBase + 1;
+constexpr size_t kSplitTIds = kSplitBase + 2;
+constexpr size_t kSplitRState = kSplitTIds + kSplitMaxTargets;   // 0 fresh, 1 drop, 2 assign, 3 done, 4 working
+constexpr size_t kSplitRTotal = kSplitRState + 1;
+constexpr size_t kSplitRCount = kSplitRState + 2;
+constexpr size_t kSplitRIds = kSplitRState + 3;
+constexpr size_t kSplitRExtra = kSplitRIds + kSplitMaxTargets;   // damage beyond the first point
+constexpr size_t kSplitEnd = kSplitRExtra + kSplitMaxTargets;
+
+/// Returns false while waiting for the controller. `initial_damage` is the
+/// amount as the spell or ability is played.
+inline bool splitDamageTargets(CardContext& ctx, const std::string& label, int initial_damage,
+                               int min_targets, const std::vector<GameObjectId>& legal) {
+    auto& ro = ctx.state.chain.resuming;
+    if (!ro.has_value()) return true;   // direct invocation: splitDamageResolve spreads it
+    auto& rd = ro->resume_data;
+    if (rd.size() < kSplitEnd) rd.resize(kSplitEnd, 0);
+    if (rd[kSplitTState] == 2) return true;
+    auto chosen = [&rd]() {
+        std::vector<GameObjectId> out;
+        for (int i = 0; i < rd[kSplitTCount]; ++i)
+            out.push_back(static_cast<GameObjectId>(rd[kSplitTIds + i]));
+        return out;
+    };
+    auto offered = [&]() {
+        const auto have = chosen();
+        const int payable = ctx.executor.payableAnyPower(ctx.controller);
+        std::vector<GameObjectId> out;
+        for (auto t : legal)
+            if (std::find(have.begin(), have.end(), t) == have.end() &&
+                ctx.executor.deflectCostFor(ctx.controller, t) <= payable)
+                out.push_back(t);
+        return out;
+    };
+    const int cap = std::min(initial_damage, kSplitMaxTargets);
+    if (rd[kSplitTState] == 1) {
+        rd[kSplitTState] = 0;
+        auto c = ctx.executor.takeChoice();
+        GameObjectId t = (c && !c->chosen_objects.empty()) ? c->chosen_objects[0] : kInvalidId;
+        const auto can = offered();
+        if (std::find(can.begin(), can.end(), t) == can.end()) {
+            const bool may_stop = rd[kSplitTCount] >= min_targets;
+            if (may_stop || can.empty()) { rd[kSplitTState] = 2; return true; }
+            t = can.front();
+        }
+        const int cost = ctx.executor.deflectCostFor(ctx.controller, t);
+        if (cost > 0) {
+            ctx.executor.payAnyPower(ctx.controller, cost);
+            ctx.events.logTrace("DEFLECT: pays " + std::to_string(cost) + " [A] to choose " +
+                                ctx.state.getObject(t).name);
+        }
+        ro->chosen_objects.push_back(t);
+        noteEnemyChoice(ctx.state, ctx.controller, ctx.source, t);
+        if (ctx.state.getObject(t).controller != ctx.controller)
+            ctx.state.player(ctx.controller).chose_enemy_unit_this_turn = true;
+        rd[kSplitTIds + rd[kSplitTCount]] = static_cast<int32_t>(t);
+        rd[kSplitTCount] += 1;
+        ctx.events.logTrace("SPLIT_TARGET: " + label + " -> " + ctx.state.getObject(t).name);
+    }
+    const auto can = offered();
+    if (rd[kSplitTCount] >= cap || can.empty()) { rd[kSplitTState] = 2; return true; }
+    std::vector<Intent> opts;
+    for (auto t : can) opts.push_back(objChoice(ctx.controller, t));
+    if (rd[kSplitTCount] >= min_targets)
+        opts.push_back(valChoice(ctx.controller, kPickSeveralDone, "Done"));
+    ctx.executor.requestChoice(ctx.controller, std::move(opts),
+        "split damage: " + label + " — choose a target (" + std::to_string(rd[kSplitTCount]) +
+        " of up to " + std::to_string(cap) + ")");
+    rd[kSplitTState] = 1;
+    return false;
+}
+
+/// Returns false while waiting for the controller; true once the damage is
+/// dealt (or there is none to deal). `legal` are the units that are still
+/// legal targets; `total` the damage to divide now.
+inline bool splitDamageResolve(CardContext& ctx, const std::string& label, int total,
+                               GameObjectId damage_source, const std::vector<GameObjectId>& legal,
+                               std::vector<GameObjectId>& damaged) {
+    auto& ro = ctx.state.chain.resuming;
+    if (!ro.has_value()) {
+        // Direct invocation (no chain item): no agent can be asked; an even
+        // spread over the legal units, like the other helpers' first option.
+        if (total <= 0 || legal.empty()) return true;
+        std::vector<std::pair<GameObjectId, int>> alloc;
+        for (int i = 0; i < total; ++i) {
+            const auto id = legal[i % legal.size()];
+            bool found = false;
+            for (auto& a : alloc) if (a.first == id) { ++a.second; found = true; }
+            if (!found) alloc.emplace_back(id, 1);
+        }
+        for (const auto& [id, n] : alloc) {
+            ctx.executor.dealDamage(id, n, damage_source);
+            damaged.push_back(id);
+        }
+        return true;
+    }
+    auto& ri = *ro;
+    auto& rd = ri.resume_data;
+    if (rd.size() < kSplitEnd) rd.resize(kSplitEnd, 0);
+    if (rd[kSplitRState] == 3) return true;
+    auto kept = [&rd]() {
+        std::vector<GameObjectId> out;
+        for (int i = 0; i < rd[kSplitRCount]; ++i)
+            out.push_back(static_cast<GameObjectId>(rd[kSplitRIds + i]));
+        return out;
+    };
+    if (rd[kSplitRState] == 0) {
+        // The targets chosen at finalization that are still legal.
+        int n = 0;
+        for (int i = 0; i < rd[kSplitTCount]; ++i) {
+            const auto t = static_cast<GameObjectId>(rd[kSplitTIds + i]);
+            if (std::find(legal.begin(), legal.end(), t) == legal.end()) {
+                ctx.events.logTrace("SPLIT: " + label + " — a target is no longer legal");
+                continue;
+            }
+            rd[kSplitRIds + n] = static_cast<int32_t>(t);
+            rd[kSplitRExtra + n] = 0;
+            ++n;
+        }
+        rd[kSplitRCount] = n;
+        rd[kSplitRTotal] = std::max(0, total);
+        rd[kSplitRState] = 4;
+    } else if (rd[kSplitRState] == 1 || rd[kSplitRState] == 2) {
+        const auto ks = kept();
+        auto c = ctx.executor.takeChoice();
+        GameObjectId t = (c && !c->chosen_objects.empty()) ? c->chosen_objects[0] : kInvalidId;
+        auto it = std::find(ks.begin(), ks.end(), t);
+        if (it == ks.end()) it = ks.begin();
+        const int i = static_cast<int>(it - ks.begin());
+        if (rd[kSplitRState] == 1) {   // that target stops being a target
+            for (int k = i; k + 1 < rd[kSplitRCount]; ++k) {
+                rd[kSplitRIds + k] = rd[kSplitRIds + k + 1];
+                rd[kSplitRExtra + k] = rd[kSplitRExtra + k + 1];
+            }
+            rd[kSplitRCount] -= 1;
+        } else {
+            rd[kSplitRExtra + i] += 1;
+        }
+        rd[kSplitRState] = 4;
+    }
+
+    const auto ks = kept();
+    const int n = static_cast<int>(ks.size());
+    const int t_total = rd[kSplitRTotal];
+    if (n == 0 || t_total <= 0) { rd[kSplitRState] = 3; return true; }
+    auto ask = [&](const std::string& what, int state) {
+        std::vector<Intent> opts;
+        for (auto t : ks) opts.push_back(objChoice(ctx.controller, t));
+        ctx.executor.requestChoice(ctx.controller, std::move(opts), what);
+        rd[kSplitRState] = state;
+        return false;
+    };
+    if (n > t_total)
+        return ask("split damage: " + label + " — " + std::to_string(t_total) +
+                   " damage for " + std::to_string(n) + " targets: which stops being a target", 1);
+    int extra = 0;
+    for (int i = 0; i < n; ++i) extra += rd[kSplitRExtra + i];
+    const int remaining = t_total - n - extra;
+    if (remaining > 0 && n > 1)
+        return ask("split damage: " + label + " — assign 1 more damage (" +
+                   std::to_string(remaining) + " left)", 2);
+    if (remaining > 0) rd[kSplitRExtra] += remaining;
+    rd[kSplitRState] = 3;
+    for (int i = 0; i < n; ++i) {
+        const auto id = ks[i];
+        if (!ctx.state.objectExists(id)) continue;
+        const int amount = 1 + rd[kSplitRExtra + i];
+        ctx.events.logTrace("SPLIT: " + label + " -> " + std::to_string(amount) + " to " +
+                            ctx.state.getObject(id).name);
+        ctx.executor.dealDamage(id, amount, damage_source);
+        damaged.push_back(id);
+    }
+    return true;
+}
+
 } // namespace riftbound

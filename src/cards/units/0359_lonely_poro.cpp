@@ -19,28 +19,30 @@ public:
     TriggerType triggerType() const override { return TriggerType::WhenIDie; }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>&) override {
         if (!ctx.state.objectExists(ctx.source)) return;
-        const auto& self = ctx.state.getObject(ctx.source);
-        std::optional<LocationId> died_at = self.last_location;
-        if (!died_at.has_value()) died_at = self.location;
-        if (!died_at.has_value()) {
-            ctx.executor.drawCards(ctx.controller, 1);
-            ctx.events.logTrace("LONELY PORO: death location unknown -> draw 1 (approx alone)");
-            return;
-        }
-        bool other_friendly_here = false;
-        for (auto& [id, obj] : ctx.state.objects) {
-            if (id == ctx.source) continue;
-            if (!obj.isUnit() || obj.controller != ctx.controller) continue;
-            if (!obj.location.has_value() || *obj.location != *died_at) continue;
-            other_friendly_here = true;
-            break;
-        }
-        if (!other_friendly_here) {
+        if (diedAlone(ctx)) {
             ctx.executor.drawCards(ctx.controller, 1);
             ctx.events.logTrace("LONELY PORO: died alone -> draw 1");
         } else {
             ctx.events.logTrace("LONELY PORO: did not die alone -> no draw");
         }
+    }
+private:
+    // "I'm alone if there are no other friendly units here" — as I died: the
+    // last-known information the kill path recorded (units that died with me
+    // still count). Without it, the units still at my last location.
+    static bool diedAlone(CardContext& ctx) {
+        const auto& self = ctx.state.getObject(ctx.source);
+        if (self.last_known.valid && self.last_known.location.has_value())
+            return self.last_known.other_friendly_units_here == 0;
+        std::optional<LocationId> died_at = self.last_location;
+        if (!died_at.has_value()) died_at = self.location;
+        if (!died_at.has_value()) return false;   // never on the board: not "here" alone
+        for (auto& [id, obj] : ctx.state.objects) {
+            if (id == ctx.source) continue;
+            if (!obj.isUnit() || obj.controller != ctx.controller) continue;
+            if (obj.location.has_value() && *obj.location == *died_at) return false;
+        }
+        return true;
     }
 private:
     const CardDef def_ = [] {

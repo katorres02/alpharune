@@ -29,67 +29,24 @@ namespace riftbound {
 namespace weaponmaster {
 
 /// The Equip cost Weaponmaster charges for one Equipment.
-struct EquipCost {
-    bool payable_shape = false;           // an Equip cost made only of Energy/Power
-    int energy = 0;
-    std::vector<std::vector<Domain>> power;  // one entry per Power; empty list = [A]
-};
+using EquipCost = Card::EquipCostSpec;
 
 /// The Equipment's printed "[Equip] [n][X]..." cost, as if activated choosing
-/// `unit` (CR 821.1.c.2), reduced by one Power (CR 821.1.c: "[A] less").
-/// ENGINE-GAP: an Equip cost lives inside each gear's onEquip — no Card hook
-/// exposes it — so the printed cost is read from the gear's text. Equip costs
-/// with non-rune parts ("— Spend 1 XP", "..., Kill a friendly unit", "[A] or
-/// exhaust a friendly unit") are not offered.
+/// `unit` (CR 821.1.c.2) — read from the gear's Card::equipCost hook — reduced
+/// by one Power (CR 821.1.c: "[A] less"). Equip costs with non-rune parts
+/// ("— Spend 1 XP", "..., Kill a friendly unit", "[A] or exhaust a friendly
+/// unit") are not `payable_shape` and so are not offered.
 inline EquipCost reducedEquipCost(const CardContext& ctx, const GameObject& gear,
                                   GameObjectId unit) {
     EquipCost out;
     // A definition-less gear object (engine/test stand-in) has no printed cost
     // to read: treated as an Equip cost of [A], i.e. free after the discount.
     if (gear.card_def_id == kInvalidId) { out.payable_shape = true; return out; }
-    const auto& def = ctx.executor.cardDB().get(gear.card_def_id);
-    const std::string& text = def.ability_text;
-    static const std::string kKey = "[Equip]";
-    size_t p = text.find(kKey);
-    if (p == std::string::npos) return out;
-    p += kKey.size();
-    while (p < text.size() && text[p] == ' ') ++p;
-    bool any = false;
-    while (p < text.size() && text[p] == '[') {
-        const size_t q = text.find(']', p);
-        if (q == std::string::npos) return out;
-        const std::string tok = text.substr(p + 1, q - p - 1);
-        if (tok.empty()) return out;
-        if (std::all_of(tok.begin(), tok.end(),
-                        [](unsigned char c) { return c >= '0' && c <= '9'; })) {
-            out.energy += std::stoi(tok);
-        } else if (tok.size() == 1) {
-            switch (tok[0]) {
-                case 'R': out.power.push_back({Domain::Fury}); break;
-                case 'G': out.power.push_back({Domain::Calm}); break;
-                case 'B': out.power.push_back({Domain::Mind}); break;
-                case 'O': out.power.push_back({Domain::Body}); break;
-                case 'P': out.power.push_back({Domain::Chaos}); break;
-                case 'Y': out.power.push_back({Domain::Order}); break;
-                case 'A': out.power.push_back({}); break;
-                case 'C': out.power.push_back(def.domains); break;   // CR 135.2.e.6
-                default: return out;
-            }
-        } else {
-            return out;
-        }
-        any = true;
-        p = q + 1;
-    }
-    if (!any) return out;                                   // "[Equip] — ..." form
-    while (p < text.size() && text[p] == ' ') ++p;
-    if (p < text.size() && text[p] == ',') return out;      // further non-rune costs
-    if (text.compare(p, 3, "or ") == 0) return out;
-    // Hextech Gauntlets: "This ability's Energy cost is reduced by the Might of
-    // the unit you choose." — the Weaponmaster unit (CR 821.1.c.2).
-    if (text.find("Energy cost is reduced by the Might of the unit you choose") !=
-            std::string::npos && ctx.state.objectExists(unit))
-        out.energy = std::max(0, out.energy - ctx.state.getObject(unit).current_might);
+    const CardRegistry* reg = ctx.registry ? ctx.registry : ctx.executor.cardRegistry();
+    const Card* card = reg ? reg->get(gear.card_def_id) : nullptr;
+    if (!card) return out;
+    out = card->equipCost(ctx.state, gear.id, unit);
+    if (!out.payable_shape) return out;
     // "[A] less": one Power off — a domain-specific one first (the most
     // restrictive), else an [A]. No Power: paid unreduced (CR 821.1.c.3).
     if (!out.power.empty()) {
@@ -97,7 +54,6 @@ inline EquipCost reducedEquipCost(const CardContext& ctx, const GameObject& gear
                                [](const std::vector<Domain>& d) { return !d.empty(); });
         out.power.erase(it != out.power.end() ? it : out.power.begin());
     }
-    out.payable_shape = true;
     return out;
 }
 

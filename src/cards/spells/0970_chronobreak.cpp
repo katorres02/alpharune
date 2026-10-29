@@ -51,20 +51,14 @@ public:
                                                         : local;
         if (rd.size() < kEnd) rd.resize(kEnd, 0);
 
-        // The order they are played back: the turn player's units first (CR
-        // 303.2.a), each player's in the order they were chosen.
+        // The units in the order they were chosen; the banish happens once.
         std::vector<GameObjectId> order;
-        for (int pass = 0; pass < 2; ++pass)
-            for (int v : *picked) {
-                const auto id = static_cast<GameObjectId>(v);
-                if (!ctx.state.objectExists(id)) continue;
-                const bool turn_players = ctx.state.getObject(id).owner == ctx.state.turn.turn_player;
-                if ((pass == 0) == turn_players) order.push_back(id);
-            }
+        for (int v : *picked) order.push_back(static_cast<GameObjectId>(v));
 
         if (rd[kPhase] == 0) {
             rd[kPhase] = 1;
             for (size_t i = 0; i < order.size(); ++i) {
+                if (!ctx.state.objectExists(order[i])) { rd[kDone + i] = 1; continue; }
                 auto& u = ctx.state.getObject(order[i]);
                 if (!u.isUnit() || !u.location.has_value() || u.controller != ctx.controller) {
                     rd[kDone + i] = 1;   // no longer a unit you control: not banished
@@ -79,31 +73,56 @@ public:
         }
 
         // "... then for each, its owner plays that unit back to the same
-        // location or to their base, ignoring its cost."
-        for (size_t i = 0; i < order.size(); ++i) {
-            if (rd[kDone + i]) continue;
-            const GameObjectId id = order[i];
-            if (!ctx.state.objectExists(id) || ctx.state.getObject(id).zone != ZoneType::Banishment) {
+        // location or to their base, ignoring its cost. (You choose the
+        // order.)" Each player plays their own units, in turn order starting
+        // with the turn player (CR 303.2.a), in the order THEY choose (Radiance
+        // rules FAQ): for each, its owner picks which of their units comes
+        // next, then where it goes. Step k's answers live at kOrderSlot + 3k
+        // and kChoiceSlot + 3k; rd[kStep] counts the units played back.
+        const PlayerId first = ctx.state.turn.turn_player;
+        for (PlayerId owner : {first, opponent(first)}) {
+            while (true) {
+                std::vector<int> mine;   // this owner's banished units still to play
+                for (size_t i = 0; i < order.size(); ++i) {
+                    if (rd[kDone + i]) continue;
+                    const GameObjectId id = order[i];
+                    if (!ctx.state.objectExists(id) ||
+                        ctx.state.getObject(id).zone != ZoneType::Banishment) {
+                        rd[kDone + i] = 1;
+                        continue;
+                    }
+                    if (ctx.state.getObject(id).owner == owner) mine.push_back(static_cast<int>(id));
+                }
+                if (mine.empty()) break;
+                const int step = rd[kStep];
+                GameObjectId id = static_cast<GameObjectId>(mine.front());
+                if (mine.size() > 1) {
+                    auto next = pickSeveral(ctx, owner, "Chronobreak: which of your units is played back next",
+                                            mine, false, {}, 1, 1, kOrderSlot + 3 * step);
+                    if (!next) return;   // waiting for the owner
+                    if (!next->empty()) id = static_cast<GameObjectId>((*next)[0]);
+                }
+                size_t i = 0;
+                while (i < order.size() && order[i] != id) ++i;
+                if (i == order.size()) { rd[kStep] = step + 1; continue; }
+                LocationId dest{BaseLocation{owner}};
+                const int bf = rd[kLoc + i];
+                if (bf >= 0) {
+                    auto where = pickSeveral(ctx, owner,
+                                             "Chronobreak: play " + ctx.state.getObject(id).name + " back to",
+                                             {0, 1}, true, {"The same battlefield", "Base"}, 1, 1,
+                                             kChoiceSlot + 3 * step);
+                    if (!where) return;   // waiting for the owner
+                    if (!where->empty() && (*where)[0] == 0)
+                        dest = LocationId{BattlefieldLocation{static_cast<BattlefieldId>(bf)}};
+                }
                 rd[kDone + i] = 1;
-                continue;
+                rd[kStep] = step + 1;
+                auto& bz = ctx.state.player(owner).banishment;
+                bz.erase(std::remove(bz.begin(), bz.end(), id), bz.end());
+                ctx.executor.playIgnoringCost(owner, id, dest);
+                ctx.events.logTrace("CHRONOBREAK: " + ctx.state.getObject(id).name + " played back");
             }
-            const PlayerId owner = ctx.state.getObject(id).owner;
-            LocationId dest{BaseLocation{owner}};
-            const int bf = rd[kLoc + i];
-            if (bf >= 0) {
-                auto where = pickSeveral(ctx, owner,
-                                         "Chronobreak: play " + ctx.state.getObject(id).name + " back to",
-                                         {0, 1}, true, {"The same battlefield", "Base"}, 1, 1,
-                                         kChoiceSlot + 3 * i);
-                if (!where) return;   // waiting for the owner
-                if (!where->empty() && (*where)[0] == 0)
-                    dest = LocationId{BattlefieldLocation{static_cast<BattlefieldId>(bf)}};
-            }
-            rd[kDone + i] = 1;
-            auto& bz = ctx.state.player(owner).banishment;
-            bz.erase(std::remove(bz.begin(), bz.end(), id), bz.end());
-            ctx.executor.playIgnoringCost(owner, id, dest);
-            ctx.events.logTrace("CHRONOBREAK: " + ctx.state.getObject(id).name + " played back");
         }
     }
 
@@ -116,8 +135,10 @@ private:
     static constexpr size_t kPhase = 44;                          // 1 = banished
     static constexpr size_t kLoc = 45;                            // per unit: bf id, -1 base
     static constexpr size_t kDone = kLoc + kMaxUnits;             // per unit: played back / skipped
-    static constexpr size_t kChoiceSlot = kDone + kMaxUnits;      // per unit: 3 ints
-    static constexpr size_t kEnd = kChoiceSlot + 3 * kMaxUnits;
+    static constexpr size_t kChoiceSlot = kDone + kMaxUnits;      // per step: 3 ints
+    static constexpr size_t kOrderSlot = kChoiceSlot + 3 * kMaxUnits;   // per step: 3 ints
+    static constexpr size_t kStep = kOrderSlot + 3 * kMaxUnits;   // units played back so far
+    static constexpr size_t kEnd = kStep + 1;
 
     static std::vector<int> friendlyUnits(const GameState& state, PlayerId player) {
         std::vector<int> out;

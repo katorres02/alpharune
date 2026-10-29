@@ -88,7 +88,8 @@ public:
             }
         }
         if (!rest.empty()) {
-            // GAP: the recycle order is not chosen by the player.
+            // No order to choose: Main Deck cards recycled together go to the
+            // bottom in a random order (CR 417.5; recycleCards shuffles them).
             ctx.executor.recycleCards(ctx.controller, rest);
             ctx.events.logTrace("DOUBLE TROUBLE: recycled " +
                                 std::to_string(rest.size()) + " card(s)");

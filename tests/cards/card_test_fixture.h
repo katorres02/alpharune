@@ -416,7 +416,8 @@ protected:
                                 std::function<Intent(const std::vector<Intent>&)> picker,
                                 EffectExecutor& exec,
                                 TriggerType firing = TriggerType::None,
-                                GameObjectId subject = kInvalidId) {
+                                GameObjectId subject = kInvalidId,
+                                int trigger_index = 0) {
         ChainItem ri;
         ri.id = state.chain.allocateId();
         ri.controller = controller;
@@ -427,12 +428,14 @@ protected:
         ri.card_def_id = def_id;
         ri.fired_trigger = firing;
         ri.triggering_subject = subject;   // the event's object, as TriggerManager records it
+        ri.trigger_index = trigger_index;  // which of the card's abilities on this event
         state.chain.resuming = ri;
 
         Card* card = card_registry.get(def_id);
         ASSERT_NE(card, nullptr);
         CardContext ctx{state, events, exec, controller, source};
         ctx.firing_trigger = firing;
+        ctx.trigger_index = trigger_index;
 
         card->onTrigger(ctx, {});
         while (exec.hasPendingChoice()) {
@@ -450,11 +453,13 @@ protected:
     /// multi-trigger cards). No resume loop — use for non-resumable triggers.
     void fireTriggerAs(CardDefId def_id, PlayerId controller, GameObjectId source,
                        TriggerType firing, EffectExecutor& exec,
-                       const std::vector<GameObjectId>& targets = {}) {
+                       const std::vector<GameObjectId>& targets = {},
+                       int trigger_index = 0) {
         Card* card = card_registry.get(def_id);
         ASSERT_NE(card, nullptr);
         CardContext ctx{state, events, exec, controller, source};
         ctx.firing_trigger = firing;
+        ctx.trigger_index = trigger_index;
         card->onTrigger(ctx, targets);
     }
 

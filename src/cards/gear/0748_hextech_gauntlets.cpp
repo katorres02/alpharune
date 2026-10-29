@@ -17,6 +17,13 @@ public:
     const CardDef& def() const override { return def_; }
 
     bool hasEquipAbility() const override { return true; }
+    // "[Equip] [3][A]. This ability's Energy cost is reduced by the Might of
+    // the unit you choose." — for [Weaponmaster], the unit it goes on.
+    EquipCostSpec equipCost(const GameState& state, GameObjectId, GameObjectId unit) const override {
+        int energy = 3;
+        if (state.objectExists(unit)) energy = std::max(0, energy - state.getObject(unit).current_might);
+        return {true, energy, {{}}};
+    }
 
     bool onEquip(CardContext& ctx, GameObjectId unit) override {
         if (!ctx.state.objectExists(unit)) return false;

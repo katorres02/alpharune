@@ -47,6 +47,9 @@ struct CardContext {
     // Heimerdinger proxying granted abilities). Null in contexts that don't
     // set it; cards MUST null-check. Set by the resolution path.
     const CardRegistry* registry = nullptr;
+    // Which of the card's triggered abilities on `firing_trigger` this is, for
+    // cards with several on one event (Card::triggeredAbilityCount). 0 otherwise.
+    int trigger_index = 0;
 };
 
 // ─── Card base class ────────────────────────────────────────────────────────
@@ -255,6 +258,19 @@ public:
         auto t = triggerType();
         if (t == TriggerType::None) return {};
         return {t};
+    }
+
+    /// Cards with SEVERAL triggered abilities on the same event (Akshan,
+    /// Mischievous: [Weaponmaster] and "When you play me, if you paid the
+    /// additional cost, ...") return how many of them trigger now. Each goes
+    /// on the chain as its own item (ChainItem::trigger_index, read in
+    /// onTrigger through CardContext::trigger_index), and their controller
+    /// chooses their order as they are finalized. 0 = none. Default 1.
+    virtual int triggeredAbilityCount(const GameState& /*state*/, GameObjectId /*source*/,
+                                      TriggerType /*fired*/) const { return 1; }
+    /// Name of triggered ability `index`, shown in the ordering choice.
+    virtual std::string triggeredAbilityLabel(TriggerType /*fired*/, int index) const {
+        return "ability " + std::to_string(index + 1);
     }
 
     /// "When you play a card ..., you may play me from your trash" (Meticulous
@@ -658,9 +674,36 @@ public:
     /// Return true if the death was replaced (the unit does not die).
     virtual bool replaceOwnDeath(CardContext& /*ctx*/) { return false; }
 
+    /// A death replacement this card's effect left on a unit ("Choose a
+    /// friendly unit. The next time it would die this turn, ... instead" —
+    /// Unlicensed Armory). The card records it on the unit with
+    /// grantDeathReplacement (card_helpers.h), so it applies even after the
+    /// card has left the board. Both kill paths ask the granting card with
+    /// ctx.source = the dying unit and ctx.controller = the player who made
+    /// the grant. Return true if the unit does not die.
+    virtual bool applyGrantedDeathReplacement(CardContext& /*ctx*/, GameObjectId /*dying_unit*/) {
+        return false;
+    }
+
     // ── Equipment / Equip (CR 716-725, 818) ──
     /// Whether this gear has an equip ability.
     virtual bool hasEquipAbility() const { return false; }
+
+    /// The printed [Equip] cost (CR 818), for effects that price an Equip
+    /// without activating it ([Weaponmaster], CR 821.1.c: "for [A] less").
+    /// `unit` is the unit it would be attached to (Hextech Gauntlets reduce by
+    /// its Might). Not `payable_shape` when the gear has no Equip cost or its
+    /// cost has a part other than Energy and Power ("— Spend 1 XP", ",
+    /// Kill a friendly unit"). Default: none.
+    struct EquipCostSpec {
+        bool payable_shape = false;              // an Equip cost of Energy/Power only
+        int energy = 0;
+        std::vector<std::vector<Domain>> power;  // one entry per Power; empty = [A]
+    };
+    virtual EquipCostSpec equipCost(const GameState& /*state*/, GameObjectId /*gear*/,
+                                    GameObjectId /*unit*/) const {
+        return {};
+    }
 
     /// Pay the equip cost and attach to unit. Card handles its own cost logic.
     /// Returns true if equip succeeded (cost paid, attached).

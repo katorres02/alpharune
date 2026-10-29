@@ -711,6 +711,16 @@ struct ChainItem {
     // spells / activated abilities / single-trigger cards.
     TriggerType fired_trigger = TriggerType::None;
 
+    // A card with several triggered abilities on one event
+    // (Card::triggeredAbilityCount) puts each on the chain as its own item:
+    // `trigger_index` says which one this is (CardContext::trigger_index).
+    // The siblings share `trigger_group` (the first sibling's id) and their
+    // controller chooses their order as they are finalized
+    // (`trigger_order_pending` until this slot's ability is chosen).
+    int trigger_index = 0;
+    ChainItemId trigger_group = kInvalidId;
+    bool trigger_order_pending = false;
+
     // Phase 6r — multi-ability per Card. Identifies which of the source's
     // activated abilities this chain item resolves. 0 = first/only ability
     // (back-compat). Only meaningful when is_activated_ability is true.

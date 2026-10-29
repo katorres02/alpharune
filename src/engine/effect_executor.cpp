@@ -153,7 +153,18 @@ void EffectExecutor::snapshotLastKnown(GameObjectId id) {
     if (!state_.objectExists(id)) return;
     auto& obj = state_.getObject(id);
     auto& lk = obj.last_known;
+    if (lk.batch) {   // taken with the units dying together: keep it
+        lk.batch = false;
+        return;
+    }
     lk.valid = true;
+    lk.location = obj.location;
+    lk.other_friendly_units_here = 0;
+    if (obj.location.has_value())
+        for (const auto& [oid, o] : state_.objects)
+            if (oid != id && o.isUnit() && o.controller == obj.controller &&
+                o.location.has_value() && *o.location == *obj.location)
+                ++lk.other_friendly_units_here;
     lk.might = obj.current_might;
     lk.empowered = obj.empowered;
     lk.buff_count = obj.buff_count;
@@ -166,6 +177,35 @@ void EffectExecutor::snapshotLastKnown(GameObjectId id) {
             if (b.id == *bf) lk.in_combat = b.combat_in_progress;
     // Kept for cards that read the older key.
     obj.card_counters["__died_empowered"] = obj.empowered;
+}
+
+void EffectExecutor::snapshotDyingTogether(const std::vector<GameObjectId>& ids) {
+    for (auto id : ids) {
+        if (!state_.objectExists(id)) continue;
+        state_.getObject(id).last_known.batch = false;
+        snapshotLastKnown(id);
+    }
+    for (auto id : ids)
+        if (state_.objectExists(id)) state_.getObject(id).last_known.batch = true;
+}
+
+bool EffectExecutor::applyGrantedDeathReplacements(GameObjectId unit) {
+    if (!card_registry_ || !state_.objectExists(unit)) return false;
+    // Copy: the granting card consumes its entry.
+    const auto grants = state_.getObject(unit).death_replacement_grants;
+    for (const auto& g : grants) {
+        if (!state_.objectExists(unit)) return false;
+        Card* c = card_registry_->get(g.source_def);
+        if (!c) continue;
+        CardContext ctx{state_, events_, *this, g.granted_by, unit};
+        ctx.registry = card_registry_;
+        if (c->applyGrantedDeathReplacement(ctx, unit)) {
+            events_.logDebug("REPLACEMENT (granted): " + state_.getObject(unit).name +
+                             " does not die");
+            return true;
+        }
+    }
+    return false;
 }
 
 void EffectExecutor::killObject(GameObjectId target) {
@@ -228,6 +268,8 @@ void EffectExecutor::killObject(GameObjectId target) {
                 }
             }
         }
+        // Replacements an effect left on it (Unlicensed Armory).
+        if (applyGrantedDeathReplacements(target)) return;
         // Card-defined death replacements (The Boss, Zhonya's Hourglass,
         // Guardian Angel, Soraka, ...). Effect kills consult them exactly as
         // combat deaths do (GameEngine::killUnit): a kill is a kill.

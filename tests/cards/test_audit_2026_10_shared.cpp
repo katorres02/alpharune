@@ -266,17 +266,23 @@ TEST_F(SharedBatchTest, Akshan_StealsTheChosenEnemyGearAndHasWeaponmaster) {
     auto enemy_axe = addGear(P2, kSpinningAxe);
     auto enemy_blade = addGear(P2, kDoransBlade);
     std::vector<GameObjectId> offered;
-    // Weaponmaster: yes + own Long Sword; then the steal picks Doran's Blade.
+    // Two abilities, two chain items: the steal (index 1) picks Doran's Blade;
+    // [Weaponmaster] (index 0): yes + own Long Sword.
+    EXPECT_EQ(card_registry.get(kAkshan)->triggeredAbilityCount(state, akshan,
+                                                                TriggerType::WhenYouPlayMe), 2);
+    driveResumableTrigger(kAkshan, P1, akshan,
+        [&](const std::vector<Intent>& legal) {
+            for (auto& i : legal)
+                if (!i.chosen_objects.empty()) offered.push_back(i.chosen_objects[0]);
+            return yesOr(enemy_blade, legal);
+        }, exec, TriggerType::WhenYouPlayMe, kInvalidId, /*trigger_index=*/1);
     int step = 0;
     driveResumableTrigger(kAkshan, P1, akshan,
         [&](const std::vector<Intent>& legal) {
             ++step;
             if (step == 1) return yesOr(kInvalidId, legal);
-            if (step == 2) return yesOr(own_sword, legal);
-            for (auto& i : legal)
-                if (!i.chosen_objects.empty()) offered.push_back(i.chosen_objects[0]);
-            return yesOr(enemy_blade, legal);
-        }, exec, TriggerType::WhenYouPlayMe);
+            return yesOr(own_sword, legal);
+        }, exec, TriggerType::WhenYouPlayMe, kInvalidId, /*trigger_index=*/0);
     EXPECT_EQ(offered.size(), 2u) << "either enemy gear may be moved";
     EXPECT_EQ(state.getObject(enemy_blade).controller, P1);
     EXPECT_EQ(state.getObject(enemy_blade).attached_to, std::optional<GameObjectId>(akshan));
