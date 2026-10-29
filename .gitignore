@@ -48,3 +48,4 @@ venv/
 *.log
 replays/
 .venv/
+deck_search_runs/

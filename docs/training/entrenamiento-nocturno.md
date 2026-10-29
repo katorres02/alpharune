@@ -160,6 +160,27 @@ Lo que quiero que construyas, en un repo nuevo ~/code/riftbound-trainer (git ini
 Reglas: haz commits en riftbound-trainer a medida que cada parte funcione. No modifiques ~/code/alpharune salvo que sea imprescindible, y si lo es, pregúntame primero. Si algo del motor no está claro, léelo en el código antes de suponer. Si el entrenamiento no aprende (el win rate contra random no sube después de la prueba), investiga y explícame la causa antes de seguir.
 ```
 
+## Modo especialista: Draven contra la Riven de Nam Dang
+
+Si lo que quieres es un agente que sirva para probar listas de Draven contra un
+Riven fijo, entrena un especialista. Aprende más rápido porque siempre ve el
+mismo rival y solo cartas que Draven puede jugar. Pégale esto a Claude Code
+después del prompt principal, o en una sesión nueva dentro de
+`~/code/riftbound-trainer`:
+
+```text
+Quiero un modo de entrenamiento especialista, además del general, que se elija con una opción (por ejemplo --mode specialist).
+
+- El rival es siempre el mismo mazo fijo: ~/code/alpharune/decks/riven_radiance_namdang.txt.
+- El otro jugador es Draven (Legend: Draven, Glorious Executioner; Champion: Draven, Showboat), y su mazo cambia en cada partida:
+  - La mitad de las veces, una variante de una lista "buena": ~/code/alpharune/decks/draven_nuevo.txt y las mejores listas que deja la búsqueda en ~/code/alpharune/deck_search_runs/*/best_deck.txt, con 1 a 4 cartas cambiadas al azar.
+  - La otra mitad, un mazo generado al azar con las cartas legales para esa Legend (las saco del motor con ./build/riftbound --dump-registry: unidades, hechizos y gear de dominio Fury o Chaos o sin dominio, sin tokens ni baneadas, y Signatures solo de Draven), respetando las reglas: 40 cartas en el main deck contando al Champion, máximo 3 copias, 12 runas Fury/Chaos y 3 battlefields distintos. Sesga el generador hacia curvas razonables (muchas cartas de costo 2-4).
+- El agente juega a veces como Draven y a veces como Riven, para que aprenda los dos lados.
+- La evaluación de cada mañana agrega: win rate de draven_nuevo y de la mejor lista de la búsqueda contra la Riven fija, jugada por el agente entrenado en ambos lados y comparada con lo que da mcts:sims=20.
+- En el reporte, di si el agente ya juega mejor que mcts:sims=50 en este matchup; cuando lo haga, avísame que ya se puede usar como evaluador en la búsqueda de mazos (scripts/deck_search/deck_search.py en ~/code/alpharune), y propón cómo conectarlo.
+- Guarda los checkpoints del especialista separados de los del modo general.
+```
+
 ## Si más adelante quieres más
 
 - **Más fuerza:** cuando le gane a `mcts20`, cambia la evaluación a `mcts50` o
