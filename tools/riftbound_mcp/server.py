@@ -109,14 +109,32 @@ def _engine_cards() -> list[dict]:
         return []
 
 
+ENGINE_FIELDS = ("card_type", "super_type", "domains", "tags", "energy_cost",
+                 "power_cost", "might", "might_bonus", "ability_text", "effect_text")
+
+
 def _load_cards() -> None:
     global _cards, _by_name
     _cards = json.loads(CARD_INDEX.read_text(encoding="utf-8"))
-    known = {c.get("public_code") for c in _cards}
-    for c in _engine_cards():
-        if c.get("public_code") and c["public_code"] not in known:
-            _cards.append({**c, "source": "engine"})
-            known.add(c["public_code"])
+    by_code = {c.get("public_code"): c for c in _cards}
+    for e in _engine_cards():
+        code = e.get("public_code")
+        if not code:
+            continue
+        g = by_code.get(code)
+        if g is None:
+            # In the engine but not (yet) in the gallery.
+            card = {**e, "source": "engine"}
+            _cards.append(card)
+            by_code[code] = card
+            continue
+        # The engine's data wins: it carries published errata and was checked
+        # against the printed cards, while the gallery data has known errors
+        # (e.g. pre-release Radiance domains and tags).
+        for f in ENGINE_FIELDS:
+            if f in e and e[f] not in (None, "") and e[f] != g.get(f):
+                g[f] = e[f]
+                g["source"] = "engine-corrected"
     _by_name = defaultdict(list)
     for c in _cards:
         _by_name[_norm(c["name"])].append(c)
@@ -458,19 +476,21 @@ def validate_deck(deck: str) -> dict:
     main_total = sum(q for q, _ in d["maindeck"]) + sum(q for q, _ in d["champion"])
     if main_total < 40:
         errors.append(f"The main deck has {main_total} cards (minimum 40 including the Champion).")
+    # CR tournament 601.1.c.3: copy limits count the Main Deck and sideboard together.
     copies = Counter()
-    for q, n in d["maindeck"] + d["champion"]:
+    for q, n in d["maindeck"] + d["champion"] + d["sideboard"]:
         copies[_norm(n)] += q
     for n, q in copies.items():
         if q > 3:
-            errors.append(f"{n}: {q} copies (maximum 3).")
+            errors.append(f"{n}: {q} copies between main deck and sideboard (maximum 3).")
     runes = sum(q for q, _ in d["runes"])
     if runes != 12:
         errors.append(f"{runes} runes (must be 12).")
     if len(d["battlefields"]) != 3:
         errors.append(f"{len(d['battlefields'])} battlefields (must be 3).")
     if domains:
-        for q, n in d["maindeck"] + d["champion"]:
+        # 601.1.c.2: a sideboard holds only valid Main Deck cards.
+        for q, n in d["maindeck"] + d["champion"] + d["sideboard"]:
             c = _find(n)
             if c and c.get("domains") and not set(c["domains"]) <= domains:
                 errors.append(f"{n} is {c['domains']}, outside the Legend's domains {sorted(domains)}.")
@@ -499,8 +519,9 @@ def validate_deck(deck: str) -> dict:
             elif c["name"] in names:
                 errors.append(f"Neeko Legend {n}: names must all be different.")
             names.add(c["name"])
-    if sum(q for q, _ in d["sideboard"]) > 8:
-        warnings.append("The sideboard has more than 8 cards.")
+    # Tournament rules 601.1.c.1: the sideboard holds 10 or fewer cards.
+    if sum(q for q, _ in d["sideboard"]) > 10:
+        errors.append(f"The sideboard has {sum(q for q, _ in d['sideboard'])} cards (maximum 10).")
     warnings.append("Basic validation only: it does not cover every tournament rule.")
     return {"valid": not errors, "errors": errors, "warnings": warnings}
 

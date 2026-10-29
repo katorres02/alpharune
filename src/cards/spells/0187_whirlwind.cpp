@@ -74,7 +74,7 @@ private:
         d.artist = R"RB(Polar Engine Studio)RB";
         d.card_type = CardType::Spell;
         d.domains = {Domain::Chaos};
-        d.energy_cost = 3;
+        d.energy_cost = 4;
         d.power_cost = 1;
         d.rarity = Rarity::Uncommon;
         d.ability_text = R"RB(Starting with the next player, each player may return a unit to its owner's hand.)RB";

@@ -21,7 +21,7 @@ private:
         CardDef d;
         d.id = 307;
         d.def_id = R"RB(ogs-009-024)RB";
-        d.name = R"RB(Yi, Honed)RB";
+        d.name = R"RB(Master Yi, Honed)RB";
         d.set_code = R"RB(OGS)RB";
         d.set_name = R"RB(Proving Grounds)RB";
         d.public_code = R"RB(OGS-009/024)RB";

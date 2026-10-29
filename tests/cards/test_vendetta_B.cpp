@@ -26,7 +26,7 @@ constexpr CardDefId kOtterpus            = 840;
 constexpr CardDefId kAppliedResearchers  = 842;
 constexpr CardDefId kCovertInformant     = 844;
 constexpr CardDefId kPatchedPorobot      = 845;
-constexpr CardDefId kSkyCrusier          = 847;
+constexpr CardDefId kSkyCruiser          = 847;
 constexpr CardDefId kNasusGuardian       = 850;
 constexpr CardDefId kPlazaGuardian       = 851;
 constexpr CardDefId kSwainVisionary      = 852;
@@ -268,10 +268,10 @@ TEST_F(VendettaB, Vendetta_PatchedPorobot_DrawsWithThreeGear) {
     EXPECT_EQ(handSize(P1), 1);
 }
 
-// ── 847 Sky Crusier ──────────────────────────────────────────────────────
+// ── 847 Sky Cruiser ──────────────────────────────────────────────────────
 
-TEST_F(VendettaB, Vendetta_SkyCrusier_CostAndTargets) {
-    const Card* c = card_registry.get(kSkyCrusier);
+TEST_F(VendettaB, Vendetta_SkyCruiser_CostAndTargets) {
+    const Card* c = card_registry.get(kSkyCruiser);
     ASSERT_NE(c, nullptr);
     auto abs = c->activatedAbilities();
     ASSERT_EQ(abs.size(), 1u);
@@ -289,10 +289,10 @@ TEST_F(VendettaB, Vendetta_SkyCrusier_CostAndTargets) {
         << "only units at a battlefield";
 }
 
-TEST_F(VendettaB, Vendetta_SkyCrusier_Deals4) {
+TEST_F(VendettaB, Vendetta_SkyCruiser_Deals4) {
     EffectExecutor exec(state, events, card_db, &card_registry);
-    Card* c = card_registry.get(kSkyCrusier);
-    auto cruiser = addUnit(P1, kSkyCrusier);
+    Card* c = card_registry.get(kSkyCruiser);
+    auto cruiser = addUnit(P1, kSkyCruiser);
     auto big   = addUnit(P2, kInvalidId, 6, 0);
     auto small = addUnit(P2, kInvalidId, 4, 1);
     CardContext ctx{state, events, exec, P1, cruiser};

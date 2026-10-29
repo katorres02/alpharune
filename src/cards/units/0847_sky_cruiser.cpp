@@ -12,7 +12,7 @@
 namespace riftbound {
 namespace {
 
-class SkyCrusier : public UnitCard {
+class SkyCruiser : public UnitCard {
 public:
     const CardDef& def() const override { return def_; }
 
@@ -41,7 +41,7 @@ public:
                     const std::vector<GameObjectId>& targets) override {
         GameObjectId picked = kInvalidId;
         if (!targets.empty()) picked = targets[0];
-        else picked = pickTarget(ctx, "Sky Crusier: deal 4 to a unit at a battlefield",
+        else picked = pickTarget(ctx, "Sky Cruiser: deal 4 to a unit at a battlefield",
                                  enumerateLegalTargets(ctx.state, ctx.controller, 0));
         if (picked == kInvalidId || !ctx.state.objectExists(picked)) return;
         if (!ctx.state.getObject(picked).isAtBattlefield()) return;  // fizzle
@@ -56,7 +56,7 @@ private:
         CardDef d;
         d.id = 847;
         d.def_id = R"RB(ven-060-166)RB";
-        d.name = R"RB(Sky Crusier)RB";
+        d.name = R"RB(Sky Cruiser)RB";
         d.set_code = R"RB(VEN)RB";
         d.set_name = R"RB(Vendetta)RB";
         d.public_code = R"RB(VEN-060/166)RB";
@@ -78,7 +78,7 @@ private:
 }  // anonymous namespace
 
 void register_card_847(CardRegistry& r) {
-    r.registerCard(847, std::make_unique<SkyCrusier>());
+    r.registerCard(847, std::make_unique<SkyCruiser>());
 }
 
 }  // namespace riftbound
