@@ -1,0 +1,21 @@
+{
+  "id": "rad-022-167",
+  "name": "Whirling Twirligig",
+  "set": "RAD",
+  "set_name": "Radiance",
+  "collector_number": 22,
+  "public_code": "RAD-022/167",
+  "card_type": "gear",
+  "super_type": null,
+  "domains": [],
+  "tags": [],
+  "energy_cost": 4,
+  "power_cost": 1,
+  "might": null,
+  "might_bonus": null,
+  "rarity": "epic",
+  "ability_text": "[E]: Play a Gold gear token exhausted. (It has \"[Reaction][>] Kill this, [E]: [Add] [A].\")\nKill a friendly gear, [E]: Play a 1 [M] Recruit unit token.\nKill a friendly unit, [E]: Play a 3 [M] Mech unit token.",
+  "effect_text": null,
+  "image_url": "https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/a05ff95e5bb933664e09656973c72f4d39d8e701-744x1039.png",
+  "artist": "Caravan Studio"
+}

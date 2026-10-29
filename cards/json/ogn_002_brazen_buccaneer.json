@@ -19,7 +19,7 @@
   "might": 5,
   "might_bonus": null,
   "rarity": "common",
-  "ability_text": "As you play me, you may discard 1 as an additional cost. If you do, reduce my cost by [2].",
+  "ability_text": "As you play me, you may discard a card as an additional cost. If you do, reduce my cost by [2].",
   "effect_text": null,
   "image_url": "https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/d481971f7560e7235e7d6934767da18daa019eff-744x1039.png",
   "artist": "Six More Vodka"

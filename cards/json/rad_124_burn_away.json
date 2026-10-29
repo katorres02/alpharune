@@ -1,0 +1,23 @@
+{
+  "id": "rad-124-167",
+  "name": "Burn Away",
+  "set": "RAD",
+  "set_name": "Radiance",
+  "collector_number": 124,
+  "public_code": "RAD-124/167",
+  "card_type": "spell",
+  "super_type": null,
+  "domains": [
+    "body"
+  ],
+  "tags": [],
+  "energy_cost": 3,
+  "power_cost": 1,
+  "might": null,
+  "might_bonus": null,
+  "rarity": "uncommon",
+  "ability_text": "Banish a unit with 3 [M] or less or a gear. [Burn 2]. (Put the top 2 cards of your Main Deck into your trash.)",
+  "effect_text": null,
+  "image_url": "https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/751629a34ee6ba6476ce2f0a821b9f84b5562acd-744x1039.png",
+  "artist": "Michal Ivan"
+}

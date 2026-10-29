@@ -1,0 +1,25 @@
+{
+  "id": "rad-044-167",
+  "name": "Hunting Blind",
+  "set": "RAD",
+  "set_name": "Radiance",
+  "collector_number": 44,
+  "public_code": "RAD-044/167",
+  "card_type": "gear",
+  "super_type": null,
+  "domains": [
+    "calm"
+  ],
+  "tags": [
+    "Device"
+  ],
+  "energy_cost": 4,
+  "power_cost": 2,
+  "might": null,
+  "might_bonus": null,
+  "rarity": "epic",
+  "ability_text": "[Deploy] (Play this only to a battlefield. When an opponent holds here, kill this.)\nWhen you play this, you may move an enemy unit to this battlefield.\nFriendly units here have [Shield 2]. (+2 [M] while they're defenders.)",
+  "effect_text": null,
+  "image_url": "https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/0a625c22d828c83302132b0465dceb3ab11a08bc-744x1039.png",
+  "artist": null
+}

@@ -1,0 +1,23 @@
+{
+  "id": "rad-135-167",
+  "name": "Remember the Fallen",
+  "set": "RAD",
+  "set_name": "Radiance",
+  "collector_number": 135,
+  "public_code": "RAD-135/167",
+  "card_type": "spell",
+  "super_type": null,
+  "domains": [
+    "order"
+  ],
+  "tags": [],
+  "energy_cost": 8,
+  "power_cost": 2,
+  "might": null,
+  "might_bonus": null,
+  "rarity": "rare",
+  "ability_text": "Play up to 3 units and/or gear from your trash, each with Energy cost no more than [3] and Power cost no more than [A], ignoring their costs.",
+  "effect_text": null,
+  "image_url": "https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/0bfd45446d5ffb816438ae2668ad4e5b7f188ad3-744x1039.png",
+  "artist": "Original Force"
+}

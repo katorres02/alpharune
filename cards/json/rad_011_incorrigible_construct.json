@@ -1,0 +1,23 @@
+{
+  "id": "rad-011-167",
+  "name": "Incorrigible Construct",
+  "set": "RAD",
+  "set_name": "Radiance",
+  "collector_number": 11,
+  "public_code": "RAD-011/167",
+  "card_type": "unit",
+  "super_type": null,
+  "domains": [
+    "fury"
+  ],
+  "tags": [],
+  "energy_cost": 4,
+  "power_cost": null,
+  "might": 4,
+  "might_bonus": null,
+  "rarity": "uncommon",
+  "ability_text": "[Show Off] a Mech. (As you play me, you may reveal a Mech from hand or pick another friendly Mech.)\nI enter ready if you showed off.",
+  "effect_text": null,
+  "image_url": "https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/e95470d5c2fbc9f7f8ab0b1c19f32fd704918c83-744x1039.png",
+  "artist": "Six More Vodka"
+}

@@ -1,0 +1,25 @@
+{
+  "id": "rad-092-167",
+  "name": "Seraphic Wyvern",
+  "set": "RAD",
+  "set_name": "Radiance",
+  "collector_number": 92,
+  "public_code": "RAD-092/167",
+  "card_type": "unit",
+  "super_type": null,
+  "domains": [
+    "body"
+  ],
+  "tags": [
+    "Dragon"
+  ],
+  "energy_cost": 7,
+  "power_cost": null,
+  "might": 7,
+  "might_bonus": null,
+  "rarity": "epic",
+  "ability_text": "If you would channel runes, channel that many runes plus 1 exhausted rune instead.",
+  "effect_text": null,
+  "image_url": "https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/ad1793554440d8d5017eadc565ca6c787a969de1-744x1039.png",
+  "artist": null
+}

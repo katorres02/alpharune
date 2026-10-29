@@ -1,0 +1,23 @@
+{
+  "id": "rad-054-167",
+  "name": "Trinket Peddler",
+  "set": "RAD",
+  "set_name": "Radiance",
+  "collector_number": 54,
+  "public_code": "RAD-054/167",
+  "card_type": "unit",
+  "super_type": null,
+  "domains": [
+    "mind"
+  ],
+  "tags": [],
+  "energy_cost": 3,
+  "power_cost": null,
+  "might": 3,
+  "might_bonus": null,
+  "rarity": "common",
+  "ability_text": "[Disarm] (When I attack, give an enemy unit here -1 [M] this turn.)",
+  "effect_text": null,
+  "image_url": "https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/78106b7cea441b13d108e532adc5ce063f448165-744x1039.png",
+  "artist": "Alessandro Poli"
+}

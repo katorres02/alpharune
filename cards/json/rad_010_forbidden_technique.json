@@ -1,0 +1,23 @@
+{
+  "id": "rad-010-167",
+  "name": "Forbidden Technique",
+  "set": "RAD",
+  "set_name": "Radiance",
+  "collector_number": 10,
+  "public_code": "RAD-010/167",
+  "card_type": "spell",
+  "super_type": null,
+  "domains": [
+    "fury"
+  ],
+  "tags": [],
+  "energy_cost": 2,
+  "power_cost": null,
+  "might": null,
+  "might_bonus": null,
+  "rarity": "uncommon",
+  "ability_text": "Ready a unit.\nWhen you play a card with Energy cost [7] or more, you may play this from your trash for [1][R][R]. Banish this.",
+  "effect_text": null,
+  "image_url": "https://cmsassets.rgpub.io/sanity/images/dsfx7636/game_data_live/293518dcf6c2f9e3f59a2e259826fd813436b3a5-744x1039.png",
+  "artist": "Kudos Productions"
+}
