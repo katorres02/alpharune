@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+// COVERAGE-OK: engine-handled: "While I'm buffed, I have an additional +1 [M]" is the
+// engine's "while i'm buffed" self-aura in recalculateAuras (step 3b).
 namespace riftbound {
 namespace {
 

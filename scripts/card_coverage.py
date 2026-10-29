@@ -31,7 +31,13 @@ EFFECT = ["onResolve(", "onTrigger(", "onActivate(", "onEquip(", "applyPassiveAu
           "minTurnToScore(", "canBeChosenByEnemy(", "playableAsReactionToAttack(",
           "requiresLegion(", "restrictsPlayLocations(", "getPlayLocations(",
           "ambushToEnemyBattlefields(", "suppressesTemporaryTriggersHere(",
-          "alternativePlayCost(", "optionalAdditionalCost("]
+          "alternativePlayCost(", "optionalAdditionalCost(",
+          # hooks added by the 2026-10 audit and Radiance
+          "grantsEnterReadyTo(", "replaceOwnDeath(", "grantedSpellAdditionalCost(",
+          "victoryScoreModifier(", "canBePlayed(", "grantsAccelerateTo(",
+          "replaceHostileEffect(", "objectCostCandidates(", "trashPlayCost(",
+          "allowsMultipleBuffs(", "disarmValue(", "showOffMatches(",
+          "triggerConditionOnDefs(", "extraHoldTriggersHere(", "extraConquerTriggersHere("]
 # A card whose entire effect is realized by the engine (ability_text substring
 # matching / a keyword) carries no card code. Such files mark themselves with a
 # `// COVERAGE-OK:` comment (citing the engine path) so the structural classifier
