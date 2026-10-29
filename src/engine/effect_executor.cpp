@@ -1529,11 +1529,105 @@ bool EffectExecutor::unitEntersReady(PlayerId controller, const GameObject& unit
 // Token creation
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Legends added by effects (CR 107.4.d)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+namespace {
+constexpr const char* kLegendBoundTo = "__legend_while_on_board_of";
+}
+
+GameObjectId EffectExecutor::addLegendToZone(PlayerId player, CardDefId legend_def,
+                                             GameObjectId while_on_board_of) {
+    const auto& def = card_db_.get(legend_def);
+    auto id = state_.createObject();
+    auto& obj = state_.getObject(id);
+    obj.card_def_id = legend_def;
+    obj.owner = player;
+    obj.controller = player;
+    obj.name = def.name;
+    obj.card_type = def.card_type;
+    obj.super_type = def.super_type;
+    obj.tags = def.tags;
+    obj.domains = def.domains;
+    obj.keywords = def.keywords;
+    obj.zone = ZoneType::LegendZone;   // not a location (CR 107.4.b)
+    obj.is_exhausted = false;          // the legends enter ready
+    if (while_on_board_of != kInvalidId)
+        obj.card_counters[kLegendBoundTo] = static_cast<int>(while_on_board_of);
+    state_.player(player).extra_legends.push_back(id);
+    events_.logTrace("LEGEND ADDED: " + def.name + " (id=" + std::to_string(id) +
+                     ") to " + toString(player) + "'s Legend Zone");
+    return id;
+}
+
+void EffectExecutor::removeLegendFromZone(GameObjectId legend) {
+    if (!state_.objectExists(legend)) return;
+    auto& obj = state_.getObject(legend);
+    auto& extras = state_.player(obj.controller).extra_legends;
+    auto it = std::find(extras.begin(), extras.end(), legend);
+    if (it == extras.end()) return;   // the Champion Legend, or not in the zone
+    extras.erase(it);
+    obj.zone = ZoneType::Banishment;  // ceases to exist: not in any pile
+    obj.is_exhausted = false;
+    obj.card_counters.erase(kLegendBoundTo);
+    events_.logTrace("LEGEND REMOVED: " + obj.name + " (id=" + std::to_string(legend) +
+                     ") ceased to exist");
+}
+
+void EffectExecutor::removeUnboundLegends() {
+    std::vector<GameObjectId> gone;
+    for (auto& ps : state_.players) {
+        for (auto lid : ps.extra_legends) {
+            if (!state_.objectExists(lid)) continue;
+            const auto& l = state_.getObject(lid);
+            auto it = l.card_counters.find(kLegendBoundTo);
+            if (it == l.card_counters.end()) continue;
+            auto src = static_cast<GameObjectId>(it->second);
+            if (!state_.objectExists(src) || !state_.getObject(src).location.has_value())
+                gone.push_back(lid);
+        }
+    }
+    for (auto lid : gone) removeLegendFromZone(lid);
+}
+
 GameObjectId EffectExecutor::createToken(PlayerId controller, CardType type,
                                           const std::string& name, int might,
                                           const std::vector<std::string>& tags,
                                           KeywordSet keywords, LocationId location,
                                           bool enter_ready) {
+    // "If you would play a unit token ..., you may play <another token> to
+    // that same location instead" (Card::unitTokenReplacement — Heimerdinger,
+    // Academy Instructor). The controller decides now (a replacement can't
+    // wait for the chain); applied once, so the new token isn't replaced again.
+    std::string tok_name = name;
+    int tok_might = might;
+    std::vector<std::string> tok_tags = tags;
+    bool replaced = false;
+    if (type == CardType::Unit && card_registry_) {
+        std::vector<GameObjectId> replacers;
+        for (const auto& [oid, other] : state_.objects)
+            if (other.controller == controller && other.location.has_value() &&
+                other.card_def_id != kInvalidId)
+                replacers.push_back(oid);
+        for (auto rid : replacers) {
+            const Card* c = card_registry_->get(state_.getObject(rid).card_def_id);
+            if (!c) continue;
+            auto rep = c->unitTokenReplacement(state_, rid, controller, name, might);
+            if (!rep.valid) continue;
+            if (!confirmNow(controller, rep.label.empty() ? ("Replace " + name + " token?")
+                                                          : rep.label, true))
+                continue;
+            events_.logTrace("TOKEN_REPLACED: " + name + " -> " + rep.name + " (" +
+                             state_.getObject(rid).name + ")");
+            tok_name = rep.name;
+            tok_might = rep.might;
+            tok_tags = rep.tags;
+            keywords = KeywordSet{};
+            replaced = true;
+            break;
+        }
+    }
     auto id = state_.createObject();
     auto& obj = state_.getObject(id);
     obj.owner = controller;
@@ -1541,12 +1635,13 @@ GameObjectId EffectExecutor::createToken(PlayerId controller, CardType type,
     obj.card_type = type;
     obj.super_type = SuperType::Token;
     obj.is_token = true;   // CR 185.1 intrinsic
-    obj.name = name;
-    obj.base_might = might;
-    obj.current_might = might;
-    obj.tags = tags;
+    obj.name = tok_name;
+    obj.base_might = tok_might;
+    obj.current_might = tok_might;
+    obj.tags = tok_tags;
     obj.keywords = keywords;
     obj.location = location;
+    if (replaced) obj.card_counters["__token_replaced"] = 1;
     // "Enters ready" effects (Renata's "your tokens", Bushwhack, Firebrand
     // Raider, Magma Wurm, Wuju Master, ...): the shared decision point.
     if (type == CardType::Unit && !enter_ready)
@@ -1561,10 +1656,10 @@ GameObjectId EffectExecutor::createToken(PlayerId controller, CardType type,
 
     obj.recomputeMight();
 
-    events_.logTrace("TOKEN: created " + name + " (" + std::to_string(might) +
+    events_.logTrace("TOKEN: created " + tok_name + " (" + std::to_string(tok_might) +
                      "M, id=" + std::to_string(id) + ") for " + toString(controller));
 
-    events_.emit(TokenCreatedEvent{id, controller, type, name, location});
+    events_.emit(TokenCreatedEvent{id, controller, type, tok_name, location});
     events_.emit(EnteredBoardEvent{id, controller, type, location, false});
 
     // Zilean, Time Mage (648): "Once each turn, if you would play a token unit
@@ -1577,10 +1672,10 @@ GameObjectId EffectExecutor::createToken(PlayerId controller, CardType type,
         auto& ps = state_.player(controller);
         if (ps.zilean_present &&
             ps.zilean_double_token_turn != state_.turn.turn_number &&
-            confirmNow(controller, "Zilean, Time Mage: play an additional copy of " + name)) {
+            confirmNow(controller, "Zilean, Time Mage: play an additional copy of " + tok_name)) {
             state_.player(controller).zilean_double_token_turn = state_.turn.turn_number;
             events_.logTrace("ZILEAN: play an additional copy of the token unit");
-            createToken(controller, type, name, might, tags, keywords, location, enter_ready);
+            createToken(controller, type, tok_name, tok_might, tok_tags, keywords, location, enter_ready);
         }
     }
 

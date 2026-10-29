@@ -296,6 +296,23 @@ public:
     bool unitEntersReady(PlayerId controller, const GameObject& unit,
                          UnitEntry how) const;
 
+    // ── Legends added by effects (CR 107.4.d) ──
+    /// Add the legend card `legend_def` to `player`'s Legend Zone as a
+    /// non-Champion legend (CR 107.4.d.1). It enters ready. When
+    /// `while_on_board_of` is set, the legend lasts only while that object is
+    /// on the board (Neeko, Blending In): removeUnboundLegends takes it away
+    /// once it has left. Returns the new legend's id.
+    GameObjectId addLegendToZone(PlayerId player, CardDefId legend_def,
+                                 GameObjectId while_on_board_of = kInvalidId);
+    /// Take a non-Champion legend out of its Legend Zone. A legend added by
+    /// Neeko ceases to exist (Radiance patch notes): like a token, it is
+    /// parked in Banishment without joining the banishment pile. The Champion
+    /// Legend can't be removed (CR 107.4.d) — a no-op for it.
+    void removeLegendFromZone(GameObjectId legend);
+    /// Remove every added legend whose "while on the board" source has left
+    /// the board. Called at the start of each aura recalculation.
+    void removeUnboundLegends();
+
     // ── Token creation ──
     /// Create a token game object and place it on the board.
     GameObjectId createToken(PlayerId controller, CardType type,

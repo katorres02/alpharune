@@ -80,7 +80,7 @@ public:
             for (int i = 0; i < 2; ++i) {
                 auto tok = ctx.executor.createToken(me, CardType::Unit, "Recruit", 1, {"Recruit"},
                                                     KeywordSet{}, LocationId{BaseLocation{me}}, false);
-                if (ctx.state.objectExists(tok)) ctx.state.getObject(tok).card_def_id = kRecruitDef;
+                bindTokenCard(ctx.state, tok, kRecruitDef);
             }
         }
         if (chosen(2))

@@ -27,7 +27,7 @@ public:
                                  BaseLocation{ctx.controller}, /*enter_ready=*/false);
             // Carry the Shadow Clone token card so its "When I attack" ability fires.
             if (ctx.state.objectExists(clone_id))
-                ctx.state.getObject(clone_id).card_def_id = 955;
+                bindTokenCard(ctx.state, clone_id, 955);
         }
         ctx.events.logTrace("ZED, WITHOUT A SOUND: conquer -> Shadow Clone token to base");
     }

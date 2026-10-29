@@ -113,6 +113,8 @@ std::string StateRenderer::renderPlayerSummary(const GameState& state,
     auto& ps = state.player(player);
     auto legend_name = state.objectExists(ps.legend_zone)
         ? state.getObject(ps.legend_zone).name : "???";
+    for (auto lid : ps.extra_legends)   // legends added by effects (Neeko)
+        if (state.objectExists(lid)) legend_name += " + " + state.getObject(lid).name;
 
     std::ostringstream ss;
     ss << toString(player) << " [Score:" << ps.score
@@ -379,6 +381,8 @@ std::string StateRenderer::renderPlayerSection(const GameState& state,
     // Player info line
     auto legend_name = state.objectExists(ps.legend_zone)
         ? state.getObject(ps.legend_zone).name : "???";
+    for (auto lid : ps.extra_legends)   // legends added by effects (Neeko)
+        if (state.objectExists(lid)) legend_name += " + " + state.getObject(lid).name;
 
     // Resource summary line. The "Runes" count is split into ready (can
     // be exhausted to pay 1E each) vs exhausted (can be recycled to pay
@@ -456,6 +460,14 @@ std::string StateRenderer::renderPlayerSection(const GameState& state,
         legend_line << " >> Legend Zone:   (none)";
     }
     ss << "|" << padRight(legend_line.str(), w - 2) << "|\n";
+    for (auto lid : ps.extra_legends) {   // non-Champion legends (CR 107.4.d.1)
+        if (!state.objectExists(lid)) continue;
+        auto& legend = state.getObject(lid);
+        std::ostringstream extra_line;
+        extra_line << "    + Legend:      " << legend.name
+                   << (legend.is_exhausted ? " [EXHAUSTED]" : " [READY]");
+        ss << "|" << padRight(extra_line.str(), w - 2) << "|\n";
+    }
 
     // Champion zone
     std::ostringstream champ_line;

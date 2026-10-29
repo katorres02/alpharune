@@ -374,6 +374,9 @@ void GameEngine::setupPlayer(PlayerId player, const DeckSubmission& deck) {
     auto& legend_obj = state_.getObject(legend_id);
     legend_obj.zone = ZoneType::LegendZone;
     ps.legend_zone = legend_id;
+    // Legends chosen at deck building for Neeko, Blending In (CR 103.1).
+    // They aren't game objects until an effect adds one to the Legend Zone.
+    ps.additional_legend_pool = deck.additional_legends;
 
     // Chosen Champion → Champion Zone (starts here, can be played from here)
     auto champ_id = instantiateCard(deck.chosen_champion, player);
@@ -792,9 +795,9 @@ void GameEngine::awakenPhase() {
             events_.emit(ObjectStateChangedEvent{id, "became_ready"});
         }
     }
-    // Also ready the legend
-    auto legend_id = state_.player(player).legend_zone;
-    if (legend_id != kInvalidId && state_.objectExists(legend_id)) {
+    // Also ready the legends (the Champion Legend and any added by effects)
+    for (auto legend_id : state_.player(player).legends()) {
+        if (!state_.objectExists(legend_id)) continue;
         auto& legend = state_.getObject(legend_id);
         if (legend.is_exhausted) {
             legend.is_exhausted = false;
@@ -1284,11 +1287,13 @@ void GameEngine::chooseShowOff(ChainItem& item) {
     std::vector<GameObjectId> candidates;
     for (auto hid : state_.player(player).hand)
         if (hid != item.source && state_.objectExists(hid) &&
-            card->showOffMatches(state_, player, state_.getObject(hid)))
+            card->showOffMatches(state_, player, state_.getObject(hid)) &&
+            card->showOffMatchesOnDefs(state_, card_db_, player, state_.getObject(hid)))
             candidates.push_back(hid);
     for (const auto& [id, obj] : state_.objects)
         if (id != item.source && obj.location.has_value() && obj.controller == player &&
-            !obj.is_hidden && card->showOffMatches(state_, player, obj))
+            !obj.is_hidden && card->showOffMatches(state_, player, obj) &&
+            card->showOffMatchesOnDefs(state_, card_db_, player, obj))
             candidates.push_back(id);
     const std::string name = state_.getObject(item.source).name;
     if (candidates.empty()) {
@@ -3011,8 +3016,8 @@ int hideEnergyAlternative(const GameState& state, const CardRegistry& reg, Playe
         int n = c->hideEnergyCostInstead();
         if (n >= 0 && (best < 0 || n < best)) best = n;
     };
-    const auto legend = state.player(player).legend_zone;
-    if (legend != kInvalidId && state.objectExists(legend)) consider(state.getObject(legend));
+    for (auto legend : state.player(player).legends())
+        if (state.objectExists(legend)) consider(state.getObject(legend));
     for (const auto& [id, o] : state.objects)
         if (o.controller == player && o.location.has_value()) consider(o);
     return best;
@@ -4331,6 +4336,38 @@ void GameEngine::generateActivateAbilityActions(PlayerId player,
             actions.push_back(activate);
         }
     }
+
+    // Activated abilities printed on a battlefield (Black Market: "Each player
+    // may use this ability once on their turn (even if they don't control this
+    // battlefield)"). A battlefield's card object has no location, so the loop
+    // above never reaches it. Usable by the battlefield's controller, or by
+    // anyone when the card says so (BattlefieldCard::anyPlayerMayActivate);
+    // the card's canActivateAbility / canActivateAbilityAt gates do the rest.
+    // Simple shape only: no exhaust / targets.
+    for (const auto& bf : state_.battlefields) {
+        if (!state_.objectExists(bf.card_object_id)) continue;
+        const auto& bobj = state_.getObject(bf.card_object_id);
+        if (bobj.location.has_value() || bobj.card_def_id == kInvalidId) continue;
+        const auto* bcard = dynamic_cast<const BattlefieldCard*>(card_registry_.get(bobj.card_def_id));
+        if (!bcard) continue;
+        if (!bcard->anyPlayerMayActivate() && bf.controller != player) continue;
+        if (!bcard->canActivateAbility(state_, player)) continue;
+        const auto abilities = bcard->activatedAbilities();
+        for (size_t ai = 0; ai < abilities.size(); ++ai) {
+            const auto& cost = abilities[ai].cost;
+            if (cost.exhaust || abilities[ai].targets.count > 0) continue;
+            if (!bcard->canActivateAbilityAt(state_, player, bf.card_object_id, (int)ai)) continue;
+            if (cost.energy > 0 && availableEnergy(player, abilitySpendPurpose(bobj)) < cost.energy) continue;
+            if (cost.power > 0 &&
+                !canPayActivationResources(player, cost.energy, cost, abilitySpendPurpose(bobj))) continue;
+            Intent activate;
+            activate.type = IntentType::ActivateAbility;
+            activate.player = player;
+            activate.ability_source = bf.card_object_id;
+            activate.ability_index = static_cast<int>(ai);
+            actions.push_back(activate);
+        }
+    }
 }
 
 std::vector<Intent> GameEngine::generateCombatDamageActions(
@@ -5108,6 +5145,11 @@ bool GameEngine::canGainWinningPointViaConquer(PlayerId player) const {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 void GameEngine::recalculateAuras() {
+    // Step 0: a legend added to the Legend Zone "while [source] is on the
+    // board" (Neeko, Blending In) ceases to exist once its source has left
+    // the board (CR 107.4.d.2; Radiance patch notes).
+    effect_executor_->removeUnboundLegends();
+
     // Step 1: Clear all aura effects from all objects
     for (auto& [id, obj] : state_.objects) {
         obj.aura_effects.clear();
@@ -6985,6 +7027,8 @@ GameEngine::CostPaymentAdvance GameEngine::beginCostPayment(
             card.card_counters["__granted_accelerate"] = 1;
             break;
         }
+        // "The next unit you play this turn has [Accelerate]" (Firelights' Hideout).
+        if (ps.next_unit_has_accelerate) card.card_counters["__granted_accelerate"] = 1;
     }
     // Vendetta continuous spell-cost effects (mirrors canAfford).
     if (card.isSpell()) {

@@ -28,25 +28,11 @@
   "ability": "\u2014 , Recycle 2 cards from your trash"
  },
  {
-  "file": "src/cards/spells/0751_alpha_strike.cpp",
-  "name": "0751_alpha_strike.cpp",
-  "bucket": "implemented",
-  "flag": "engine-gap",
-  "ability": "Choose a friendly unit. It deals damage equal to its Might split among enemy units at batt"
- },
- {
   "file": "src/cards/spells/0963_hush.cpp",
   "name": "0963_hush.cpp",
   "bucket": "implemented",
   "flag": "engine-gap",
   "ability": "Counter a spell with Power cost  or more."
- },
- {
-  "file": "src/cards/units/0041_volibear_furious.cpp",
-  "name": "0041_volibear_furious.cpp",
-  "bucket": "implemented",
-  "flag": "engine-gap",
-  "ability": "When I attack, deal 5 damage split among any number of enemy units here."
  },
  {
   "file": "src/cards/units/0383_tianna_crownguard.cpp",

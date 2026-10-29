@@ -57,7 +57,7 @@ public:
         case 1: {
             auto tok = ctx.executor.createToken(ctx.controller, CardType::Unit, "Recruit", 1,
                                                 {"Recruit"}, KeywordSet{}, base, false);
-            if (ctx.state.objectExists(tok)) ctx.state.getObject(tok).card_def_id = 954;
+            bindTokenCard(ctx.state, tok, 954);
             ctx.events.logTrace("WHIRLING TWIRLIGIG: killed a gear -> 1 [M] Recruit token");
             break;
         }

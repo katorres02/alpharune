@@ -46,6 +46,11 @@ bool StateEditor::removeFromZoneVector(GameState& state, GameObjectId object_id)
             ps.legend_zone = kInvalidId;
             return true;
         }
+        if (auto it = std::find(ps.extra_legends.begin(), ps.extra_legends.end(), object_id);
+            it != ps.extra_legends.end()) {
+            ps.extra_legends.erase(it);
+            return true;
+        }
     }
     return false;
 }
@@ -69,7 +74,9 @@ void StateEditor::insertIntoZoneVector(GameState& state,
         return;
     }
     if (target_zone == ZoneType::LegendZone) {
-        ps->legend_zone = object_id;
+        // The Champion Legend slot first; a second legend is an added one.
+        if (ps->legend_zone == kInvalidId) ps->legend_zone = object_id;
+        else ps->extra_legends.push_back(object_id);
         return;
     }
     // Other zones (BattlefieldZone, Chain, FacedownZone) are not backed

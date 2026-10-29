@@ -142,7 +142,10 @@ void extractPlayerFeatures(const GameState& state, PlayerId player,
     int cards_played = ps.cards_played_this_turn;
     out.push_back(static_cast<float>(cards_played));
 
-    // Champion and legend (4)
+    // Champion and legend (4). The legend slot is the Champion Legend; legends
+    // added by effects (PlayerState::extra_legends, Neeko) and the deck's
+    // declared Neeko legends are not encoded — no slot fits them without
+    // changing kStateFeatureDim.
     out.push_back(ps.champion_zone != kInvalidId && state.objectExists(ps.champion_zone)
         ? safeCardId(state.getObject(ps.champion_zone).card_def_id) : 0.0f);
     out.push_back(ps.champion_zone != kInvalidId &&

@@ -1,1 +1,9 @@
-[]
+[
+ {
+  "file": "src/cards/units/1108_heimerdinger_academy_instructor.cpp",
+  "name": "1108_heimerdinger_academy_instructor.cpp",
+  "bucket": "stub",
+  "flag": "clean",
+  "ability": "If you would play a unit token to a location while I'm at a battlefield, you may play a 3 "
+ }
+]

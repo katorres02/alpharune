@@ -57,7 +57,7 @@ public:
             auto tok = ctx.executor.createToken(ctx.controller, CardType::Unit, "Recruit", 1,
                                                 {"Recruit"}, KeywordSet{},
                                                 LocationId{BattlefieldLocation{bf}}, false);
-            if (ctx.state.objectExists(tok)) ctx.state.getObject(tok).card_def_id = kRallyRecruitDef;
+            bindTokenCard(ctx.state, tok, kRallyRecruitDef);
         }
         ctx.events.logTrace("RALLY FOR WAR: three Recruits to BF#" + std::to_string(bf));
     }

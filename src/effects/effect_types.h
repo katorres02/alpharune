@@ -228,6 +228,9 @@ enum class TriggerType : uint8_t {
     WhenYouSpendABuff,           // "When you spend a buff," (Fae Dragon) — ObjectStateChangedEvent
                                  // "buff_spent" from EffectExecutor::spendBuff; fires on the
                                  // spending player's cards; subject = the unit whose buff it was
+    WhenAFriendlyGearDies,       // "When a friendly gear ... dies," (Battlefield Armorer) — a gear
+                                 // killed (LeftBoardEvent was_killed); fires on the gear
+                                 // controller's other on-board cards; subject = the gear
 };
 
 // ─── Conditions ─────────────────────────────────────────────────────────────

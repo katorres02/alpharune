@@ -374,7 +374,11 @@ def search_cards(
 
 
 # ─── Decks ───────────────────────────────────────────────────────────────────
-SECTIONS = {"legend", "champion", "maindeck", "battlefields", "runes", "sideboard"}
+SECTIONS = {"legend", "champion", "maindeck", "battlefields", "runes", "sideboard", "neekolegends"}
+SECTION_ALIASES = {"additionallegends": "neekolegends"}
+# Cards that let a deck choose legends in addition to its starting legend
+# (CR 103.1, Tournament Rules 401.2.a): normalized name -> how many.
+ADDITIONAL_LEGEND_CARDS = {"neeko, blending in": 3}
 
 
 def _deck_text(deck: str) -> tuple[str, str | None]:
@@ -395,6 +399,7 @@ def _parse(text: str) -> dict[str, list[tuple[int, str]]]:
         if not line or line.startswith("#"):
             continue
         key = line.rstrip(":").replace(" ", "").lower()
+        key = SECTION_ALIASES.get(key, key)
         if line.endswith(":") and key in SECTIONS:
             sec = key
             continue
@@ -471,6 +476,29 @@ def validate_deck(deck: str) -> dict:
                 errors.append(f"{n} is {c['domains']}, outside the Legend's domains {sorted(domains)}.")
             if c and c.get("super_type") == "signature" and not (set(c.get("tags") or []) & tags):
                 errors.append(f"{n} is another champion's Signature card.")
+    # Legends chosen for Neeko, Blending In (section "Neeko Legends:").
+    allowed = max((ADDITIONAL_LEGEND_CARDS.get(_norm(n), 0)
+                   for _, n in d["maindeck"] + d["champion"] + d["sideboard"]), default=0)
+    extra = d["neekolegends"]
+    if extra:
+        if not allowed:
+            errors.append("Neeko Legends are declared, but Neeko, Blending In is not in the deck.")
+        elif sum(q for q, _ in extra) > allowed:
+            errors.append(f"{sum(q for q, _ in extra)} Neeko Legends (maximum {allowed}).")
+        names = {legend["name"]} if legend else set()
+        for q, n in extra:
+            c = _find(n)
+            if not c:
+                continue
+            if q != 1:
+                errors.append(f"Neeko Legend {n} must be listed once.")
+            if c.get("card_type") != "legend":
+                errors.append(f"Neeko Legend {n} is not a legend.")
+            elif legend and c["name"] == legend["name"]:
+                errors.append(f"Neeko Legend {n} has the same name as the starting legend.")
+            elif c["name"] in names:
+                errors.append(f"Neeko Legend {n}: names must all be different.")
+            names.add(c["name"])
     if sum(q for q, _ in d["sideboard"]) > 8:
         warnings.append("The sideboard has more than 8 cards.")
     warnings.append("Basic validation only: it does not cover every tournament rule.")
@@ -635,7 +663,7 @@ def help() -> dict:
         "domains": {d: {"color": DOMAIN_COLORS[d], "aliases": sorted(k for k, v in DOMAIN_ALIASES.items() if v == d and k != d)} for d in DOMAINS},
         "sets": SETS,
         "card_types": CARD_TYPES + ["champion (super type)", "signature (super type)"],
-        "deck_format": "Sections 'Legend:', 'Champion:', 'MainDeck:', 'Battlefields:', 'Runes:', 'Sideboard:' followed by lines '<count> <card name>'. Legends may be written 'Champion, Title'.",
+        "deck_format": "Sections 'Legend:', 'Champion:', 'MainDeck:', 'Battlefields:', 'Runes:', 'Sideboard:' followed by lines '<count> <card name>'. With Neeko, Blending In, an optional 'Neeko Legends:' section lists up to 3 extra legends ('1 <legend>' each). Legends may be written 'Champion, Title'.",
         "cards_loaded": len(_cards),
         "engine_built": BINARY.exists(),
     }

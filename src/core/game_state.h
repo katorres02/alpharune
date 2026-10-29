@@ -181,7 +181,26 @@ struct PlayerState {
 
     // Special zones (single card or empty)
     GameObjectId champion_zone = kInvalidId;
-    GameObjectId legend_zone = kInvalidId;
+    GameObjectId legend_zone = kInvalidId;   // the Champion Legend (CR 107.4.a)
+
+    // Non-Champion legends an effect added to the Legend Zone (CR 107.4.d.1;
+    // Neeko, Blending In). They work like any legend (passives, triggers,
+    // [E] abilities, readying in Awaken) but are not the Champion Legend:
+    // they don't set the Domain Identity and may leave the zone (107.4.d.2).
+    std::vector<GameObjectId> extra_legends;
+    // Legends chosen while building the deck in addition to the starting
+    // legend (CR 103.1; Neeko). CardDefIds, not objects: they don't exist in
+    // any zone until an effect adds one to the Legend Zone. Hidden info.
+    std::vector<CardDefId> additional_legend_pool;
+
+    /// Every legend in this player's Legend Zone — the Champion Legend first,
+    /// then legends added by effects.
+    std::vector<GameObjectId> legends() const {
+        std::vector<GameObjectId> out;
+        if (legend_zone != kInvalidId) out.push_back(legend_zone);
+        out.insert(out.end(), extra_legends.begin(), extra_legends.end());
+        return out;
+    }
 
     // Per-turn tracking
     int cards_played_this_turn = 0;
@@ -220,6 +239,9 @@ struct PlayerState {
     // Last Caress: "The next unit you play this turn can be played to any
     // battlefield." Cleared when a unit is played and at end of turn.
     bool next_unit_any_battlefield = false;
+    // Firelights' Hideout: "the next unit you play this turn has [Accelerate]".
+    // Cleared when a unit is played and at end of turn.
+    bool next_unit_has_accelerate = false;
     // Stand United (053): "Buffs give an additional +1 [M] to friendly units this turn."
     int buff_bonus_this_turn = 0;
     // Continuous-effect values (reset + recomputed during aura recompute; set by
@@ -483,6 +505,7 @@ struct PlayerState {
         gear_died_this_turn = false;
         units_enter_ready_this_turn = false;
         next_unit_any_battlefield = false;
+        next_unit_has_accelerate = false;
         buff_bonus_this_turn = 0;
         // (cannot_gain_points / extra_points_to_win are continuous-effect flags,
         //  recomputed during aura cleanup — not per-turn counters.)

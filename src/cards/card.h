@@ -170,6 +170,12 @@ public:
     virtual bool hasShowOff() const { return false; }
     virtual bool showOffMatches(const GameState& /*state*/, PlayerId /*player*/,
                                 const GameObject& /*candidate*/) const { return false; }
+    /// Same check on the candidate's printed data ("[Show Off] a card with
+    /// Energy cost [7] or more" — Rousing Display): GameObjects don't carry
+    /// printed costs. A candidate must pass both. Default: no extra condition.
+    virtual bool showOffMatchesOnDefs(const GameState& /*state*/, const CardDB& /*db*/,
+                                      PlayerId /*player*/,
+                                      const GameObject& /*candidate*/) const { return true; }
     /// The object this card showed off as it was played, or kInvalidId.
     static GameObjectId shownOff(const GameState& state, GameObjectId self);
 
@@ -978,6 +984,27 @@ public:
         return false;
     }
 
+    /// "If you would play a unit token to a location while I'm at a
+    /// battlefield, you may play a 3 [M] Mech unit token to that same location
+    /// instead" (Heimerdinger, Academy Instructor). Asked of each card the
+    /// token's controller has on the board as a unit token is about to be
+    /// created (EffectExecutor::createToken); when `.valid`, the controller is
+    /// asked (confirmNow) and, on yes, this token is created instead, at the
+    /// same location. Applied at most once per token (no re-replacement).
+    struct TokenReplacement {
+        bool valid = false;
+        std::string name;
+        int might = 0;
+        std::vector<std::string> tags;
+        std::string label;   // shown in the yes/no prompt
+    };
+    virtual TokenReplacement unitTokenReplacement(const GameState& /*state*/, GameObjectId /*self*/,
+                                                  PlayerId /*token_controller*/,
+                                                  const std::string& /*token_name*/,
+                                                  int /*token_might*/) const {
+        return {};
+    }
+
     /// Change to the points needed to win while this card is a battlefield in
     /// play ("Increase the points needed to win the game by 1").
     virtual int victoryScoreModifier() const { return 0; }
@@ -1011,6 +1038,11 @@ public:
     /// 0 (default) = no restriction. Read once by GameEngine::setupBattlefields
     /// into BattlefieldState::min_turn_to_score.
     virtual int minTurnToScore() const { return 0; }
+    /// "Each player may use this ability ... (even if they don't control this
+    /// battlefield)" (Black Market): the battlefield's activated abilities are
+    /// offered to every player, not only its controller
+    /// (GameEngine::generateActivateAbilityActions).
+    virtual bool anyPlayerMayActivate() const { return false; }
 };
 
 class RuneCard : public Card {};

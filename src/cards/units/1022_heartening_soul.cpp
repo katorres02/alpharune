@@ -20,7 +20,16 @@ public:
     const CardDef& def() const override { return def_; }
     TriggerType triggerType() const override { return TriggerType::WhenYouPlayMe; }
     void onTrigger(CardContext& ctx, const std::vector<GameObjectId>&) override {
-        const auto legend = ctx.state.player(ctx.controller).legend_zone;
+        // "A friendly legend": with several (Neeko), choose one as this resolves.
+        std::vector<GameObjectId> legends;
+        for (auto l : ctx.state.player(ctx.controller).legends())
+            if (ctx.state.objectExists(l)) legends.push_back(l);
+        if (legends.empty()) return;
+        GameObjectId legend = legends.front();
+        if (legends.size() > 1) {
+            legend = pickTarget(ctx, "Heartening Soul: ready a friendly legend", legends);
+            if (ctx.executor.hasPendingChoice()) return;
+        }
         if (legend == kInvalidId || !ctx.state.objectExists(legend)) return;
         ctx.executor.readyObject(legend);
         ctx.events.logTrace("HEARTENING SOUL: ready a friendly legend");
@@ -52,12 +61,15 @@ public:
         ctx.events.logTrace("HEARTENING SOUL (legend): +3 [M] to " + ctx.state.getObject(t).name);
     }
     void applyPassiveAura(GameState& state, PlayerId controller) const override {
-        const auto legend = state.player(controller).legend_zone;
-        if (legend == kInvalidId || !state.objectExists(legend)) return;
-        auto& granted = state.getObject(legend).granted_abilities;
-        for (const auto& g : granted)
-            if (g.source_def_id == cardDefId() && g.ability_index == 0) return;   // once
-        granted.push_back({cardDefId(), 0});
+        // "Friendly legends" — every legend in the zone (Neeko adds more).
+        for (auto legend : state.player(controller).legends()) {
+            if (!state.objectExists(legend)) continue;
+            auto& granted = state.getObject(legend).granted_abilities;
+            bool has = false;
+            for (const auto& g : granted)
+                if (g.source_def_id == cardDefId() && g.ability_index == 0) { has = true; break; }  // once
+            if (!has) granted.push_back({cardDefId(), 0});
+        }
     }
 private:
     const CardDef def_ = [] {

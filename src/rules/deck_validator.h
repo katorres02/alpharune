@@ -13,6 +13,9 @@
 ///   - Max 3 total signature cards, all matching legend's champion tag
 ///   - Chosen champion must be a champion unit with matching tag
 ///   - No banned cards (future: ban list support)
+///   - Additional legends (Neeko, Blending In; CR 103.1): only with such a
+///     card in the deck, up to its count, legends with different names that
+///     don't match the starting legend's
 
 #include "core/card_db.h"
 #include "core/types.h"
@@ -34,6 +37,10 @@ struct DeckSubmission {
     std::vector<CardDefId> rune_deck;     // 12 runes
     std::vector<CardDefId> battlefields;  // 3 battlefields
     std::vector<CardDefId> sideboard;     // 0-10 cards
+    // Legends chosen in addition to the starting legend (CR 103.1,
+    // Tournament Rules 401.2.a). Only legal with Neeko, Blending In in the
+    // deck: up to 3, different names, none matching the starting legend.
+    std::vector<CardDefId> additional_legends;
 };
 
 struct ValidationResult {
@@ -72,7 +79,8 @@ public:
     /// Load a deck submission directly from a `.txt` deck list (the
     /// human-authored format: `Legend:` / `Champion:` / `MainDeck:` /
     /// `Battlefields:` / `Runes:` / `Sideboard:` sections of `N CardName`
-    /// lines). Resolves names via CardDB::findByName. THROWS
+    /// lines, plus an optional `Neeko Legends:` section listing the legends
+    /// chosen for Neeko, Blending In — `1 LegendName` each). Resolves names via CardDB::findByName. THROWS
     /// std::runtime_error on any parse failure — unreadable file, malformed
     /// line, unknown card name, or unknown/missing section.
     static DeckSubmission loadFromDeckList(const std::string& path, const CardDB& db);
@@ -95,6 +103,8 @@ private:
     void checkRuneDomains(const DeckSubmission& deck, ValidationResult& result,
                           const CardDef& legend) const;
     void checkBanList(const DeckSubmission& deck, ValidationResult& result) const;
+    void checkAdditionalLegends(const DeckSubmission& deck, ValidationResult& result,
+                                const CardDef& legend) const;
 
     std::set<CardDefId> banned_ids_;
     std::vector<std::string> banned_names_;  // for error messages

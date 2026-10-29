@@ -233,6 +233,20 @@ inline GameObjectId createGoldExhausted(CardContext& ctx) {
     return tok;
 }
 
+// ── Binding a created token to its card ──
+// Effects that create a token with abilities give it its card id right after
+// EffectExecutor::createToken. A replacement may have turned the token into
+// something else as it was created ("If you would play a unit token, play a
+// Mech instead" — Heimerdinger, Academy Instructor; marked __token_replaced):
+// then the replacement stands and the id is not bound.
+inline void bindTokenCard(GameState& state, GameObjectId tok, CardDefId def_id) {
+    if (!state.objectExists(tok)) return;
+    auto& t = state.getObject(tok);
+    auto it = t.card_counters.find("__token_replaced");
+    if (it != t.card_counters.end() && it->second != 0) return;
+    t.card_def_id = def_id;
+}
+
 // ── Bomb tokens (Radiance) ──
 // "Play a Bomb gear token to a battlefield": Bombs have [Deploy], so they are
 // only ever created at a battlefield (CR 830.1.b).

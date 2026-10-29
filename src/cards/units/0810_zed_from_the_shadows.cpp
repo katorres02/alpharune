@@ -44,7 +44,7 @@ public:
                                  LocationId{BaseLocation{ctx.controller}}, false);
             // Carry the Shadow Clone token card so its "When I attack" ability fires.
             if (ctx.state.objectExists(clone_id))
-                ctx.state.getObject(clone_id).card_def_id = 955;
+                bindTokenCard(ctx.state, clone_id, 955);
         }
         ctx.events.logTrace("ZED: additional cost paid -> 0 [M] Shadow Clone token");
     }

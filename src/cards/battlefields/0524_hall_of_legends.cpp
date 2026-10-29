@@ -28,8 +28,7 @@ public:
             auto& ps = ctx.state.player(ctx.controller);
             // CR 445.2 / 164.2.a: floating Energy or a ready rune can pay.
             if (payableEnergy(ctx.state, ctx.controller) < 1) return false;
-            GameObjectId lz = ps.legend_zone;
-            return lz != kInvalidId && ctx.state.objectExists(lz);
+            return !ps.legends().empty();
         };
         int conf = confirmOptional(ctx, "Hall of Legends: pay [1] to ready your legend?",
                                    legend_ready_state);
@@ -38,7 +37,16 @@ public:
         auto& ps = ctx.state.player(ctx.controller);
         if (costDueNow(ctx) && !payEnergy(ctx, ctx.controller, 1)) return;
         if (finalizingChoices(ctx)) return;   // choices and costs end here (CR 383.3)
-        GameObjectId lz = ps.legend_zone;
+        // "Your legend" is any legend you control (Radiance patch notes):
+        // with several in the Legend Zone (Neeko), choose one as this resolves.
+        std::vector<GameObjectId> legends;
+        for (auto l : ps.legends())
+            if (ctx.state.objectExists(l)) legends.push_back(l);
+        GameObjectId lz = legends.empty() ? kInvalidId : legends.front();
+        if (legends.size() > 1) {
+            lz = pickTarget(ctx, "Hall of Legends: ready which legend?", legends);
+            if (ctx.executor.hasPendingChoice()) return;
+        }
         if (lz != kInvalidId && ctx.state.objectExists(lz)) {
             ctx.executor.readyObject(lz);
             ctx.events.logTrace("HALL OF LEGENDS: paid [1] -> readied legend");

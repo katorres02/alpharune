@@ -33,7 +33,7 @@ public:
         auto tok = ctx.executor.createToken(ctx.controller, CardType::Unit, "Recruit", 1,
                                             {"Recruit"}, KeywordSet{},
                                             LocationId{BaseLocation{ctx.controller}}, false);
-        if (ctx.state.objectExists(tok)) ctx.state.getObject(tok).card_def_id = 954;
+        bindTokenCard(ctx.state, tok, 954);
         ctx.events.logTrace("CONCERT POSTER: paid [1] -> 1 [M] Recruit to base");
     }
 private:

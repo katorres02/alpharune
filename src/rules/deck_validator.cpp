@@ -26,8 +26,55 @@ ValidationResult DeckValidator::validate(const DeckSubmission& deck) const {
     checkCopyLimits(deck, result);
     checkSignatureLimits(deck, result, legend);
     checkBanList(deck, result);
+    checkAdditionalLegends(deck, result, legend);
 
     return result;
+}
+
+void DeckValidator::checkAdditionalLegends(const DeckSubmission& deck,
+                                           ValidationResult& result,
+                                           const CardDef& legend) const {
+    // CR 103.1 / Tournament Rules 401.2.a: a card such as Neeko, Blending In
+    // lets the deck choose legends in addition to the starting legend. The
+    // card may be in the Main Deck (or as Chosen Champion) or the sideboard;
+    // the choices are shared by all its copies.
+    int allowed = 0;
+    auto consider = [&](CardDefId id) {
+        if (id != 0) allowed = std::max(allowed, db_.get(id).additional_legend_choices);
+    };
+    consider(deck.chosen_champion);
+    for (auto id : deck.main_deck) consider(id);
+    for (auto id : deck.sideboard) consider(id);
+
+    if (deck.additional_legends.empty()) return;
+    if (allowed == 0) {
+        result.addError("Additional legends declared, but no card in the deck lets you "
+                        "choose them (Neeko, Blending In)");
+        return;
+    }
+    if (static_cast<int>(deck.additional_legends.size()) > allowed) {
+        result.addError("Too many additional legends: " +
+                        std::to_string(deck.additional_legends.size()) + " (max " +
+                        std::to_string(allowed) + ")");
+    }
+    // "Different means none match names" — from each other and from the
+    // starting legend.
+    std::set<std::string> names{legend.name};
+    for (auto id : deck.additional_legends) {
+        const auto& add = db_.get(id);
+        if (add.card_type != CardType::Legend) {
+            result.addError("Additional legend is not a legend: " + add.name);
+            continue;
+        }
+        if (add.name == legend.name) {
+            result.addError("Additional legend '" + add.name +
+                            "' has the same name as the starting legend");
+            continue;
+        }
+        if (!names.insert(add.name).second)
+            result.addError("Duplicate additional legend name: " + add.name);
+        if (isBanned(id)) result.addError("Banned card in additional legends: " + add.name);
+    }
 }
 
 void DeckValidator::checkLegend(const DeckSubmission& deck,
@@ -275,9 +322,11 @@ DeckSubmission DeckValidator::loadFromDeckList(const std::string& path,
         std::string line = trim(raw);
         if (line.empty() || line[0] == '#') continue;
 
-        // Section header: a line ending in ':'.
+        // Section header: a line ending in ':'. Spaces are ignored
+        // ("Neeko Legends:" == "NeekoLegends:").
         if (line.back() == ':') {
             section = lower(trim(line.substr(0, line.size() - 1)));
+            section.erase(std::remove(section.begin(), section.end(), ' '), section.end());
             continue;
         }
         if (section.empty()) fail("card line before any section header");
@@ -304,6 +353,10 @@ DeckSubmission DeckValidator::loadFromDeckList(const std::string& path,
             for (int i = 0; i < count; ++i) deck.rune_deck.push_back(id);
         } else if (section == "sideboard") {
             for (int i = 0; i < count; ++i) deck.sideboard.push_back(id);
+        } else if (section == "neekolegends" || section == "additionallegends") {
+            // Legends chosen for Neeko, Blending In (CR 103.1, TR 401.2.a).
+            if (count != 1) fail("an additional legend is listed once ('1 <legend>')");
+            deck.additional_legends.push_back(id);
         } else {
             fail("unknown section '" + section + "'");
         }

@@ -56,6 +56,11 @@ struct CardDef {
     // have any number of cards named Spiderling").
     bool unlimited_copies = false;
 
+    // Deck construction (CR 103.1): "If [Name] is in your deck, choose up to
+    // N different legends in addition to your starting legend" (Neeko,
+    // Blending In). The deck list declares them; 0 = no such choice.
+    int additional_legend_choices = 0;
+
     bool hasTag(const std::string& tag) const {
         for (auto& t : tags)
             if (t == tag) return true;

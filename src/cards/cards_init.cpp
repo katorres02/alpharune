@@ -1103,6 +1103,29 @@ void register_card_1097(CardRegistry&);
 void register_card_1098(CardRegistry&);
 void register_card_1099(CardRegistry&);
 void register_card_1100(CardRegistry&);
+void register_card_1101(CardRegistry&);
+void register_card_1102(CardRegistry&);
+void register_card_1103(CardRegistry&);
+void register_card_1104(CardRegistry&);
+void register_card_1105(CardRegistry&);
+void register_card_1106(CardRegistry&);
+void register_card_1107(CardRegistry&);
+void register_card_1108(CardRegistry&);
+void register_card_1109(CardRegistry&);
+void register_card_1110(CardRegistry&);
+void register_card_1111(CardRegistry&);
+void register_card_1112(CardRegistry&);
+void register_card_1113(CardRegistry&);
+void register_card_1114(CardRegistry&);
+void register_card_1115(CardRegistry&);
+void register_card_1116(CardRegistry&);
+void register_card_1117(CardRegistry&);
+void register_card_1118(CardRegistry&);
+void register_card_1119(CardRegistry&);
+void register_card_1120(CardRegistry&);
+void register_card_1121(CardRegistry&);
+void register_card_1122(CardRegistry&);
+void register_card_1123(CardRegistry&);
 
 void registerAllCards(CardRegistry& registry) {
     register_card_1(registry);
@@ -2205,6 +2228,29 @@ void registerAllCards(CardRegistry& registry) {
     register_card_1098(registry);
     register_card_1099(registry);
     register_card_1100(registry);
+    register_card_1101(registry);
+    register_card_1102(registry);
+    register_card_1103(registry);
+    register_card_1104(registry);
+    register_card_1105(registry);
+    register_card_1106(registry);
+    register_card_1107(registry);
+    register_card_1108(registry);
+    register_card_1109(registry);
+    register_card_1110(registry);
+    register_card_1111(registry);
+    register_card_1112(registry);
+    register_card_1113(registry);
+    register_card_1114(registry);
+    register_card_1115(registry);
+    register_card_1116(registry);
+    register_card_1117(registry);
+    register_card_1118(registry);
+    register_card_1119(registry);
+    register_card_1120(registry);
+    register_card_1121(registry);
+    register_card_1122(registry);
+    register_card_1123(registry);
 }
 
 }  // namespace riftbound
