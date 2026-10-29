@@ -19,7 +19,7 @@
 
 namespace riftbound::ml {
 
-/// State-feature layout (kStateFeatureDim = 6188 dims total):
+/// State-feature layout (kStateFeatureDim = 10688 dims total):
 ///   0..353       : base features (unchanged historical layout — see source).
 ///   354..361     : chain item targets (4 slots × 2 target def_ids).
 ///   362..365     : cost-modifier types (2 players × {next_spell_only, next_unit_only}).
@@ -27,7 +27,7 @@ namespace riftbound::ml {
 ///   374..469     : per-unit extended features (4 BFs × 2 sides × top-3 ×
 ///                  {combat_designation, attachment_def_id, might_delta,
 ///                   temp_might_bonus}).
-///   Z = kZoneVectorOffset (470), V = kCardVocabSize (1100); card_def_id i → pos i-1.
+///   Z = kZoneVectorOffset (470), V = kCardVocabSize (2000); card_def_id i → pos i-1.
 ///   Z      .. Z+V-1   : self main_deck multi-hot counts.
 ///   Z+V    .. Z+2V-1  : self trash multi-hot counts.
 ///   Z+2V   .. Z+3V-1  : self banishment multi-hot counts.
@@ -60,15 +60,17 @@ inline constexpr int kMaxBfUnitsPerSide   = 3;
 inline constexpr int kPerUnitExtFields    = 4;   // cd, gear, delta, temp_might
 inline constexpr int kPerUnitExtFieldsT2  = 8;   // T2/3 per-unit: assault, shield, deflect,
                                                  // buff_count, temp_buff_count, tank, backline, ganking
-// Card-def id space for the multi-hot zones. Registered ids run 1..955
-// (Origins/Proving Grounds/Spiritforged/Unleashed 1..787, Vendetta 788..960);
-// 961..1100 is reserved for Radiance so its release doesn't shift the layout
-// (and invalidate checkpoints) a second time.
-inline constexpr int kCardVocabSize       = 1100;
+// Card-def id space for the multi-hot zones. Registered ids: Origins / Proving
+// Grounds / Spiritforged / Unleashed 1..787, Vendetta 788..955, Radiance
+// 956..1123. Grown from 1100 to 2000 on 2026-10-29 (Radiance did not fit):
+// roughly seven more ~120-card sets fit before the layout changes again.
+// Changing it invalidates trainer checkpoints (migrate weights by copying the
+// existing rows and initializing the new ones).
+inline constexpr int kCardVocabSize       = 2000;
 inline constexpr int kZoneVectorOffset    = 470;  // first multi-hot zone starts here
 inline constexpr int kNumZoneVectors      = 5;    // self deck/trash/banish, opp trash/banish
 // 470 base+extended dims, 5 zone multi-hots, 2 play-lockout flags, 192 Tier-2/3
-// per-unit dims, 24 extended globals.  = 6188 with kCardVocabSize = 1100.
+// per-unit dims, 24 extended globals.  = 10688 with kCardVocabSize = 2000.
 inline constexpr int kStateFeatureDim     =
     kZoneVectorOffset + kNumZoneVectors * kCardVocabSize + 2 + 192 + 24;
 
