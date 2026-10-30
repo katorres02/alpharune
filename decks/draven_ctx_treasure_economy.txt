@@ -1,0 +1,37 @@
+Legend:
+1 Draven, Glorious Executioner
+
+Champion:
+1 Draven, Showboat
+
+MainDeck:
+2 Endless Riches
+3 Falling Star
+2 Forgotten Relic
+3 Overzealous Fan
+3 Pack of Wonders
+3 Ravenborn Tome
+3 Rebuke
+3 Ride the Wind
+2 Scryer's Bloom
+2 Star-Crossed
+2 The Good Stuff
+3 Tideturner
+2 Traveling Merchant
+3 Treasure Hunter
+3 Treasure Trove
+
+Battlefields:
+1 Cosmic Vista
+1 The Grand Plaza
+1 Treasure Hoard
+
+Runes:
+6 Chaos Rune
+6 Fury Rune
+
+Sideboard:
+2 Brawl
+2 Gust
+2 Smite
+2 Switcheroo

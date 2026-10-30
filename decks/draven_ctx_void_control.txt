@@ -1,0 +1,39 @@
+Legend:
+1 Draven, Glorious Executioner
+
+Champion:
+1 Draven, Audacious
+
+MainDeck:
+1 Baron Nashor
+2 Brawl
+3 Disintegrate
+2 Dunebreaker
+1 Falling Star
+2 Firestorm
+3 Incinerate
+2 Perfect Execution
+2 Scorched Earth
+1 Sky Splitter
+3 Smite
+3 Spiderling
+2 Thermo Beam
+3 Tideturner
+3 Treasure Hunter
+3 Void Drone
+3 Void Hatchling
+
+Battlefields:
+1 Threshold of the Gray
+1 Vilemaw's Lair
+1 Void Gate
+
+Runes:
+7 Chaos Rune
+5 Fury Rune
+
+Sideboard:
+2 Abandon
+2 Gust
+2 Monster Harpoon
+2 Switcheroo

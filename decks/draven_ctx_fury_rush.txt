@@ -1,0 +1,36 @@
+Legend:
+1 Draven, Glorious Executioner
+
+Champion:
+1 Draven, Showboat
+
+MainDeck:
+3 Angle Shot
+3 Blood Rush
+3 Brittle Steel
+2 Bushwhack
+3 Cleave
+3 Falling Star
+3 Get Excited!
+1 Rebuke
+3 Scorchclaw
+3 Shakedown
+3 Sudden Storm
+3 Tideturner
+3 Treasure Hunter
+3 Upstage Comedy
+
+Battlefields:
+1 Brush
+1 Ornn's Forge
+1 Rakelstake
+
+Runes:
+3 Chaos Rune
+9 Fury Rune
+
+Sideboard:
+2 Brawl
+2 Gust
+2 Monster Harpoon
+2 Switcheroo

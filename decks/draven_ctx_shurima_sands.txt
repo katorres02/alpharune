@@ -1,0 +1,37 @@
+Legend:
+1 Draven, Glorious Executioner
+
+Champion:
+1 Draven, Showboat
+
+MainDeck:
+3 Baccai Reaper
+2 Baccai Sandspinner
+3 Coalesced Energy
+3 Dune Surfer
+3 Falling Star
+3 Forsaken Baccai
+3 Oasis Raider
+3 Rebuke
+3 Renekton, Rage Fueled
+1 Ride the Wind
+2 Sun Disc
+3 Tideturner
+2 Towering Pairofant
+3 Treasure Hunter
+2 Xerath, Freed
+
+Battlefields:
+1 Protective Sands
+1 Sandswept Tomb
+1 Valley of Idols
+
+Runes:
+3 Chaos Rune
+9 Fury Rune
+
+Sideboard:
+2 Abandon
+2 Acceptable Losses
+2 Brynhir Thundersong
+2 Isolate

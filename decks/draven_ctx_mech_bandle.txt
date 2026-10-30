@@ -1,0 +1,36 @@
+Legend:
+1 Draven, Glorious Executioner
+
+Champion:
+1 Draven, Showboat
+
+MainDeck:
+2 Antagonistic Apparatus
+3 Blast Cone
+3 Dangerous Duo
+3 Falling Star
+3 Ferrous Forerunner
+3 Gem Jammer
+3 Incorrigible Construct
+3 Iron Ballista
+1 Overzealous Fan
+3 Rebuke
+3 Ride the Wind
+3 Scrapyard Champion
+3 Tideturner
+3 Treasure Hunter
+
+Battlefields:
+1 Forge of the Fluft
+1 Power Nexus
+1 Ripper's Bay
+
+Runes:
+4 Chaos Rune
+8 Fury Rune
+
+Sideboard:
+2 Abandon
+2 Brawl
+2 Gust
+2 Isolate

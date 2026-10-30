@@ -1,0 +1,36 @@
+Legend:
+1 Draven, Glorious Executioner
+
+Champion:
+1 Draven, Audacious
+
+MainDeck:
+3 Akali, Deadly Weapon
+3 Falling Star
+3 Irelia, Graceful
+3 Jinx, Demolitionist
+2 Kayn, Unleashed
+3 Overzealous Fan
+3 Rebuke
+3 Ride the Wind
+2 Star-Crossed
+2 Syndra, Transcendent
+3 Tideturner
+3 Treasure Hunter
+3 Yasuo, Windrider
+3 Zed, From the Shadows
+
+Battlefields:
+1 Navori Fighting Pit
+1 Reckoner's Arena
+1 Windswept Hillock
+
+Runes:
+7 Chaos Rune
+5 Fury Rune
+
+Sideboard:
+2 Abandon
+2 Acceptable Losses
+2 Brawl
+2 Gust

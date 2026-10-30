@@ -1,0 +1,35 @@
+Legend:
+1 Draven, Glorious Executioner
+
+Champion:
+1 Draven, Showboat
+
+MainDeck:
+2 Battering Ram
+3 Captain Farron
+3 Darius, Trifarian
+2 Decree of Rage
+3 Falling Star
+3 Legion Rearguard
+3 Noxus Hopeful
+3 Noxus Saboteur
+3 Overzealous Fan
+3 Rally for War
+2 Rebuke
+3 Right of Conquest
+3 Tideturner
+3 Treasure Hunter
+
+Battlefields:
+1 Emperor's Dais
+1 Startipped Peak
+1 Trifarian War Camp
+
+Runes:
+4 Chaos Rune
+8 Fury Rune
+
+Sideboard:
+3 Brawl
+2 Monster Harpoon
+3 Smite

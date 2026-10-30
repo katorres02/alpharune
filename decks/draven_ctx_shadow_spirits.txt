@@ -1,0 +1,36 @@
+Legend:
+1 Draven, Glorious Executioner
+
+Champion:
+1 Draven, Showboat
+
+MainDeck:
+3 Bewitching Spirit
+3 Cemetery Attendant
+3 Demon Shade
+3 Falling Star
+3 Immortal Phoenix
+2 Kharox
+3 Lingering Animus
+3 Mask Mother
+3 Raging Soul
+3 Rebuke
+1 Soulgorger
+3 Tideturner
+3 Treasure Hunter
+3 Undying Legion
+
+Battlefields:
+1 Abandoned Hall
+1 Hallowed Tomb
+1 Shadow Temple
+
+Runes:
+6 Chaos Rune
+6 Fury Rune
+
+Sideboard:
+2 Abandon
+2 Gust
+2 Lost to the Sands
+2 Switcheroo

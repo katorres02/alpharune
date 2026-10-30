@@ -1,0 +1,36 @@
+Legend:
+1 Draven, Glorious Executioner
+
+Champion:
+1 Draven, Audacious
+
+MainDeck:
+2 Blast Cone
+3 Blast Corps Cadet
+3 Corrupt Enforcer
+3 Factory Recall
+3 Falling Star
+3 Hextech Ray
+3 Insightful Investigator
+1 Overzealous Fan
+3 Rebuke
+3 Reckless Innovator
+3 Ride the Wind
+3 Tideturner
+3 Treasure Hunter
+3 Vault Breaker
+
+Battlefields:
+1 Packed Amphitheater
+1 Piltovan Forge
+1 The Academy
+
+Runes:
+7 Chaos Rune
+5 Fury Rune
+
+Sideboard:
+2 Acceptable Losses
+2 Gust
+2 Isolate
+2 Switcheroo

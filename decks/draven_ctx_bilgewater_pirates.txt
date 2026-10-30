@@ -1,0 +1,37 @@
+Legend:
+1 Draven, Glorious Executioner
+
+Champion:
+1 Draven, Showboat
+
+MainDeck:
+3 Brazen Buccaneer
+3 Falling Star
+3 Harpoon Squad
+2 Inferna
+2 Maddened Marauder
+3 Mischievous Marai
+2 Monster Harpoon
+2 Rebuke
+3 Sharkling
+3 Shipyard Skulker
+2 Siren of the Shallows
+3 Sneaky Deckhand
+3 Tideturner
+2 Traveling Merchant
+3 Treasure Hunter
+
+Battlefields:
+1 Black Market
+1 Sunken Temple
+1 Treasure Hoard
+
+Runes:
+8 Chaos Rune
+4 Fury Rune
+
+Sideboard:
+2 Acceptable Losses
+2 Brynhir Thundersong
+2 Gust
+2 Isolate

@@ -1,0 +1,36 @@
+Legend:
+1 Draven, Glorious Executioner
+
+Champion:
+1 Draven, Showboat
+
+MainDeck:
+3 Black Market Broker
+3 Chemtech Enforcer
+3 Detonate
+2 Explosimian
+3 Falling Star
+3 Flame Chompers
+3 Gutter Guardian
+1 Overzealous Fan
+3 Rebuke
+3 Ride the Wind
+3 Satchel Charge
+3 Tideturner
+3 Treasure Hunter
+3 Zaunite Bouncer
+
+Battlefields:
+1 Black Flame Altar
+1 Minefield
+1 Zaun Warrens
+
+Runes:
+6 Chaos Rune
+6 Fury Rune
+
+Sideboard:
+2 Abandon
+2 Brawl
+2 Monster Harpoon
+2 Smite

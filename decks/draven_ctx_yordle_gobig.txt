@@ -1,0 +1,36 @@
+Legend:
+1 Draven, Glorious Executioner
+
+Champion:
+1 Draven, Audacious
+
+MainDeck:
+3 Amateur Demolitionist
+3 Blade Twirler
+3 Dangerous Duo
+3 Disposal Expert
+3 Ember Monk
+1 Falling Star
+2 Ferrous Forerunner
+3 Gem Jammer
+3 Gust Monk
+3 Loyal Pup
+3 Tideturner
+3 Tornado Warrior
+3 Treasure Hunter
+3 War Scout
+
+Battlefields:
+1 Bandle Scouts' Academy
+1 Bandle Tree
+1 Trapping Grounds
+
+Runes:
+5 Chaos Rune
+7 Fury Rune
+
+Sideboard:
+2 Brawl
+2 Gust
+2 Smite
+2 Switcheroo
