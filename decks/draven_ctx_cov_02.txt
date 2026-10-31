@@ -1,0 +1,60 @@
+Legend:
+1 Draven, Glorious Executioner
+
+Champion:
+1 Draven, Showboat
+
+MainDeck:
+1 Akali, Deadly Weapon
+1 Angle Shot
+1 Angler Beast
+1 Annie, Stubborn
+1 Beast Below
+1 Consuming Curse
+1 Detonate
+1 Doran's Ring
+1 Downwell
+1 Dune Surfer
+1 Dunebreaker
+1 Ferrous Forerunner
+1 Firestorm
+1 Grim Apothecary
+1 Illaoi, Prophet of the Great Kraken
+2 Inferna
+1 Kharox
+1 Lost to the Sands
+1 Megatusk
+1 Minotaur Reckoner
+1 Mister Root
+1 Neeko, Blending In
+1 Nocturne, Horrifying
+1 Piercing Light
+1 Prepared Neophyte
+1 Pyke, Returned
+1 Rally for War
+1 Scrapyard Champion
+1 Shimmering Swimmer
+1 Star-Crossed
+1 The List
+1 Tornado Warrior
+1 Transpositionist
+1 Undercover Agent
+1 Undying Legion
+1 Vex, Apathetic
+1 Vicious Snapjaws
+1 Xerath, Freed
+
+Battlefields:
+1 Bandle Tree
+1 Shadow Temple
+1 The Grand Plaza
+
+Runes:
+7 Chaos Rune
+5 Fury Rune
+
+Sideboard:
+2 Isolate
+2 Monster Harpoon
+2 Possession
+2 Switcheroo

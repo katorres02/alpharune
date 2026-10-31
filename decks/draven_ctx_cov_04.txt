@@ -1,0 +1,61 @@
+Legend:
+1 Draven, Glorious Executioner
+
+Champion:
+1 Draven, Showboat
+
+MainDeck:
+1 Akali, Brash
+1 Angler Wyrm
+1 Baccai Sandspinner
+1 Brazen Buccaneer
+1 Captain Farron
+1 Cull
+1 Decree of Discord
+1 Demon Shade
+1 Draven, Showboat
+1 Dunebreaker
+1 Gutter Guardian
+1 Kadregrin the Infernal
+1 Lunar Boon
+1 Maduli the Gatekeeper
+1 Mel, Defiant Soul
+1 Mindsplitter
+1 Mordekaiser, Twice Slain
+1 Oasis Raider
+1 Possession
+1 Raging Soul
+1 Ravenbloom Prefect
+1 Recurve Bow
+1 Riven, Deserter
+1 Rumble, Hotheaded
+1 Ruthless Strike
+1 Seal of Rage
+1 Shadow Order Disciple
+1 Shadows of the Past
+1 Smite
+1 Soulgorger
+1 Spiderling
+1 Spinning Axe
+1 Star-Crossed
+1 Switcheroo
+1 Twilight Step
+1 Twisted Fate, Gambler
+1 Wind and Ghosts
+1 Yeti Brawler
+1 Ziggs, Short-Fused
+
+Battlefields:
+1 Monastery of Hirana
+1 Reckoner's Arena
+1 Trapping Grounds
+
+Runes:
+6 Chaos Rune
+6 Fury Rune
+
+Sideboard:
+2 Abandon
+2 Brawl
+2 Gust
+2 Smite

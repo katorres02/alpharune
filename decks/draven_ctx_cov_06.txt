@@ -1,0 +1,59 @@
+Legend:
+1 Draven, Glorious Executioner
+
+Champion:
+1 Draven, Showboat
+
+MainDeck:
+1 Ancient Warmonger
+1 Banner of Conquest
+2 Baron Nashor
+1 Brynhir Thundersong
+1 Dancing Grenade
+1 Ekko, Revolutionary
+1 Existential Dread
+2 Forsaken Baccai
+1 Get Excited!
+1 Incinerate
+1 Incorrigible Construct
+1 Iron Ballista
+1 Kayn, Unleashed
+1 Kennen, Storm of Shuriken
+1 Kha'Zix, Mutating Horror
+1 Kog'Maw, Caustic
+1 Last Rites
+1 Long Sword
+1 Lord Broadmane
+1 Magma Wurm
+1 Oasis Raider
+1 Overzealous Fan
+1 Perfect Execution
+1 Raging Soul
+1 Rell, Magnetic
+1 Ride the Wind
+1 Sharkling
+1 Sivir, Mercenary
+1 Skyfall of Areion
+1 Sneaky Deckhand
+1 Square Up
+1 Sun Disc
+1 The Syren
+1 The Waters' Wage
+1 Towering Pairofant
+1 Unlicensed Armory
+1 Volibear, Furious
+
+Battlefields:
+1 Black Rose Sanctum
+1 Dragon Roost
+1 Heisho, Shell of the World
+
+Runes:
+7 Chaos Rune
+5 Fury Rune
+
+Sideboard:
+2 Isolate
+2 Monster Harpoon
+2 Possession
+2 Switcheroo

@@ -1,0 +1,59 @@
+Legend:
+1 Draven, Glorious Executioner
+
+Champion:
+1 Draven, Audacious
+
+MainDeck:
+1 Against the Odds
+1 Bilgewater Tracker
+1 Blind Fury
+1 Bushwhack
+1 Conscription
+1 Diana, No Longer Human
+1 Disintegrate
+1 Drakehound Packmaster
+1 Draven, Audacious
+1 Evelynn, Entrancing
+1 Evelynn, In Control
+1 Explosimian
+1 Fading Memories
+1 Flash
+1 Jae Medarda
+1 Jhin, Murderous Artist
+1 Jinx, Demolitionist
+2 Long Sword
+1 Mystic Poro
+1 Perfect Execution
+1 Pouty Poro
+1 Pyke, Dockside Butcher
+1 Rage Amplifier
+1 Red Brambleback
+1 Rengar, Unseen
+1 Rhasa the Sunderer
+1 Ride the Wind
+1 Scorched Earth
+1 Shadow Assassin
+1 Sharkling
+1 Syndra, Transcendent
+1 Temptation
+1 Tryndamere, Barbarian
+1 Up from the Deep
+1 Vex, Cheerless
+2 Void Hatchling
+1 Whirlwind
+
+Battlefields:
+1 Black Rose Sanctum
+1 Forge of the Fluft
+1 Hunters' Circle
+
+Runes:
+5 Chaos Rune
+7 Fury Rune
+
+Sideboard:
+2 Brawl
+2 Isolate
+2 Smite
+2 Switcheroo

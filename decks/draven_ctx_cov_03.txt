@@ -1,0 +1,59 @@
+Legend:
+1 Draven, Glorious Executioner
+
+Champion:
+1 Draven, Audacious
+
+MainDeck:
+1 Acceptable Losses
+1 Annie, Fiery
+1 Arena Kingpin
+1 Armed Assailant
+1 Blast Cone
+1 Blood Rush
+1 Bone Skewer
+1 Brawl
+1 Bushwhack Trap
+2 Cull
+1 Darius, Trifarian
+1 Detonation Amplifier
+1 Dunebreaker
+1 Evershade Stalker
+1 Firebrand Raider
+1 Flame Chompers
+1 Forbidden Technique
+1 Gutter Guardian
+1 Invert Timelines
+1 Jinx, Rebel
+1 Lotus Trap
+1 Lulu, Whimsical
+1 Noxus Saboteur
+1 Rengar, Unseen
+1 Revna the Lorekeeper
+1 Rhasa the Sunderer
+2 Ride the Wind
+1 Sai Scout
+1 Shadowblade Lurker
+1 Siren's Song
+1 Spinning Axe
+1 Spirit Wheel
+1 Suave Negotiator
+1 Teemo, Scout
+1 Vi, Destructive
+1 Vi, Hotheaded
+1 Yasuo, Windrider
+
+Battlefields:
+1 Cosmic Vista
+1 Rockfall Path
+1 Void Gate
+
+Runes:
+4 Chaos Rune
+8 Fury Rune
+
+Sideboard:
+2 Abandon
+2 Gust
+2 Monster Harpoon
+2 Possession

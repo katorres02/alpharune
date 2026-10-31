@@ -1,0 +1,59 @@
+Legend:
+1 Draven, Glorious Executioner
+
+Champion:
+1 Draven, Audacious
+
+MainDeck:
+1 Abandon
+1 An Offer You Can't Refuse
+1 Assembly Rig
+1 Baccai Reaper
+1 Baccai Sandspinner
+1 Chemtech Enforcer
+1 Cursed Sarcophagus
+1 Dune Surfer
+1 Evershade Stalker
+1 Explosimian
+1 Ezreal, Prodigy
+1 Fresh Beans
+1 Gust
+1 Gust Monk
+1 Heedless Resurrection
+1 Incinerate
+1 Katarina, Reckless
+1 Kayn, Unleashed
+1 Mask Mother
+1 Mechanical Bandit
+1 Miss Fortune, Buccaneer
+1 Perfect Execution
+1 Pitiless Stalker
+1 Punching Poro
+1 Raging Soul
+1 Rengar, Pouncing
+1 Runeblade Anvil
+1 Seal of Discord
+1 The Harrowing
+2 Towering Pairofant
+2 Twilight Reveler
+1 Undying Legion
+1 Void Drone
+1 Void Seeker
+1 Whirling Twirligig
+1 Zed, Without a Sound
+1 Ziggs, Explosive
+
+Battlefields:
+1 Ravenbloom Conservatory
+1 Valley of Idols
+1 Windswept Hillock
+
+Runes:
+5 Chaos Rune
+7 Fury Rune
+
+Sideboard:
+2 Brawl
+2 Isolate
+2 Smite
+2 Switcheroo
