@@ -110,6 +110,25 @@ inline bool payEnergy(CardContext& ctx, PlayerId player, int amount) {
     return true;
 }
 
+/// Whether standardEquip can pay [energy] + one [domain] power: enough ready
+/// runes, and a rune of that domain in base (or gear-only restricted [A]).
+inline bool standardEquipPayable(const GameState& state, PlayerId player,
+                                 int energy_cost, Domain domain) {
+    const LocationId base_loc{BaseLocation{player}};
+    int ready_count = 0;
+    bool domain_rune = false;
+    for (const auto& [id, obj] : state.objects) {
+        if (!obj.isRune() || obj.controller != player) continue;
+        if (!obj.location.has_value() || *obj.location != base_loc) continue;
+        if (!obj.is_exhausted) ready_count++;
+        for (auto d : obj.domains) domain_rune = domain_rune || d == domain;
+    }
+    if (ready_count < energy_cost) return false;
+    return domain_rune ||
+           state.player(player).rune_pool.restrictedAvailable(
+               /*power=*/true, SpendPurpose::GearAbility, inShowdown(state)) > 0;
+}
+
 // ─── Canonical standard equip: pay [energy] + one [domain] power, then attach ──
 inline bool standardEquip(CardContext& ctx, GameObjectId gear_id, GameObjectId unit_id,
                           int energy_cost, Domain domain) {
@@ -194,6 +213,9 @@ public:
     bool onEquip(CardContext& ctx, GameObjectId unit) override {
         return standardEquip(ctx, ctx.source, unit, energy_cost_, equip_domain_);
     }
+    bool canPayEquip(const GameState& state, PlayerId player, GameObjectId) const override {
+        return standardEquipPayable(state, player, energy_cost_, equip_domain_);
+    }
     EquipCostSpec equipCost(const GameState&, GameObjectId, GameObjectId) const override {
         return {true, energy_cost_, {{equip_domain_}}};   // [Equip] [n][domain]
     }
@@ -212,6 +234,10 @@ public:
     bool hasEquipAbility() const override { return true; }
     EquipCostSpec equipCost(const GameState&, GameObjectId, GameObjectId) const override {
         return {true, energy_cost_, {{}}};   // [Equip] [n][A]
+    }
+    bool canPayEquip(const GameState& state, PlayerId player, GameObjectId) const override {
+        return payableEnergy(state, player) >= energy_cost_ &&
+               payableOnePower(state, player, std::nullopt, SpendPurpose::GearAbility);
     }
     bool onEquip(CardContext& ctx, GameObjectId unit) override {
         auto& state = ctx.state;

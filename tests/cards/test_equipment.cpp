@@ -179,6 +179,8 @@ protected:
         int initial_bonus  = state.getObject(unit).attachment_might_bonus;
         int gear_bonus     = state.getObject(gear).might_bonus;
 
+        EXPECT_TRUE(card_registry.get(c.gear)->canPayEquip(state, P1, gear))
+            << "equip cost should be payable for card " << c.gear;
         EffectExecutor exec(state, events, card_db);
         EXPECT_TRUE(runEquip(gear, unit, exec))
             << "equip should succeed for card " << c.gear
@@ -305,6 +307,7 @@ protected:
         for (int i = 0; i < energy_cost; ++i) addRune(P1, Domain::Fury);
 
         int gear_bonus = state.getObject(gear).might_bonus;
+        EXPECT_TRUE(card_registry.get(gear_id)->canPayEquip(state, P1, gear));
         EffectExecutor exec(state, events, card_db);
         EXPECT_TRUE(runEquip(gear, unit, exec));
         EXPECT_EQ(state.getObject(unit).attachment_might_bonus, gear_bonus);
@@ -313,6 +316,38 @@ protected:
 };
 
 TEST_F(UniversalEquipTest, SpinningAxe)         { runUniversalEquip(kSpinningAxe, 0); }
+
+// An Equip whose cost can't be paid is not offered (canPayEquip false), and
+// onEquip agrees with it: before, the engine offered it and it did nothing,
+// so it could be chosen again and again.
+TEST_F(EquipmentTest, BootsCantBePaidWithoutAChaosRune) {
+    auto unit = addUnit(P1, kInvalidId, /*might=*/3, /*at_bf=*/0);
+    auto gear = addGearOnBoard(P1, kBootsOfSwiftness);
+    addRune(P1, Domain::Fury);
+    addRune(P1, Domain::Fury, /*exhausted=*/true);
+    Card* boots = card_registry.get(kBootsOfSwiftness);
+    EXPECT_FALSE(boots->canPayEquip(state, P1, gear));
+    EffectExecutor exec(state, events, card_db);
+    EXPECT_FALSE(runEquip(gear, unit, exec));
+
+    // An exhausted Chaos rune can still be recycled for the [P].
+    addRune(P1, Domain::Chaos, /*exhausted=*/true);
+    EXPECT_TRUE(boots->canPayEquip(state, P1, gear));
+    EXPECT_TRUE(runEquip(gear, unit, exec));
+}
+
+TEST_F(EquipmentTest, SpinningAxeCantBePaidWithoutARune) {
+    auto unit = addUnit(P1, kInvalidId, /*might=*/3, /*at_bf=*/0);
+    auto gear = addGearOnBoard(P1, kSpinningAxe);
+    Card* axe = card_registry.get(kSpinningAxe);
+    EXPECT_FALSE(axe->canPayEquip(state, P1, gear));
+    EffectExecutor exec(state, events, card_db);
+    EXPECT_FALSE(runEquip(gear, unit, exec));
+
+    addRune(P1, Domain::Fury, /*exhausted=*/true);
+    EXPECT_TRUE(axe->canPayEquip(state, P1, gear));
+    EXPECT_TRUE(runEquip(gear, unit, exec));
+}
 TEST_F(UniversalEquipTest, ForgefireCape)       { runUniversalEquip(kForgefireCape, 0); }
 TEST_F(UniversalEquipTest, RabadonsDeathcrown)  { runUniversalEquip(kRabadonsDeathcrown, 0); }
 TEST_F(UniversalEquipTest, ShurelyasRequiem)    { runUniversalEquip(kShurelyasRequiem, 0); }

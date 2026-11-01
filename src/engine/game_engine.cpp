@@ -3509,6 +3509,7 @@ std::vector<Intent> GameEngine::generateMainPhaseActions(PlayerId player) const 
 
         Card* gear_card = card_registry_.get(obj.card_def_id);
         if (!gear_card || !gear_card->hasEquipAbility()) continue;
+        if (!gear_card->canPayEquip(state_, player, id)) continue;
 
         if (gear_card->needsEquipTimeTarget()) {
             // One intent per gear; target chosen at resolve via pickTarget.

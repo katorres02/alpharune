@@ -715,6 +715,15 @@ public:
     /// Returns true if equip succeeded (cost paid, attached).
     virtual bool onEquip(CardContext& ctx, GameObjectId unit) { return false; }
 
+    /// Whether `player` can pay this gear's Equip cost right now (no state
+    /// change). The action generator offers Equip only when it can, so an
+    /// unpayable Equip is not a legal no-op action. Default: always (a gear
+    /// with its own cost logic checks inside onEquip).
+    virtual bool canPayEquip(const GameState& /*state*/, PlayerId /*player*/,
+                             GameObjectId /*gear*/) const {
+        return true;
+    }
+
     /// Whether THIS gear defers equip-time target selection to onEquip
     /// via pickTarget. When true, generateMainPhaseActions emits ONE
     /// equip intent per gear (no per-target enumeration), and the
