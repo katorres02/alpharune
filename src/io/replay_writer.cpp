@@ -125,6 +125,7 @@ void ReplayWriter::recordPhaseSeam(const GameState& state,
     if (new_phase != TurnPhase::Mulligan) {
         snap.board_ascii = renderer.render(state);
     }
+    snap.state_json = stateJson(state);
 
     std::ostringstream dec;
     dec << "  ── Phase transition ──\n";
@@ -171,6 +172,7 @@ void ReplayWriter::recordDecision(const GameState& state,
     if (state.turn.phase != TurnPhase::Mulligan) {
         snap.board_ascii = renderer.render(state);
     }
+    snap.state_json = stateJson(state);
 
     // Decision text
     snap.decision_text = renderer.renderDecision(state, legal_actions, chosen_action);
@@ -195,6 +197,110 @@ void ReplayWriter::recordDecision(const GameState& state,
     pending_mcts_player_ = -1;
 
     snapshots_.push_back(std::move(snap));
+}
+
+std::string ReplayWriter::stateJson(const GameState& state) const {
+    using json = nlohmann::json;
+    auto nameOf = [&](const GameObject& o) {
+        if (o.card_def_id != kInvalidId) return db_.get(o.card_def_id).name;
+        return o.name.empty() ? std::string("(token)") : o.name;
+    };
+    auto obj = [&](GameObjectId oid) {
+        const auto& o = state.getObject(oid);
+        json j = {{"n", nameOf(o)}, {"m", o.current_might}};
+        if (o.is_exhausted) j["exh"] = 1;
+        if (o.is_stunned) j["stun"] = 1;
+        if (o.is_hidden || o.zone == ZoneType::FacedownZone) j["hid"] = 1;
+        if (o.is_token) j["tok"] = 1;
+        if (o.damage_marked > 0) j["dmg"] = o.damage_marked;
+        if (o.buff_count + o.temp_buff_count > 0) j["buff"] = o.buff_count + o.temp_buff_count;
+        if (o.empowered > 0) j["emp"] = o.empowered;
+        if (o.combat_designation == CombatDesignation::Attacker) j["cd"] = "att";
+        if (o.combat_designation == CombatDesignation::Defender) j["cd"] = "def";
+        if (!o.attachments.empty()) {
+            json a = json::array();
+            for (auto g : o.attachments) a.push_back(nameOf(state.getObject(g)));
+            j["eq"] = std::move(a);
+        }
+        if (o.card_type == CardType::Gear) j["gear"] = 1;
+        if (o.card_type == CardType::Rune) j["rune"] = 1;
+        return j;
+    };
+    auto names = [&](const std::vector<GameObjectId>& v) {
+        json a = json::array();
+        for (auto oid : v) a.push_back(obj(oid));
+        return a;
+    };
+
+    json players = json::array();
+    for (int p = 0; p < 2; ++p) {
+        const auto& ps = state.players[p];
+        const PlayerId pid = ps.id;
+        json base = json::array();
+        json runes = json::array();
+        for (const auto& [oid, o] : state.objects) {
+            if (o.zone != ZoneType::Base || !o.location) continue;
+            if (!std::holds_alternative<BaseLocation>(*o.location)) continue;
+            if (std::get<BaseLocation>(*o.location).player != pid) continue;
+            if (o.attached_to) continue;  // shown on the unit it equips
+            (o.card_type == CardType::Rune ? runes : base).push_back(obj(oid));
+        }
+        int power = ps.rune_pool.universal_power;
+        for (int d = 0; d < static_cast<int>(Domain::Count); ++d) power += ps.rune_pool.power[d];
+        players.push_back(json{
+            {"score", ps.score},
+            {"legend", ps.legend_zone != kInvalidId ? obj(ps.legend_zone) : json()},
+            {"champion", ps.champion_zone != kInvalidId ? obj(ps.champion_zone) : json()},
+            {"hand", names(ps.hand)},
+            {"trash", names(ps.trash)},
+            {"banish", names(ps.banishment)},
+            {"deck", ps.main_deck.size()},
+            {"rune_deck", ps.rune_deck.size()},
+            {"base", std::move(base)},
+            {"runes", std::move(runes)},
+            {"energy", ps.rune_pool.energy},
+            {"power", power},
+        });
+    }
+
+    json bfs = json::array();
+    for (const auto& bf : state.battlefields) {
+        json units[2] = {json::array(), json::array()};
+        for (const auto& [oid, o] : state.objects) {
+            if (o.attached_to || o.controller == PlayerId::None) continue;
+            bool here = false;
+            if (o.zone == ZoneType::BattlefieldZone && o.location &&
+                std::holds_alternative<BattlefieldLocation>(*o.location))
+                here = std::get<BattlefieldLocation>(*o.location).id == bf.id;
+            if (o.zone == ZoneType::FacedownZone) here = o.hidden_at == bf.id;
+            if (here) units[playerIndex(o.controller)].push_back(obj(oid));
+        }
+        json j = {
+            {"n", StateRenderer::battlefieldLabel(state, bf.id)},
+            {"card", bf.card_object_id != kInvalidId ? nameOf(state.getObject(bf.card_object_id)) : ""},
+            {"ctrl", bf.controller ? playerIndex(*bf.controller) : -1},
+            {"u", {std::move(units[0]), std::move(units[1])}},
+        };
+        if (bf.showdown_in_progress) j["showdown"] = 1;
+        if (bf.combat_in_progress) j["combat"] = 1;
+        if (bf.attacker) j["att"] = playerIndex(*bf.attacker);
+        bfs.push_back(std::move(j));
+    }
+
+    json chain = json::array();
+    for (const auto& item : state.chain.items) {
+        std::string n = item.card_def_id != kInvalidId ? db_.get(item.card_def_id).name : "?";
+        chain.push_back(json{{"n", n}, {"p", playerIndex(item.controller)}, {"ab", item.is_ability ? 1 : 0}});
+    }
+
+    return json{
+        {"turn", state.turn.turn_number},
+        {"phase", toString(state.turn.phase)},
+        {"tp", playerIndex(state.turn.turn_player)},
+        {"players", std::move(players)},
+        {"bfs", std::move(bfs)},
+        {"chain", std::move(chain)},
+    }.dump();
 }
 
 std::string ReplayWriter::escapeHtml(const std::string& s) {
@@ -416,6 +522,7 @@ pre {
         file << "  idx: " << snap.decision_index << ",\n";
         file << "  turn: \"" << escapeJs(snap.turn_info) << "\",\n";
         file << "  board: \"" << escapeJs(snap.board_ascii) << "\",\n";
+        file << "  st: " << (snap.state_json.empty() ? "null" : snap.state_json) << ",\n";
         file << "  decision: \"" << escapeJs(snap.decision_text) << "\",\n";
         file << "  trace: [";
         for (size_t j = 0; j < snap.trace_lines.size(); ++j) {

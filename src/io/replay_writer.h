@@ -69,6 +69,7 @@ private:
         int decision_index;
         std::string turn_info;       // "Turn 5 | MainPhase | P1"
         std::string board_ascii;     // full ASCII board render
+        std::string state_json;      // the same board as JSON, for the graphical viewer
         std::string decision_text;   // decision block (options + chosen)
         std::vector<std::string> trace_lines; // events caused BY this
                                               // decision's chosen_action
@@ -98,6 +99,10 @@ private:
     double pending_mcts_value_  = -2.0;
     int    pending_mcts_sims_   = 0;
     int    pending_mcts_player_ = -1;
+
+    /// Board state as JSON: players (legend, champion, hand, base, trash,
+    /// counts), battlefields with their units, and the chain.
+    std::string stateJson(const GameState& state) const;
 
     static std::string escapeHtml(const std::string& s);
     static std::string escapeJs(const std::string& s);
